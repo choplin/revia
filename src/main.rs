@@ -1,5 +1,6 @@
 mod anchor;
 mod diff;
+mod thread;
 
 use std::{io, path::PathBuf};
 

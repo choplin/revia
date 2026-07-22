@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 
 /// A stable location in a Git object. The hunk header identifies the reviewed
 /// region; the revision is immutable and is the source of truth for its code.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Anchor {
     pub revision: String,
     pub path: String,
