@@ -1,3 +1,4 @@
+mod anchor;
 mod diff;
 
 use std::{io, path::PathBuf};
