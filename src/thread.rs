@@ -41,6 +41,7 @@ pub struct ReviewThread {
     pub anchor: Anchor,
     pub messages: Vec<Message>,
     pub resolution: Resolution,
+    pub closed_by: Option<Participant>,
     /// A display hint only; it never changes resolution.
     pub outdated: bool,
     /// Human escalation; agents may not close a thread while it is set.
@@ -93,6 +94,7 @@ impl ThreadStore {
                 created_at_ms: now_ms()?,
             }],
             resolution: Resolution::Open,
+            closed_by: None,
             outdated: false,
             needs_attention: false,
         });
@@ -115,11 +117,14 @@ impl ThreadStore {
             bail!("only a human can close a needs-attention thread");
         }
         thread.resolution = Resolution::Resolved;
+        thread.closed_by = Some(actor.clone());
         self.persist()
     }
 
     pub fn reopen(&mut self, id: u64) -> Result<()> {
-        self.thread_mut(id)?.resolution = Resolution::Open;
+        let thread = self.thread_mut(id)?;
+        thread.resolution = Resolution::Open;
+        thread.closed_by = None;
         self.persist()
     }
     pub fn set_outdated(&mut self, id: u64, outdated: bool) -> Result<()> {

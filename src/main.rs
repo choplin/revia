@@ -102,6 +102,8 @@ struct App {
     theme: Theme,
     threads: ThreadStore,
     composer: Option<String>,
+    rollup: bool,
+    rollup_selected: usize,
 }
 
 impl App {
@@ -125,6 +127,8 @@ impl App {
             syntax_set: SyntaxSet::load_defaults_newlines(),
             theme,
             composer: None,
+            rollup: false,
+            rollup_selected: 0,
         })
     }
 
@@ -272,6 +276,58 @@ impl App {
             Err(error) => self.status = Some(format!("could not update thread: {error}")),
         }
     }
+
+    fn rollup_ids(&self) -> Vec<u64> {
+        let mut threads = self.threads.threads().iter().collect::<Vec<_>>();
+        threads.sort_by_key(|thread| {
+            if thread.needs_attention {
+                0
+            } else if matches!(thread.resolution, thread::Resolution::Open) {
+                1
+            } else {
+                2
+            }
+        });
+        threads.into_iter().map(|thread| thread.id).collect()
+    }
+
+    fn move_rollup(&mut self, delta: i32) {
+        let count = self.rollup_ids().len();
+        if count > 0 {
+            self.rollup_selected = wrapped_index(self.rollup_selected, count, delta);
+        }
+    }
+
+    fn jump_to_rollup_thread(&mut self) {
+        let Some(id) = self.rollup_ids().get(self.rollup_selected).copied() else {
+            return;
+        };
+        let Some(thread) = self.threads.threads().iter().find(|thread| thread.id == id) else {
+            return;
+        };
+        if let Some((file_index, file)) = self
+            .diff
+            .document
+            .files
+            .iter()
+            .enumerate()
+            .find(|(_, file)| file.path == thread.anchor.path)
+        {
+            self.selected_file = file_index;
+            if let Some(hunk_index) = file
+                .hunks
+                .iter()
+                .position(|hunk| hunk.header == thread.anchor.hunk_header)
+            {
+                self.selected_hunk = hunk_index;
+                self.scroll = file.hunk_start_line(hunk_index);
+            }
+            self.rollup = false;
+            self.status = Some(format!("thread #{id}"));
+        } else {
+            self.status = Some(format!("thread #{id} anchor is not in this diff"));
+        }
+    }
 }
 
 fn wrapped_index(current: usize, length: usize, direction: i32) -> usize {
@@ -313,6 +369,16 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                 }
                 continue;
             }
+            if app.rollup {
+                match key.code {
+                    KeyCode::Char('v') | KeyCode::Esc => app.rollup = false,
+                    KeyCode::Char('j') | KeyCode::Down => app.move_rollup(1),
+                    KeyCode::Char('k') | KeyCode::Up => app.move_rollup(-1),
+                    KeyCode::Enter => app.jump_to_rollup_thread(),
+                    _ => {}
+                }
+                continue;
+            }
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                 KeyCode::Char('j') | KeyCode::Down => app.scroll(1),
@@ -327,6 +393,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                 KeyCode::Char('x') => app.close_thread(),
                 KeyCode::Char('r') => app.reopen_thread(),
                 KeyCode::Char('a') => app.toggle_attention(),
+                KeyCode::Char('v') => app.rollup = true,
                 _ => {}
             }
         }
@@ -377,10 +444,13 @@ fn render(frame: &mut ratatui::Frame, app: &App) {
         &mut list_state,
     );
 
-    let body = app
-        .file()
-        .map(|file| file_text(file, &app.syntax_set, &app.theme))
-        .unwrap_or_else(|| Text::raw("No changed files."));
+    let body = if app.rollup {
+        rollup_text(app)
+    } else {
+        app.file()
+            .map(|file| file_text(file, &app.syntax_set, &app.theme))
+            .unwrap_or_else(|| Text::raw("No changed files."))
+    };
     frame.render_widget(
         Paragraph::new(body)
             .block(Block::default().borders(Borders::NONE).title("Diff"))
@@ -388,10 +458,9 @@ fn render(frame: &mut ratatui::Frame, app: &App) {
         diff,
     );
 
-    let footer_text = app
-        .status
-        .as_deref()
-        .unwrap_or("j/k scroll • n/N hunk • c post • x/r close/reopen • a attention • q quit");
+    let footer_text = app.status.as_deref().unwrap_or(
+        "j/k scroll • n/N hunk • c post • x/r close/reopen • a attention • v rollup • q quit",
+    );
     frame.render_widget(
         Paragraph::new(footer_text).style(Style::default().fg(Color::Gray)),
         footer,
@@ -412,6 +481,67 @@ fn render(frame: &mut ratatui::Frame, app: &App) {
             area,
         );
     }
+}
+
+fn rollup_text(app: &App) -> Text<'static> {
+    let threads = app.threads.threads();
+    let need = threads
+        .iter()
+        .filter(|thread| thread.needs_attention)
+        .count();
+    let open = threads
+        .iter()
+        .filter(|thread| {
+            !thread.needs_attention && matches!(thread.resolution, thread::Resolution::Open)
+        })
+        .count();
+    let resolved = threads
+        .iter()
+        .filter(|thread| matches!(thread.resolution, thread::Resolution::Resolved))
+        .count();
+    let mut lines = vec![Line::styled(
+        format!("{need} need you / {open} open / {resolved} resolved"),
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
+    for (index, id) in app.rollup_ids().into_iter().enumerate() {
+        let thread = threads
+            .iter()
+            .find(|thread| thread.id == id)
+            .expect("id came from threads");
+        let state = if thread.needs_attention {
+            "NEEDS ATTENTION"
+        } else if matches!(thread.resolution, thread::Resolution::Open) {
+            "OPEN"
+        } else {
+            "RESOLVED"
+        };
+        let provenance = thread
+            .closed_by
+            .as_ref()
+            .map_or(String::new(), |actor| format!(" — closed by {}", actor.id));
+        let marker = if index == app.rollup_selected {
+            "> "
+        } else {
+            "  "
+        };
+        lines.push(Line::styled(
+            format!(
+                "{marker}#{id} [{state}] {} {}{provenance}",
+                thread.anchor.path, thread.anchor.hunk_header
+            ),
+            if index == app.rollup_selected {
+                Style::default().bg(Color::DarkGray)
+            } else {
+                Style::default()
+            },
+        ));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "j/k select • Enter jump • v/Esc return",
+        Style::default().fg(Color::Gray),
+    ));
+    Text::from(lines)
 }
 
 fn file_text(file: &DiffFile, syntax_set: &SyntaxSet, theme: &Theme) -> Text<'static> {
