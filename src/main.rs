@@ -4,6 +4,7 @@ mod thread;
 
 use std::{io, path::PathBuf};
 
+use anchor::AnchorStore;
 use anyhow::Result;
 use clap::{ArgGroup, Parser};
 use crossterm::{
@@ -25,6 +26,7 @@ use syntect::{
     highlighting::{Style as SyntectStyle, Theme, ThemeSet},
     parsing::SyntaxSet,
 };
+use thread::{Participant, ParticipantKind, ThreadStore};
 
 /// Review Git diffs in the terminal without changing the repository.
 #[derive(Debug, Parser)]
@@ -73,7 +75,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    run_tui(App::new(args.repo, request, diff))
+    run_tui(App::new(args.repo, request, diff)?)
 }
 
 fn target_from(args: &Args) -> DiffTarget {
@@ -98,10 +100,12 @@ struct App {
     status: Option<String>,
     syntax_set: SyntaxSet,
     theme: Theme,
+    threads: ThreadStore,
+    composer: Option<String>,
 }
 
 impl App {
-    fn new(repository: PathBuf, request: DiffRequest, diff: LoadedDiff) -> Self {
+    fn new(repository: PathBuf, request: DiffRequest, diff: LoadedDiff) -> Result<Self> {
         let themes = ThemeSet::load_defaults();
         let theme = themes
             .themes
@@ -109,7 +113,8 @@ impl App {
             .or_else(|| themes.themes.values().next())
             .expect("syntect includes a default theme")
             .clone();
-        Self {
+        Ok(Self {
+            threads: ThreadStore::open(&repository)?,
             repository,
             request,
             diff,
@@ -119,7 +124,8 @@ impl App {
             status: None,
             syntax_set: SyntaxSet::load_defaults_newlines(),
             theme,
-        }
+            composer: None,
+        })
     }
 
     fn file(&self) -> Option<&DiffFile> {
@@ -170,6 +176,102 @@ impl App {
     fn scroll(&mut self, delta: i16) {
         self.scroll = self.scroll.saturating_add_signed(delta);
     }
+
+    fn selected_location(&self) -> Option<(String, String)> {
+        let file = self.file()?;
+        let hunk = file.hunks.get(self.selected_hunk)?;
+        Some((file.path.clone(), hunk.header.clone()))
+    }
+
+    fn human() -> Participant {
+        Participant {
+            id: "human".into(),
+            kind: ParticipantKind::Human,
+        }
+    }
+
+    fn begin_thread(&mut self) {
+        if self.selected_location().is_none() {
+            self.status = Some("select a hunk before posting a thread".into());
+            return;
+        }
+        self.composer = Some(String::new());
+    }
+
+    fn submit_thread(&mut self) {
+        let Some(body) = self.composer.take() else {
+            return;
+        };
+        if body.trim().is_empty() {
+            self.status = Some("thread message cannot be empty".into());
+            return;
+        }
+        let Some((path, hunk_header)) = self.selected_location() else {
+            return;
+        };
+        let anchors = AnchorStore::new(&self.repository);
+        let anchor = match &self.request.target {
+            DiffTarget::Commit(revision) => anchors.committed(revision, path, hunk_header),
+            DiffTarget::WorkingTree | DiffTarget::Staged | DiffTarget::Range(_) => {
+                anchors.snapshot_working_tree(path, hunk_header)
+            }
+        };
+        match anchor.and_then(|anchor| self.threads.post(anchor, Self::human(), body)) {
+            Ok(id) => self.status = Some(format!("posted thread #{id}")),
+            Err(error) => self.status = Some(format!("could not post thread: {error}")),
+        }
+    }
+
+    fn current_thread_id(&self) -> Option<u64> {
+        let (path, hunk) = self.selected_location()?;
+        self.threads
+            .threads()
+            .iter()
+            .rev()
+            .find(|thread| thread.anchor.path == path && thread.anchor.hunk_header == hunk)
+            .map(|thread| thread.id)
+    }
+
+    fn close_thread(&mut self) {
+        match self
+            .current_thread_id()
+            .ok_or_else(|| anyhow::anyhow!("no thread on this hunk"))
+            .and_then(|id| self.threads.close(id, &Self::human()))
+        {
+            Ok(()) => self.status = Some("thread closed".into()),
+            Err(error) => self.status = Some(format!("could not close thread: {error}")),
+        }
+    }
+
+    fn reopen_thread(&mut self) {
+        match self
+            .current_thread_id()
+            .ok_or_else(|| anyhow::anyhow!("no thread on this hunk"))
+            .and_then(|id| self.threads.reopen(id))
+        {
+            Ok(()) => self.status = Some("thread reopened".into()),
+            Err(error) => self.status = Some(format!("could not reopen thread: {error}")),
+        }
+    }
+
+    fn toggle_attention(&mut self) {
+        let result = self
+            .current_thread_id()
+            .ok_or_else(|| anyhow::anyhow!("no thread on this hunk"))
+            .and_then(|id| {
+                let active = self
+                    .threads
+                    .threads()
+                    .iter()
+                    .find(|thread| thread.id == id)
+                    .is_some_and(|thread| thread.needs_attention);
+                self.threads.set_needs_attention(id, !active)
+            });
+        match result {
+            Ok(()) => self.status = Some("needs-attention toggled".into()),
+            Err(error) => self.status = Some(format!("could not update thread: {error}")),
+        }
+    }
 }
 
 fn wrapped_index(current: usize, length: usize, direction: i32) -> usize {
@@ -199,6 +301,18 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             if key.kind != KeyEventKind::Press {
                 continue;
             }
+            if let Some(input) = app.composer.as_mut() {
+                match key.code {
+                    KeyCode::Esc => app.composer = None,
+                    KeyCode::Enter => app.submit_thread(),
+                    KeyCode::Backspace => {
+                        input.pop();
+                    }
+                    KeyCode::Char(character) => input.push(character),
+                    _ => {}
+                }
+                continue;
+            }
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                 KeyCode::Char('j') | KeyCode::Down => app.scroll(1),
@@ -209,6 +323,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                 KeyCode::Char('[') | KeyCode::BackTab => app.move_file(-1),
                 KeyCode::Char('}') => app.adjust_context(1),
                 KeyCode::Char('{') => app.adjust_context(-1),
+                KeyCode::Char('c') => app.begin_thread(),
+                KeyCode::Char('x') => app.close_thread(),
+                KeyCode::Char('r') => app.reopen_thread(),
+                KeyCode::Char('a') => app.toggle_attention(),
                 _ => {}
             }
         }
@@ -227,8 +345,9 @@ fn render(frame: &mut ratatui::Frame, app: &App) {
 
     frame.render_widget(
         Paragraph::new(format!(
-            "revia  •  {} files  •  context: {}",
+            "revia  •  {} files  •  {} threads  •  context: {}",
             app.diff.document.files.len(),
+            app.threads.threads().len(),
             app.request.context_lines
         ))
         .style(Style::default().add_modifier(Modifier::BOLD)),
@@ -272,11 +391,27 @@ fn render(frame: &mut ratatui::Frame, app: &App) {
     let footer_text = app
         .status
         .as_deref()
-        .unwrap_or("j/k scroll • n/N hunk • [/]/Tab file • {/} context • q quit (read-only)");
+        .unwrap_or("j/k scroll • n/N hunk • c post • x/r close/reopen • a attention • q quit");
     frame.render_widget(
         Paragraph::new(footer_text).style(Style::default().fg(Color::Gray)),
         footer,
     );
+    if let Some(input) = &app.composer {
+        let area = ratatui::layout::Rect {
+            x: footer.x,
+            y: footer.y.saturating_sub(2),
+            width: footer.width,
+            height: 2,
+        };
+        frame.render_widget(
+            Paragraph::new(format!("New thread: {input}")).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Enter to post • Esc to cancel"),
+            ),
+            area,
+        );
+    }
 }
 
 fn file_text(file: &DiffFile, syntax_set: &SyntaxSet, theme: &Theme) -> Text<'static> {
