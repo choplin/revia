@@ -102,6 +102,7 @@ struct App {
     theme: Theme,
     threads: ThreadStore,
     composer: Option<String>,
+    reply_to: Option<u64>,
     rollup: bool,
     rollup_selected: usize,
 }
@@ -127,6 +128,7 @@ impl App {
             syntax_set: SyntaxSet::load_defaults_newlines(),
             theme,
             composer: None,
+            reply_to: None,
             rollup: false,
             rollup_selected: 0,
         })
@@ -199,6 +201,7 @@ impl App {
             self.status = Some("select a hunk before posting a thread".into());
             return;
         }
+        self.reply_to = self.current_thread_id();
         self.composer = Some(String::new());
     }
 
@@ -206,22 +209,31 @@ impl App {
         let Some(body) = self.composer.take() else {
             return;
         };
+        let reply_to = self.reply_to.take();
         if body.trim().is_empty() {
             self.status = Some("thread message cannot be empty".into());
             return;
         }
-        let Some((path, hunk_header)) = self.selected_location() else {
-            return;
+        let result = if let Some(id) = reply_to {
+            self.threads.reply(id, Self::human(), body).map(|()| None)
+        } else {
+            let Some((path, hunk_header)) = self.selected_location() else {
+                return;
+            };
+            let anchors = AnchorStore::new(&self.repository);
+            let anchor = match &self.request.target {
+                DiffTarget::Commit(revision) => anchors.committed(revision, path, hunk_header),
+                DiffTarget::WorkingTree | DiffTarget::Staged | DiffTarget::Range(_) => {
+                    anchors.snapshot_working_tree(path, hunk_header)
+                }
+            };
+            anchor
+                .and_then(|anchor| self.threads.post(anchor, Self::human(), body))
+                .map(Some)
         };
-        let anchors = AnchorStore::new(&self.repository);
-        let anchor = match &self.request.target {
-            DiffTarget::Commit(revision) => anchors.committed(revision, path, hunk_header),
-            DiffTarget::WorkingTree | DiffTarget::Staged | DiffTarget::Range(_) => {
-                anchors.snapshot_working_tree(path, hunk_header)
-            }
-        };
-        match anchor.and_then(|anchor| self.threads.post(anchor, Self::human(), body)) {
-            Ok(id) => self.status = Some(format!("posted thread #{id}")),
+        match result {
+            Ok(Some(id)) => self.status = Some(format!("posted thread #{id}")),
+            Ok(None) => self.status = Some("posted reply".into()),
             Err(error) => self.status = Some(format!("could not post thread: {error}")),
         }
     }
@@ -277,6 +289,25 @@ impl App {
         }
     }
 
+    fn toggle_outdated(&mut self) {
+        let result = self
+            .current_thread_id()
+            .ok_or_else(|| anyhow::anyhow!("no thread on this hunk"))
+            .and_then(|id| {
+                let outdated = self
+                    .threads
+                    .threads()
+                    .iter()
+                    .find(|thread| thread.id == id)
+                    .is_some_and(|thread| thread.outdated);
+                self.threads.set_outdated(id, !outdated)
+            });
+        self.status = Some(match result {
+            Ok(()) => "outdated toggled".into(),
+            Err(error) => format!("could not update thread: {error}"),
+        });
+    }
+
     fn rollup_ids(&self) -> Vec<u64> {
         let mut threads = self.threads.threads().iter().collect::<Vec<_>>();
         threads.sort_by_key(|thread| {
@@ -305,6 +336,11 @@ impl App {
         let Some(thread) = self.threads.threads().iter().find(|thread| thread.id == id) else {
             return;
         };
+        let anchor = thread.anchor.clone();
+        if let Err(error) = AnchorStore::new(&self.repository).resolve_file(&anchor) {
+            self.status = Some(format!("thread #{id} anchor cannot resolve: {error}"));
+            return;
+        }
         if let Some((file_index, file)) = self
             .diff
             .document
@@ -359,7 +395,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             }
             if let Some(input) = app.composer.as_mut() {
                 match key.code {
-                    KeyCode::Esc => app.composer = None,
+                    KeyCode::Esc => {
+                        app.composer = None;
+                        app.reply_to = None;
+                    }
                     KeyCode::Enter => app.submit_thread(),
                     KeyCode::Backspace => {
                         input.pop();
@@ -393,6 +432,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                 KeyCode::Char('x') => app.close_thread(),
                 KeyCode::Char('r') => app.reopen_thread(),
                 KeyCode::Char('a') => app.toggle_attention(),
+                KeyCode::Char('o') => app.toggle_outdated(),
                 KeyCode::Char('v') => app.rollup = true,
                 _ => {}
             }
