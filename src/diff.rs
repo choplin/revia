@@ -150,17 +150,6 @@ impl DiffFile {
             .extension()
             .and_then(|extension| extension.to_str())
     }
-
-    pub fn hunk_start_line(&self, hunk_index: usize) -> u16 {
-        let before = self.metadata.len()
-            + self
-                .hunks
-                .iter()
-                .take(hunk_index)
-                .map(|hunk| 1 + hunk.lines.len())
-                .sum::<usize>();
-        before.try_into().unwrap_or(u16::MAX)
-    }
 }
 
 fn strip_git_prefix(path: &str) -> String {
