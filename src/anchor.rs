@@ -6,13 +6,62 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
+/// The visible review target within one diff: a file and one hunk header.
+///
+/// This deliberately excludes a revision. An `Anchor` adds immutable Git
+/// provenance to a location; navigation and thread grouping use the location.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HunkLocation {
+    path: String,
+    hunk_header: String,
+}
+
+impl HunkLocation {
+    pub fn new(path: impl Into<String>, hunk_header: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            hunk_header: hunk_header.into(),
+        }
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub fn hunk_header(&self) -> &str {
+        &self.hunk_header
+    }
+}
+
 /// A stable location in a Git object. The hunk header identifies the reviewed
 /// region; the revision is immutable and is the source of truth for its code.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Anchor {
-    pub revision: String,
-    pub path: String,
-    pub hunk_header: String,
+    revision: String,
+    path: String,
+    hunk_header: String,
+}
+
+impl Anchor {
+    pub fn new(revision: impl Into<String>, location: HunkLocation) -> Self {
+        Self {
+            revision: revision.into(),
+            path: location.path,
+            hunk_header: location.hunk_header,
+        }
+    }
+
+    pub fn revision(&self) -> &str {
+        &self.revision
+    }
+
+    pub fn location(&self) -> HunkLocation {
+        HunkLocation::new(&self.path, &self.hunk_header)
+    }
+
+    pub fn is_at(&self, location: &HunkLocation) -> bool {
+        self.path == location.path && self.hunk_header == location.hunk_header
+    }
 }
 
 pub struct AnchorStore<'a> {
@@ -31,11 +80,10 @@ impl<'a> AnchorStore<'a> {
         hunk_header: impl Into<String>,
     ) -> Result<Anchor> {
         let revision = self.git(["rev-parse", "--verify", &format!("{revision}^{{commit}}")])?;
-        Ok(Anchor {
-            revision: revision.trim().to_owned(),
-            path: path.into(),
-            hunk_header: hunk_header.into(),
-        })
+        Ok(Anchor::new(
+            revision.trim(),
+            HunkLocation::new(path, hunk_header),
+        ))
     }
 
     /// Creates an immutable stash commit without touching the stash stack, then
@@ -58,15 +106,14 @@ impl<'a> AnchorStore<'a> {
         let reference = format!("refs/revia/snapshots/{nonce}-{snapshot}");
         self.git(["update-ref", &reference, snapshot])?;
 
-        Ok(Anchor {
-            revision: snapshot.to_owned(),
-            path: path.into(),
-            hunk_header: hunk_header.into(),
-        })
+        Ok(Anchor::new(snapshot, HunkLocation::new(path, hunk_header)))
     }
 
     pub fn resolve_file(&self, anchor: &Anchor) -> Result<String> {
-        self.git(["show", &format!("{}:{}", anchor.revision, anchor.path)])
+        self.git([
+            "show",
+            &format!("{}:{}", anchor.revision(), anchor.location().path()),
+        ])
     }
 
     fn git<const N: usize>(&self, arguments: [&str; N]) -> Result<String> {
@@ -160,7 +207,7 @@ mod tests {
             "fn value() -> u8 { 2 }\n"
         );
         assert!(
-            git(&repository, ["for-each-ref", "refs/revia/snapshots"]).contains(&anchor.revision)
+            git(&repository, ["for-each-ref", "refs/revia/snapshots"]).contains(anchor.revision())
         );
     }
 }

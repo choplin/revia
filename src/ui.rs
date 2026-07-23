@@ -1,8 +1,9 @@
 //! Pure review-surface navigation state.
 //!
 //! This module deliberately knows nothing about crossterm or ratatui.  Keeping
-//! selection, viewport, and responsive layout decisions here prevents the
-//! renderer and input loop from drifting into separate notions of "current".
+//! viewport, focus, and responsive layout decisions here prevents the renderer
+//! and input loop from drifting into separate notions of the visible surface.
+//! Review-target selection is domain state in `review::ReviewSession`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusArea {
@@ -48,9 +49,6 @@ impl LayoutMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ViewState {
-    pub selected_file: usize,
-    pub selected_hunk: usize,
-    pub selected_thread: usize,
     pub focus: FocusArea,
     pub scroll: u16,
     pub layout: LayoutMode,
@@ -59,9 +57,6 @@ pub struct ViewState {
 impl Default for ViewState {
     fn default() -> Self {
         Self {
-            selected_file: 0,
-            selected_hunk: 0,
-            selected_thread: 0,
             focus: FocusArea::Review,
             scroll: 0,
             layout: LayoutMode::Auto,
@@ -70,20 +65,6 @@ impl Default for ViewState {
 }
 
 impl ViewState {
-    pub fn select_file(&mut self, file: usize) {
-        self.selected_file = file;
-        self.selected_hunk = 0;
-        self.selected_thread = 0;
-        self.scroll = 0;
-    }
-
-    pub fn select_hunk(&mut self, file: usize, hunk: usize, start_line: u16) {
-        self.selected_file = file;
-        self.selected_hunk = hunk;
-        self.selected_thread = 0;
-        self.scroll = start_line;
-    }
-
     pub fn scroll_by(&mut self, delta: i16) {
         self.scroll = self.scroll.saturating_add_signed(delta);
     }
@@ -105,33 +86,13 @@ mod tests {
     use super::{FocusArea, LayoutMode, ViewState};
 
     #[test]
-    fn file_and_hunk_selection_reset_dependent_state() {
+    fn viewport_state_does_not_own_review_selection() {
         let mut view = ViewState {
-            selected_thread: 4,
             scroll: 22,
             ..ViewState::default()
         };
-        view.select_file(2);
-        assert_eq!(
-            (
-                view.selected_file,
-                view.selected_hunk,
-                view.selected_thread,
-                view.scroll
-            ),
-            (2, 0, 0, 0)
-        );
-        view.selected_thread = 3;
-        view.select_hunk(2, 5, 80);
-        assert_eq!(
-            (
-                view.selected_file,
-                view.selected_hunk,
-                view.selected_thread,
-                view.scroll
-            ),
-            (2, 5, 0, 80)
-        );
+        view.scroll_by(-5);
+        assert_eq!(view.scroll, 17);
     }
 
     #[test]
