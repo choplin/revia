@@ -521,22 +521,71 @@ impl Renderer {
 
     fn render_overlay(&self, frame: &mut Frame, overlay: &Overlay) {
         match overlay {
-            Overlay::Composer { input, replying } => {
-                let area = centered_rect(70, 7, frame.area());
+            Overlay::Composer(composer) => {
+                let area = centered_rect(70, composer.height, frame.area());
                 frame.render_widget(Clear, area);
                 frame.render_widget(
-                    Paragraph::new(input.as_str()).block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_type(BorderType::Double)
-                            .style(self.semantic_theme.style(Tone::FocusSelection))
-                            .title(format!(
-                                " {} — Enter post · Esc cancel ",
-                                if *replying { "Reply" } else { "New thread" }
-                            )),
-                    ),
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Double)
+                        .style(self.semantic_theme.style(Tone::FocusSelection))
+                        .title(" Thread composer — Ctrl-S post · Esc cancel "),
                     area,
                 );
+                let inner = Rect::new(
+                    area.x.saturating_add(1),
+                    area.y.saturating_add(1),
+                    area.width.saturating_sub(2),
+                    area.height.saturating_sub(2),
+                );
+                let [context, editor, feedback] = Layout::vertical([
+                    Constraint::Length(1),
+                    Constraint::Min(1),
+                    Constraint::Length(1),
+                ])
+                .areas(inner);
+                frame.render_widget(
+                    Paragraph::new(truncate_end(&composer.context, usize::from(context.width)))
+                        .style(self.semantic_theme.style(Tone::MutedResolved)),
+                    context,
+                );
+                frame.render_widget(
+                    Paragraph::new(Text::from(
+                        composer
+                            .lines
+                            .iter()
+                            .cloned()
+                            .map(Line::raw)
+                            .collect::<Vec<_>>(),
+                    ))
+                    .scroll((u16::try_from(composer.scroll).unwrap_or(u16::MAX), 0)),
+                    editor,
+                );
+                frame.render_widget(
+                    Paragraph::new(
+                        composer
+                            .message
+                            .as_deref()
+                            .unwrap_or("Ctrl-S post · Enter newline · Esc cancel"),
+                    )
+                    .style(self.semantic_theme.style(Tone::MutedResolved)),
+                    feedback,
+                );
+                if composer.cursor_row >= composer.scroll {
+                    let cursor_row = composer.cursor_row - composer.scroll;
+                    if cursor_row < usize::from(editor.height) {
+                        let cursor_x = u16::try_from(composer.cursor_column)
+                            .unwrap_or(u16::MAX)
+                            .min(editor.width.saturating_sub(1));
+                        let cursor_y = u16::try_from(cursor_row)
+                            .unwrap_or(u16::MAX)
+                            .min(editor.height.saturating_sub(1));
+                        frame.set_cursor_position((
+                            editor.x.saturating_add(cursor_x),
+                            editor.y.saturating_add(cursor_y),
+                        ));
+                    }
+                }
             }
             Overlay::Help { text } => {
                 let area = centered_rect(86, 20, frame.area());
@@ -1283,7 +1332,8 @@ mod tests {
             review::Event::BeginThread { always_new: true },
         );
         let rendered = rows(&render(&renderer, &mut composer, 120, 24)).join("\n");
-        assert!(rendered.contains("New thread — Enter post · Esc cancel"));
+        assert!(rendered.contains("Thread composer — Ctrl-S post · Esc cancel"));
+        assert!(rendered.contains("New •"));
         assert!(!rendered.contains("STREAM FOCUS"));
         assert!(!rendered.contains("THREAD TARGET"));
 
@@ -1293,6 +1343,38 @@ mod tests {
         assert!(rendered.contains("Keyboard help — Esc/? to close"));
         assert!(!rendered.contains("STREAM FOCUS"));
         assert!(!rendered.contains("THREAD TARGET"));
+    }
+
+    #[test]
+    fn composer_places_the_terminal_cursor_after_wide_graphemes() {
+        let renderer = Renderer::default();
+        let mut composer = model_with_diff(RESPONSIVE_DIFF);
+        crate::app::update(
+            &mut composer,
+            review::Event::BeginThread { always_new: true },
+        );
+        crate::app::update(
+            &mut composer,
+            crate::mode::composer::Event::InsertCharacter('a'),
+        );
+        crate::app::update(
+            &mut composer,
+            crate::mode::composer::Event::InsertCharacter('画'),
+        );
+        crate::app::update(
+            &mut composer,
+            crate::app::global::Event::ViewportResized {
+                rows: 19,
+                columns: 120,
+            },
+        );
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        let semantic = crate::app::view(&composer);
+        terminal
+            .draw(|frame| renderer.render(frame, &semantic))
+            .unwrap();
+
+        terminal.backend_mut().assert_cursor_position((22, 11));
     }
 
     #[test]

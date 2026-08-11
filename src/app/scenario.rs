@@ -515,6 +515,8 @@ fn all_mode_state_is_persistent_and_transitions_reset_explicitly() {
     ));
     assert_eq!(scenario.model.composer.input(), "q");
     scenario.when_event(composer::Event::Cancel);
+    assert_eq!(scenario.model.active_mode, ActiveMode::Composer);
+    scenario.when_event(composer::Event::Cancel);
     assert_eq!(scenario.model.active_mode, ActiveMode::Review);
     assert_eq!(scenario.model.composer.input(), "");
 
@@ -1088,13 +1090,7 @@ fn semantic_view_preserves_roles_independently_of_ratatui_layout() {
 
     scenario.when_event(review::Event::BeginThread { always_new: true });
     let view = super::view(&scenario.model);
-    assert!(matches!(
-        view.overlay,
-        Some(Overlay::Composer {
-            replying: false,
-            ..
-        })
-    ));
+    assert!(matches!(view.overlay, Some(Overlay::Composer(_))));
 }
 
 #[test]
@@ -1156,6 +1152,8 @@ fn q_only_quits_from_review() {
     ));
     assert_eq!(scenario.model.composer.input(), "q");
     assert!(scenario.model.is_running());
+    scenario.when_input(input(Key::Esc));
+    assert_eq!(scenario.model.active_mode, ActiveMode::Composer);
     scenario.when_input(input(Key::Esc));
 
     scenario.when_input(input(Key::Char('?')));
@@ -1256,7 +1254,10 @@ fn contextual_keys_follow_mode_and_visible_thread_availability() {
 
     empty.when_input(input(Key::Char('c')));
     let view = super::view(&empty.model);
-    assert_eq!(view.footer.contextual_keys.text, "Enter post • Esc cancel");
+    assert_eq!(
+        view.footer.contextual_keys.text,
+        "Ctrl-S post • Enter newline • Esc cancel"
+    );
     empty.when_input(input(Key::Esc));
     empty.when_input(input(Key::Char('?')));
     let view = super::view(&empty.model);
@@ -1276,6 +1277,129 @@ fn contextual_keys_follow_mode_and_visible_thread_availability() {
             .text
             .contains("Target: no threads")
     );
+}
+
+#[test]
+fn composer_edits_multiline_unicode_at_a_real_cursor_and_confirms_discard() {
+    let mut scenario = Scenario::given(RAW, ThreadState::default());
+    scenario.when_input(input(Key::Char('c')));
+    for character in "ab画".chars() {
+        scenario.when_input(input(Key::Char(character)));
+    }
+    scenario.when_input(input(Key::Left));
+    scenario.when_input(input(Key::Char('X')));
+    scenario.when_input(input(Key::Enter));
+    assert_eq!(scenario.model.composer.input(), "abX\n画");
+    assert_eq!(scenario.model.composer.cursor(), "abX\n".len());
+
+    scenario.when_input(input(Key::Up));
+    scenario.when_input(input(Key::Home));
+    scenario.when_input(input(Key::Delete));
+    assert_eq!(scenario.model.composer.input(), "bX\n画");
+    scenario.when_input(input(Key::End));
+    scenario.when_input(input(Key::DeleteWordBackward));
+    assert_eq!(scenario.model.composer.input(), "\n画");
+
+    scenario.when_input(input(Key::Esc));
+    assert_eq!(scenario.model.active_mode, ActiveMode::Composer);
+    assert!(matches!(
+        super::view(&scenario.model).overlay,
+        Some(Overlay::Composer(ref composer))
+            if composer.message.as_deref()
+                == Some("Unsaved draft. Press Esc again to discard it.")
+    ));
+    scenario.when_input(input(Key::Esc));
+    assert_eq!(scenario.model.active_mode, ActiveMode::Review);
+    assert_eq!(scenario.model.composer.input(), "");
+}
+
+#[test]
+fn composer_keeps_empty_and_failed_submissions_open_for_retry() {
+    let mut scenario = Scenario::given(RAW, threads());
+    scenario.when_input(input(Key::Char('t')));
+    let reply_to = scenario
+        .model
+        .review
+        .selected_thread_id(&scenario.model.global.threads);
+    scenario.when_input(input(Key::Char('c')));
+    assert_eq!(scenario.model.composer.reply_to(), reply_to);
+
+    scenario.when_input(input(Key::Submit));
+    assert_eq!(scenario.model.active_mode, ActiveMode::Composer);
+    assert_eq!(scenario.model.global.pending, None);
+    assert_eq!(
+        scenario.model.global.status.as_deref(),
+        Some("thread message cannot be empty")
+    );
+
+    for character in "retry this 画面".chars() {
+        scenario.when_input(input(Key::Char(character)));
+    }
+    scenario.when_input(input(Key::Submit));
+    assert_eq!(
+        scenario.model.global.pending.map(|pending| pending.kind),
+        Some(PendingEffectKind::ChangeThreads)
+    );
+    assert_eq!(scenario.model.active_mode, ActiveMode::Composer);
+    assert_eq!(scenario.model.composer.input(), "retry this 画面");
+    scenario.inject(
+        ActiveMode::Composer,
+        Outcome::ThreadsChanged {
+            result: Err("could not post thread: anchor unavailable".into()),
+        },
+    );
+    assert_eq!(scenario.model.active_mode, ActiveMode::Composer);
+    assert_eq!(scenario.model.composer.input(), "retry this 画面");
+    assert_eq!(scenario.model.composer.reply_to(), reply_to);
+
+    scenario.when_input(input(Key::Submit));
+    scenario.inject(
+        ActiveMode::Composer,
+        Outcome::ThreadsChanged {
+            result: Ok(ThreadChange {
+                state: scenario.model.global.threads.clone(),
+                success: ThreadSuccess::Replied,
+            }),
+        },
+    );
+    assert_eq!(scenario.model.active_mode, ActiveMode::Review);
+    assert_eq!(scenario.model.composer.input(), "");
+    assert_eq!(scenario.model.composer.reply_to(), None);
+    assert_eq!(
+        scenario.model.global.status.as_deref(),
+        Some("posted reply")
+    );
+}
+
+#[test]
+fn composer_grows_then_scrolls_and_reflows_across_narrow_resizes() {
+    let mut scenario = Scenario::given(RAW, ThreadState::default());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 6,
+        columns: 48,
+    });
+    scenario.when_input(input(Key::Char('c')));
+    for character in "one 画面 two three four five six seven\neight\nnine\nten".chars() {
+        scenario.when_input(input(Key::Char(character)));
+    }
+    let Some(Overlay::Composer(narrow)) = super::view(&scenario.model).overlay else {
+        panic!("composer overlay")
+    };
+    assert!(narrow.height <= 6);
+    assert!(narrow.scroll > 0);
+    assert!(narrow.cursor_row >= narrow.scroll);
+
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 16,
+        columns: 120,
+    });
+    let Some(Overlay::Composer(wide)) = super::view(&scenario.model).overlay else {
+        panic!("composer overlay")
+    };
+    assert!(wide.height <= 12);
+    assert!(wide.lines.len() < narrow.lines.len());
+    assert!(wide.cursor_row >= wide.scroll);
+    assert!(wide.cursor_row < wide.scroll + usize::from(wide.height.saturating_sub(4)));
 }
 
 #[test]

@@ -11,11 +11,21 @@ use crossterm::{
 use crate::input::{Key, KeyPhase, PhysicalInput};
 
 pub fn physical_input(event: KeyEvent) -> PhysicalInput {
+    let word_modifier = event
+        .modifiers
+        .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL);
     let key = match event.code {
+        KeyCode::Char('s' | 'S') if event.modifiers.contains(KeyModifiers::CONTROL) => Key::Submit,
         KeyCode::Char(character) => Key::Char(character),
         KeyCode::Esc => Key::Esc,
         KeyCode::Enter => Key::Enter,
+        KeyCode::Backspace if word_modifier => Key::DeleteWordBackward,
         KeyCode::Backspace => Key::Backspace,
+        KeyCode::Delete => Key::Delete,
+        KeyCode::Left if word_modifier => Key::WordLeft,
+        KeyCode::Right if word_modifier => Key::WordRight,
+        KeyCode::Left => Key::Left,
+        KeyCode::Right => Key::Right,
         KeyCode::Tab => Key::Tab,
         KeyCode::BackTab => Key::BackTab,
         KeyCode::Up => Key::Up,
@@ -177,7 +187,11 @@ mod tests {
 
     use anyhow::anyhow;
 
-    use super::{TerminalControl, TerminalSession, is_interrupt};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use crate::input::Key;
+
+    use super::{TerminalControl, TerminalSession, is_interrupt, physical_input};
 
     #[derive(Clone)]
     struct FakeControl {
@@ -317,11 +331,27 @@ mod tests {
 
     #[test]
     fn recognizes_ctrl_c_as_an_interrupt() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
         assert!(is_interrupt(KeyEvent::new(
             KeyCode::Char('c'),
             KeyModifiers::CONTROL
         )));
+    }
+
+    #[test]
+    fn maps_terminal_editor_commands_to_semantic_keys() {
+        for (code, modifiers, expected) in [
+            (KeyCode::Char('s'), KeyModifiers::CONTROL, Key::Submit),
+            (KeyCode::Left, KeyModifiers::NONE, Key::Left),
+            (KeyCode::Right, KeyModifiers::ALT, Key::WordRight),
+            (KeyCode::Left, KeyModifiers::CONTROL, Key::WordLeft),
+            (KeyCode::Delete, KeyModifiers::NONE, Key::Delete),
+            (
+                KeyCode::Backspace,
+                KeyModifiers::ALT,
+                Key::DeleteWordBackward,
+            ),
+        ] {
+            assert_eq!(physical_input(KeyEvent::new(code, modifiers)).key, expected);
+        }
     }
 }

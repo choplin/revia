@@ -231,6 +231,7 @@ fn apply_global(model: &mut Model, result: global::Update) -> Vec<Effect> {
                 model
                     .review
                     .set_viewport(rows, columns, &model.global.threads);
+                model.composer.set_viewport(rows, columns);
             }
         }
     }
@@ -384,7 +385,10 @@ pub fn view(model: &Model) -> semantic::View {
             (
                 review.file_rail,
                 review.body,
-                Some(composer::view(&model.composer)),
+                Some(composer::view(
+                    &model.composer,
+                    model.review.selected_target_label().as_deref(),
+                )),
                 review.layout,
             )
         }

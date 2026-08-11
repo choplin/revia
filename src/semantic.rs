@@ -181,8 +181,19 @@ pub enum Tone {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposerOverlay {
+    pub context: String,
+    pub lines: Vec<String>,
+    pub cursor_row: usize,
+    pub cursor_column: usize,
+    pub scroll: usize,
+    pub height: u16,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Overlay {
-    Composer { input: String, replying: bool },
+    Composer(ComposerOverlay),
     Help { text: String },
 }
 

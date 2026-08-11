@@ -279,7 +279,7 @@ fn context_keys(
                 "j/k select · Enter jump · v/Esc return"
             }
             SurfaceContext::Rollup => "no targets · v/Esc return",
-            SurfaceContext::Composer => "Enter post · Esc cancel",
+            SurfaceContext::Composer => "Ctrl-S post · Enter newline · Esc cancel",
             SurfaceContext::Help => "Esc/? close",
         };
     }
@@ -302,7 +302,7 @@ fn context_keys(
             "j/k select • Enter jump • v/Esc return"
         }
         SurfaceContext::Rollup => "no thread targets • v/Esc return",
-        SurfaceContext::Composer => "Enter post • Esc cancel",
+        SurfaceContext::Composer => "Ctrl-S post • Enter newline • Esc cancel",
         SurfaceContext::Help => "Esc/? close help",
     }
 }

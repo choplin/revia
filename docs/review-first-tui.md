@@ -124,7 +124,7 @@ review cursor rather than a second scrolling model.
 | `Tab` / Shift-Tab | Switch between the review stream and an available selected inline thread. |
 | `?` | Show the grouped keyboard reference. It marks commands valid in the invoking review, thread, or search-results context. |
 | `q` | Quit from review. In the composer it is text; help and rollup consume it. |
-| `Esc` | Cancel active search or close the topmost composer, help, or rollup; from review without transient state, quit. |
+| `Esc` | Cancel active search or close the topmost composer, help, or rollup; a non-empty composer requires a second `Esc` before discarding; from review without transient state, quit. |
 
 The only deliberate revia extensions are review actions because Hunk does not
 have persistent local review threads: `c` replies when a thread is targeted and
@@ -154,7 +154,7 @@ when an inline thread is actually available and selected.
 | Inline thread | `t` / `T` cycles the visible target, thread verbs act on it, and `Tab` returns to the stream. |
 | Search input | Character keys edit the incremental query, Backspace deletes, `Enter` keeps a non-empty search, and `Esc` restores the invocation location. |
 | Search results | `n` / `N` wraps through matches, `/` starts a new search from the current location, `?` opens context-marked help, and `Esc` cancels back to the invocation location. |
-| Composer | `Enter` posts and `Esc` cancels the draft before any quit behavior. |
+| Composer | `Ctrl-S` posts, `Enter` inserts a newline, and `Esc` cancels before any quit behavior. A non-empty draft requires a second `Esc` to confirm its loss. |
 | Keyboard help | `Esc` or `?` closes help before any quit behavior. |
 | Thread rollup | `j` / `k` selects, `Enter` jumps, and `v` or `Esc` returns before any quit behavior. |
 
@@ -169,6 +169,32 @@ so the active target and the mode's primary actions remain visible. Navigation
 keys may repeat; modal open/close, submit, and quit keys act on the initial key
 press only. Each external operation has an identity, so a duplicate or delayed
 result cannot clear or overwrite a newer pending operation.
+
+### Composer editing contract
+
+The composer is a bounded, growing multiline editor. Its border identifies a
+new thread or the exact reply thread, and it displays a terminal cursor at the
+current grapheme boundary. It grows to eight editor rows; longer content scrolls
+to keep the cursor visible. Narrowing or widening the terminal rewraps the
+display without changing the draft.
+
+| Keys | Behavior |
+| --- | --- |
+| Left / Right | Move by one Unicode grapheme. |
+| Up / Down | Move to the closest terminal-cell column on the previous or next explicit line. |
+| Home / End | Move to the start or end of the current line. |
+| `Alt-Left` / `Alt-Right`, `Ctrl-Left` / `Ctrl-Right` | Move to the previous or next Unicode word. |
+| Backspace / Delete | Delete the previous or next Unicode grapheme. |
+| `Alt-Backspace` / `Ctrl-Backspace` | Delete the previous word. |
+| Enter | Insert a newline. |
+| `Ctrl-S` | Post the complete draft. Empty drafts remain open with visible validation. |
+| Esc | Close an empty composer. For a non-empty draft, arm discard; press `Esc` again to confirm. Editing after the first press cancels the confirmation. |
+
+While a post is pending, the editor keeps the complete draft and reply target
+and does not accept changes that could be lost under the result. A persistence
+or anchor failure leaves the composer open with the same draft and target;
+`Ctrl-S` retries. Only a successful post clears and closes the composer. Drafts
+are intentionally session-local and do not survive restarting revia.
 
 ## V1 boundary
 
