@@ -72,8 +72,8 @@ impl ShellSize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ViewState {
     pub focus: FocusArea,
-    pub scroll: u16,
-    pub scroll_from_end: Option<u16>,
+    pub scroll: usize,
+    pub scroll_from_end: Option<usize>,
     pub layout: LayoutMode,
 }
 
@@ -92,16 +92,21 @@ impl ViewState {
     pub fn scroll_by(&mut self, delta: i16) {
         if let Some(offset) = &mut self.scroll_from_end {
             if delta < 0 {
-                *offset = offset.saturating_add(delta.unsigned_abs());
+                *offset = offset.saturating_add(usize::from(delta.unsigned_abs()));
             } else {
-                *offset = offset.saturating_sub(delta as u16);
+                *offset = offset.saturating_sub(delta as usize);
             }
             return;
         }
-        self.scroll = self.scroll.saturating_add_signed(delta);
+        self.scroll = if delta < 0 {
+            self.scroll
+                .saturating_sub(usize::from(delta.unsigned_abs()))
+        } else {
+            self.scroll.saturating_add(delta as usize)
+        };
     }
 
-    pub fn set_scroll(&mut self, row: u16) {
+    pub fn set_scroll(&mut self, row: usize) {
         self.scroll = row;
         self.scroll_from_end = None;
     }
@@ -110,7 +115,7 @@ impl ViewState {
         self.scroll_from_end = Some(0);
     }
 
-    pub fn reveal(&mut self, row: u16, viewport_height: u16) {
+    pub fn reveal(&mut self, row: usize, viewport_height: usize) {
         self.scroll_from_end = None;
         let bottom = self
             .scroll
@@ -121,6 +126,31 @@ impl ViewState {
             self.scroll = row.saturating_sub(viewport_height.saturating_sub(1));
         }
     }
+
+    pub fn resolved_scroll(self, total_rows: usize, viewport_height: usize) -> usize {
+        let max_scroll = total_rows.saturating_sub(viewport_height);
+        self.scroll_from_end.map_or_else(
+            || self.scroll.min(max_scroll),
+            |offset| max_scroll.saturating_sub(offset),
+        )
+    }
+
+    pub fn clamp(&mut self, total_rows: usize, viewport_height: usize) {
+        if self.scroll_from_end.is_none() {
+            self.scroll = self.resolved_scroll(total_rows, viewport_height);
+        }
+    }
+}
+
+pub(crate) fn review_body_width(columns: u16, sidebar_visible: bool) -> u16 {
+    let body_width = if sidebar_visible {
+        ShellSize::for_width(columns)
+            .rail_width(columns)
+            .map_or(columns, |rail| columns.saturating_sub(rail))
+    } else {
+        columns
+    };
+    body_width.saturating_sub(2)
 }
 
 pub(crate) fn truncate_start(value: &str, max_width: usize) -> String {
@@ -250,6 +280,28 @@ mod tests {
         view.set_scroll(3);
         assert_eq!(view.scroll_from_end, None);
         assert_eq!(view.scroll, 3);
+    }
+
+    #[test]
+    fn resolved_scroll_clamps_absolute_and_preserves_end_relative_offsets() {
+        let mut view = ViewState {
+            scroll: 99,
+            ..ViewState::default()
+        };
+        assert_eq!(view.resolved_scroll(40, 10), 30);
+        view.jump_to_end();
+        assert_eq!(view.resolved_scroll(40, 10), 30);
+        view.scroll_by(-3);
+        assert_eq!(view.resolved_scroll(40, 10), 27);
+    }
+
+    #[test]
+    fn logical_scroll_is_not_limited_by_the_terminal_coordinate_width() {
+        let mut view = ViewState::default();
+        view.jump_to_end();
+        assert_eq!(view.resolved_scroll(70_000, 10), 69_990);
+        view.scroll_by(-3);
+        assert_eq!(view.resolved_scroll(70_000, 10), 69_987);
     }
 
     #[test]

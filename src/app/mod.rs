@@ -223,7 +223,9 @@ fn apply_global(model: &mut Model, result: global::Update) -> Vec<Effect> {
         match intent {
             global::Intent::OpenHelp => model.active_mode = ActiveMode::Help,
             global::Intent::ResizeViewport { rows, columns } => {
-                model.review.set_viewport(rows, columns);
+                model
+                    .review
+                    .set_viewport(rows, columns, &model.global.threads);
             }
         }
     }

@@ -3,7 +3,10 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Text},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{
+        Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap,
+    },
 };
 use syntect::{
     easy::HighlightLines,
@@ -13,7 +16,10 @@ use syntect::{
 
 use crate::{
     presentation,
-    semantic::{Body, FileAttention, Overlay, ReviewBody, RollupBody, ThreadState, Tone, View},
+    semantic::{
+        Body, FileAttention, Overlay, ReviewBody, RollupBody, StickyReviewContext, ThreadState,
+        Tone, View,
+    },
     ui::{FocusArea, LayoutMode, ShellSize, truncate_end, truncate_start},
 };
 use unicode_width::UnicodeWidthStr;
@@ -24,6 +30,35 @@ const MINIMUM_HEIGHT: u16 = 8;
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SemanticTheme {
     colors_enabled: bool,
+}
+
+fn sticky_context_text(context: &StickyReviewContext, width: u16) -> String {
+    let file = format!(
+        "▣ {}/{} {}",
+        context.file_index + 1,
+        context.file_count,
+        context.file
+    );
+    let value = match (context.hunk_index, context.hunk_header.as_deref()) {
+        (Some(index), Some(header)) => format!(
+            "{file}  •  hunk {}/{} {header}",
+            index + 1,
+            context.hunk_count
+        ),
+        (Some(index), None) => format!("{file}  •  hunk {}/{}", index + 1, context.hunk_count),
+        (None, _) => file,
+    };
+    truncate_end(&value, usize::from(width))
+}
+
+fn logical_review_window(body: Text<'static>, top: usize, visible_rows: usize) -> Text<'static> {
+    Text::from(
+        body.lines
+            .into_iter()
+            .skip(top)
+            .take(visible_rows)
+            .collect::<Vec<_>>(),
+    )
 }
 
 impl SemanticTheme {
@@ -206,28 +241,25 @@ impl Renderer {
         }
 
         let body_inner_width = areas.review_body.width.saturating_sub(2);
-        let (body, requested_scroll, scroll_from_end) = match &view.body {
-            Body::Review(review) => (
-                self.review_text(review, body_inner_width, view),
-                review.scroll,
-                review.scroll_from_end,
-            ),
-            Body::Rollup(rollup) => (
-                rollup_text(rollup, body_inner_width, self.semantic_theme),
-                rollup.scroll,
-                None,
-            ),
+        let (body, scroll) = match &view.body {
+            Body::Review(review) => {
+                let body = self.review_text(review, review.viewport.presentation_width, view);
+                debug_assert_eq!(body.height(), review.viewport.total_rows);
+                (
+                    logical_review_window(body, review.scroll, review.viewport.visible_rows),
+                    0,
+                )
+            }
+            Body::Rollup(rollup) => {
+                let body = rollup_text(rollup, body_inner_width, self.semantic_theme);
+                let viewport_height = usize::from(areas.review_body.height.saturating_sub(2));
+                let max_scroll = body
+                    .height()
+                    .saturating_sub(viewport_height)
+                    .min(usize::from(u16::MAX)) as u16;
+                (body, rollup.scroll.min(max_scroll))
+            }
         };
-        let viewport_height = usize::from(areas.review_body.height.saturating_sub(2));
-        let max_scroll = body
-            .height()
-            .saturating_sub(viewport_height)
-            .min(usize::from(u16::MAX));
-        let max_scroll = max_scroll as u16;
-        let scroll = scroll_from_end.map_or_else(
-            || requested_scroll.min(max_scroll),
-            |offset| max_scroll.saturating_sub(offset),
-        );
         let body_is_focused = view.overlay.is_none();
         let body_title = match &view.body {
             Body::Review(_) => "Review stream",
@@ -239,15 +271,57 @@ impl Renderer {
             (Body::Review(_), FocusArea::Threads, true) => Some("THREAD TARGET"),
             (Body::Review(_), FocusArea::Review, true) => Some("STREAM FOCUS"),
         };
-        let paragraph = Paragraph::new(body)
-            .block(region_block(
+        frame.render_widget(
+            region_block(
                 body_title,
                 body_is_focused,
                 body_focus_label,
                 self.semantic_theme,
-            ))
-            .scroll((scroll, 0));
-        frame.render_widget(paragraph, areas.review_body);
+            ),
+            areas.review_body,
+        );
+        let inner = Rect::new(
+            areas.review_body.x.saturating_add(1),
+            areas.review_body.y.saturating_add(1),
+            areas.review_body.width.saturating_sub(2),
+            areas.review_body.height.saturating_sub(2),
+        );
+        let content = if let Body::Review(review) = &view.body {
+            if let Some(context) = &review.viewport.sticky_context {
+                let [sticky, content] =
+                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+                frame.render_widget(
+                    Paragraph::new(sticky_context_text(context, body_inner_width))
+                        .style(self.semantic_theme.style(Tone::FocusSelection)),
+                    sticky,
+                );
+                content
+            } else {
+                inner
+            }
+        } else {
+            inner
+        };
+        frame.render_widget(Paragraph::new(body).scroll((scroll, 0)), content);
+        if let Body::Review(review) = &view.body
+            && review.viewport.total_rows > review.viewport.visible_rows
+        {
+            let scroll_positions = review
+                .viewport
+                .total_rows
+                .saturating_sub(review.viewport.visible_rows)
+                .saturating_add(1);
+            let mut state = ScrollbarState::new(scroll_positions)
+                .position(review.scroll)
+                .viewport_content_length(review.viewport.visible_rows);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(None)
+                    .end_symbol(None),
+                areas.review_body,
+                &mut state,
+            );
+        }
 
         frame.render_widget(
             Paragraph::new(format!("◆ {}", view.footer.current_context.text))
@@ -547,7 +621,7 @@ mod tests {
         ui::LayoutMode,
     };
 
-    use super::{Renderer, SemanticTheme, ShellAreas};
+    use super::{Renderer, SemanticTheme, ShellAreas, logical_review_window};
     use crate::ui::truncate_start;
 
     const RESPONSIVE_DIFF: &str = "diff --git a/src/components/review/navigation.rs b/src/components/review/navigation.rs\n--- a/src/components/review/navigation.rs\n+++ b/src/components/review/navigation.rs\n@@ -1 +1 @@\n-old_navigation\n+new_navigation\ndiff --git a/src/画面/とても長いレビュー項目.rs b/src/画面/とても長いレビュー項目.rs\n--- a/src/画面/とても長いレビュー項目.rs\n+++ b/src/画面/とても長いレビュー項目.rs\n@@ -1 +1 @@\n-old_wide\n+new_wide\n";
@@ -568,7 +642,14 @@ mod tests {
         )
     }
 
-    fn render(renderer: &Renderer, model: &Model, width: u16, height: u16) -> Buffer {
+    fn render(renderer: &Renderer, model: &mut Model, width: u16, height: u16) -> Buffer {
+        crate::app::update(
+            model,
+            crate::app::global::Event::ViewportResized {
+                rows: height.saturating_sub(5),
+                columns: width,
+            },
+        );
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let semantic = crate::app::view(model);
         terminal
@@ -726,9 +807,9 @@ mod tests {
     #[test]
     fn wide_medium_narrow_and_minimum_shells_have_intentional_roles() {
         let renderer = Renderer::default();
-        let model = model_with_diff(RESPONSIVE_DIFF);
+        let mut model = model_with_diff(RESPONSIVE_DIFF);
 
-        let wide = rows(&render(&renderer, &model, 120, 24));
+        let wide = rows(&render(&renderer, &mut model, 120, 24));
         assert!(wide[0].contains("resolved"));
         assert!(wide.iter().any(|row| row.contains("Files")));
         assert!(
@@ -744,7 +825,7 @@ mod tests {
         assert_eq!(wide_areas.current_context, Rect::new(0, 22, 120, 1));
         assert_eq!(wide_areas.contextual_keys, Rect::new(0, 23, 120, 1));
 
-        let medium = rows(&render(&renderer, &model, 88, 20));
+        let medium = rows(&render(&renderer, &mut model, 88, 20));
         assert!(medium[0].contains("open"));
         assert!(!medium[0].contains("resolved"));
         assert!(medium.iter().any(|row| row.contains("Files")));
@@ -755,7 +836,7 @@ mod tests {
         assert_eq!(medium_areas.current_context.y, 18);
         assert_eq!(medium_areas.contextual_keys.y, 19);
 
-        let narrow = rows(&render(&renderer, &model, 64, 16));
+        let narrow = rows(&render(&renderer, &mut model, 64, 16));
         assert_eq!(narrow[0].trim_end(), "revia • 2 files • 0 need you");
         assert!(!narrow.iter().any(|row| row.contains(" Files ")));
         assert!(
@@ -763,17 +844,17 @@ mod tests {
                 .iter()
                 .any(|row| row.contains("review/navigation.rs"))
         );
-        assert!(narrow[14].contains("Context: Review stream"));
+        assert!(narrow[14].contains("Review"), "{}", narrow[14]);
         let narrow_areas = ShellAreas::resolve(Rect::new(0, 0, 64, 16), true);
         assert_eq!(narrow_areas.navigation_rail, None);
         assert_eq!(narrow_areas.review_body, Rect::new(0, 1, 64, 13));
         assert_eq!(narrow_areas.current_context.y, 14);
         assert_eq!(narrow_areas.contextual_keys.y, 15);
 
-        let minimum = rows(&render(&renderer, &model, 48, 8));
+        let minimum = rows(&render(&renderer, &mut model, 48, 8));
         assert!(minimum.iter().any(|row| row.contains("Review stream")));
         assert!(minimum.iter().any(|row| row.contains("navigation.rs")));
-        assert!(minimum[6].contains("Context:"));
+        assert!(minimum[6].contains("Review"), "{}", minimum[6]);
         assert!(minimum[7].starts_with("Keys:"));
         let minimum_areas = ShellAreas::resolve(Rect::new(0, 0, 48, 8), true);
         assert_eq!(minimum_areas.navigation_rail, None);
@@ -795,8 +876,8 @@ mod tests {
         assert_eq!(truncate_start("long/画\u{301}", 2), "…");
 
         let renderer = Renderer::default();
-        let model = model_with_diff(RESPONSIVE_DIFF);
-        let buffer = render(&renderer, &model, 120, 24);
+        let mut model = model_with_diff(RESPONSIVE_DIFF);
+        let buffer = render(&renderer, &mut model, 120, 24);
         for y in 2..21 {
             assert_eq!(buffer[(29, y)].symbol(), "│");
             assert_eq!(buffer[(30, y)].symbol(), "║");
@@ -809,8 +890,8 @@ mod tests {
             semantic_theme: SemanticTheme::no_color(),
             ..Renderer::default()
         };
-        let model = model_with_diff(RESPONSIVE_DIFF);
-        let buffer = render(&renderer, &model, 120, 24);
+        let mut model = model_with_diff(RESPONSIVE_DIFF);
+        let buffer = render(&renderer, &mut model, 120, 24);
         let rendered = rows(&buffer).join("\n");
 
         assert!(rendered.contains("›"));
@@ -834,7 +915,7 @@ mod tests {
         };
         let mut model = model_with_diff(RESPONSIVE_DIFF);
         crate::app::update(&mut model, review::Event::ToggleHunkHeaders);
-        let buffer = render(&renderer, &model, 64, 16);
+        let buffer = render(&renderer, &mut model, 64, 16);
         let rendered = rows(&buffer).join("\n");
 
         assert!(!rendered.contains("▶"));
@@ -857,12 +938,12 @@ mod tests {
         crate::app::update(&mut model, review::Event::ToggleHunkHeaders);
 
         crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Split));
-        let split = render(&renderer, &model, 120, 24);
+        let split = render(&renderer, &mut model, 120, 24);
         assert_selected_source_block(&split, &["┃  8  before", "┃  9 -old_", "┃ 10  after"]);
 
         crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Stack));
         crate::app::update(&mut model, review::Event::ToggleWrap);
-        let stack = render(&renderer, &model, 64, 24);
+        let stack = render(&renderer, &mut model, 64, 24);
         assert_selected_source_block(
             &stack,
             &[
@@ -911,7 +992,7 @@ mod tests {
         let mut model = model_with_diff(READABLE_DIFF);
         crate::app::update(&mut model, review::Event::ToggleSidebar);
 
-        let wide_buffer = render(&renderer, &model, 120, 32);
+        let wide_buffer = render(&renderer, &mut model, 120, 32);
         let wide = rows(&wide_buffer);
         let replacement = wide
             .iter()
@@ -936,7 +1017,7 @@ mod tests {
         assert!(wide.iter().any(|row| row.contains("▶ @@ -8,3 +18,3 @@")));
 
         crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Stack));
-        let narrow_buffer = render(&renderer, &model, 64, 32);
+        let narrow_buffer = render(&renderer, &mut model, 64, 32);
         let narrow = rows(&narrow_buffer);
         assert!(
             narrow
@@ -997,7 +1078,7 @@ mod tests {
         let mut model = model_with_diff(READABLE_DIFF);
         crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Stack));
         crate::app::update(&mut model, review::Event::ToggleWrap);
-        let buffer = render(&renderer, &model, 64, 40);
+        let buffer = render(&renderer, &mut model, 64, 40);
         let rendered = rows(&buffer);
         let continuation = rendered
             .iter()
@@ -1018,8 +1099,8 @@ mod tests {
     #[test]
     fn syntax_colors_use_the_terminal_palette_instead_of_fixed_rgb() {
         let renderer = Renderer::default();
-        let model = model_with_diff(RESPONSIVE_DIFF);
-        let buffer = render(&renderer, &model, 88, 20);
+        let mut model = model_with_diff(RESPONSIVE_DIFF);
+        let buffer = render(&renderer, &mut model, 88, 20);
 
         assert!(
             buffer
@@ -1040,9 +1121,9 @@ mod tests {
     fn status_changes_do_not_reflow_the_review_body() {
         let renderer = Renderer::default();
         let mut model = model_with_diff(RESPONSIVE_DIFF);
-        let before = rows(&render(&renderer, &model, 88, 20));
+        let before = rows(&render(&renderer, &mut model, 88, 20));
         model.global.status = Some("reloading diff…".into());
-        let after = rows(&render(&renderer, &model, 88, 20));
+        let after = rows(&render(&renderer, &mut model, 88, 20));
 
         assert_eq!(&before[1..18], &after[1..18]);
         assert_ne!(before[18], after[18]);
@@ -1060,14 +1141,14 @@ mod tests {
             &mut composer,
             review::Event::BeginThread { always_new: true },
         );
-        let rendered = rows(&render(&renderer, &composer, 120, 24)).join("\n");
+        let rendered = rows(&render(&renderer, &mut composer, 120, 24)).join("\n");
         assert!(rendered.contains("New thread — Enter post · Esc cancel"));
         assert!(!rendered.contains("STREAM FOCUS"));
         assert!(!rendered.contains("THREAD TARGET"));
 
         let mut help = model_with_diff(RESPONSIVE_DIFF);
         crate::app::update(&mut help, crate::app::global::Event::OpenHelp);
-        let rendered = rows(&render(&renderer, &help, 120, 24)).join("\n");
+        let rendered = rows(&render(&renderer, &mut help, 120, 24)).join("\n");
         assert!(rendered.contains("Keyboard help — Esc/? to close"));
         assert!(!rendered.contains("STREAM FOCUS"));
         assert!(!rendered.contains("THREAD TARGET"));
@@ -1084,7 +1165,7 @@ mod tests {
                 columns: 48,
             },
         );
-        let review_rows = rows(&render(&renderer, &review, 48, 20));
+        let review_rows = rows(&render(&renderer, &mut review, 48, 20));
         assert!(review_rows[18].contains("hunk 1/1"), "{}", review_rows[18]);
         assert!(
             review_rows[19].contains("j/k stream"),
@@ -1094,7 +1175,7 @@ mod tests {
         assert!(review_rows[19].contains(",/. file"), "{}", review_rows[19]);
         crate::app::update(&mut review, review::Event::ToggleSidebar);
         crate::app::update(&mut review, review::Event::ToggleSidebar);
-        let review_rows = rows(&render(&renderer, &review, 48, 20));
+        let review_rows = rows(&render(&renderer, &mut review, 48, 20));
         assert!(
             review_rows[18].contains("rail hidden"),
             "{}",
@@ -1110,7 +1191,7 @@ mod tests {
         crate::app::update(&mut review, review::Event::MoveFile(1));
         crate::app::update(&mut review, review::Event::ToggleSidebar);
         crate::app::update(&mut review, review::Event::ToggleSidebar);
-        let wide_target_rows = rows(&render(&renderer, &review, 64, 20));
+        let wide_target_rows = rows(&render(&renderer, &mut review, 64, 20));
         assert!(
             wide_target_rows[18].contains("rail hidden"),
             "{}",
@@ -1155,7 +1236,7 @@ mod tests {
             },
         );
         crate::app::update(&mut thread, review::Event::MoveThread(1));
-        let thread_rows = rows(&render(&renderer, &thread, 64, 20));
+        let thread_rows = rows(&render(&renderer, &mut thread, 64, 20));
         assert!(thread_rows[18].contains("thread #0"), "{}", thread_rows[18]);
         assert!(
             thread_rows[19].contains("Tab stream"),
@@ -1170,7 +1251,7 @@ mod tests {
         let renderer = Renderer::default();
         let mut model = model_with_diff(RESPONSIVE_DIFF);
         crate::app::update(&mut model, review::Event::ShowRollup);
-        let rendered = rows(&render(&renderer, &model, 120, 24)).join("\n");
+        let rendered = rows(&render(&renderer, &mut model, 120, 24)).join("\n");
 
         assert!(rendered.contains("Thread rollup ◆ ROLLUP FOCUS"));
         assert!(rendered.contains("No thread targets • v/Esc return"));
@@ -1191,12 +1272,58 @@ mod tests {
         );
         crate::app::update(&mut model, review::Event::JumpToStreamEdge { end: true });
 
-        let at_end = rows(&render(&renderer, &model, 80, 14)).join("\n");
+        let at_end = rows(&render(&renderer, &mut model, 80, 14)).join("\n");
         assert!(at_end.contains("new_wide"), "{at_end}");
 
         crate::app::update(&mut model, review::Event::ScrollRows(-1));
-        let before_end = rows(&render(&renderer, &model, 80, 14)).join("\n");
+        let before_end = rows(&render(&renderer, &mut model, 80, 14)).join("\n");
         assert_ne!(at_end, before_end);
         assert!(before_end.contains("1 row before end"), "{before_end}");
+    }
+
+    #[test]
+    fn sticky_context_and_scrollbar_track_the_same_review_viewport() {
+        let renderer = Renderer::default();
+        let mut model = model_with_diff(READABLE_DIFF);
+        crate::app::update(&mut model, review::Event::ToggleSidebar);
+
+        let top = render(&renderer, &mut model, 80, 14);
+        let top_rows = rows(&top);
+        assert!(top_rows[2].contains("▣ 1/1 src/readable.rs"));
+        let top_thumb = (2..12)
+            .find(|y| top[(79, *y)].symbol() == "█")
+            .expect("long review renders a scrollbar thumb");
+
+        crate::app::update(&mut model, review::Event::ScrollViewport(1));
+        let middle = render(&renderer, &mut model, 80, 14);
+        let middle_thumb = (2..12)
+            .find(|y| middle[(79, *y)].symbol() == "█")
+            .expect("middle review renders a scrollbar thumb");
+        assert!(middle_thumb >= top_thumb);
+
+        crate::app::update(&mut model, review::Event::JumpToStreamEdge { end: true });
+        let end = render(&renderer, &mut model, 80, 14);
+        let end_thumb = (2..12)
+            .rev()
+            .find(|y| end[(79, *y)].symbol() == "█")
+            .expect("review end renders a scrollbar thumb");
+        assert!(end_thumb > top_thumb);
+        assert_eq!(end[(79, 11)].symbol(), "█");
+        assert!(rows(&end)[2].contains("▣ 1/1 src/readable.rs"));
+    }
+
+    #[test]
+    fn logical_review_window_slices_beyond_u16_terminal_coordinates() {
+        let body = ratatui::text::Text::from(
+            (0..70_000)
+                .map(|row| ratatui::text::Line::raw(row.to_string()))
+                .collect::<Vec<_>>(),
+        );
+
+        let visible = logical_review_window(body, 69_990, 10);
+
+        assert_eq!(visible.height(), 10);
+        assert_eq!(visible.lines[0].to_string(), "69990");
+        assert_eq!(visible.lines[9].to_string(), "69999");
     }
 }

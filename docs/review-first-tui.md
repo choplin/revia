@@ -52,7 +52,9 @@ markers, labels, border shapes, boldness, dimming, and reverse emphasis remain.
   mode.
 - The main pane is a single stream in Git diff order. File headers, hunk
   headers, changed lines, and the threads anchored to each hunk are rendered
-  in that order.
+  in that order. A sticky row keeps the file and hunk containing the viewport
+  visible, while a scrollbar represents the complete stream and the current
+  visible range.
 - The review cursor is the only navigation cursor. The rail follows its current
   file and never claims a separate focus or scrolling target. `j`/`k` and
   arrows always scroll the review stream as they do in Hunk. `[`/`]` traverse
@@ -73,6 +75,11 @@ markers, labels, border shapes, boldness, dimming, and reverse emphasis remain.
   `C` starts a separate thread, `x` resolves, `R` reopens, and `a` toggles
   needs-attention. The existing immutable revision/path/hunk anchor remains
   the canonical location.
+- The viewport is presentation state, separate from the review cursor. Resizes,
+  split/stack changes, wrapping, header visibility, and rail visibility restore
+  the same anchored file/hunk-relative position and clamp only at stream edges.
+  Reloads preserve the exact file/hunk identity when possible and choose the
+  closest hunk in the same file when changed context shifts its coordinates.
 
 ## Hunk-compatible keyboard contract
 

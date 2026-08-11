@@ -8,7 +8,8 @@ use crate::{
     diff::{DiffDocument, DiffRequest, DiffTarget, LoadedDiff},
     input::{BindingResolution, Key, KeyPhase, PhysicalInput},
     mode::{composer, help, review, rollup},
-    semantic::{Body, Overlay},
+    presentation::{self, ReviewRowMap},
+    semantic::{Body, LayoutPolicy, Overlay, ReviewBody},
     thread::{Participant, ParticipantKind, Resolution, ThreadChange, ThreadState, ThreadSuccess},
     ui::{FocusArea, LayoutMode},
 };
@@ -99,6 +100,15 @@ fn repeated(key: Key) -> PhysicalInput {
     }
 }
 
+fn review_geometry(model: &Model) -> (ReviewBody, LayoutPolicy, ReviewRowMap) {
+    let view = super::view(model);
+    let Body::Review(body) = view.body else {
+        panic!("scenario is not displaying the review body");
+    };
+    let rows = presentation::review_row_map(&body, body.viewport.presentation_width, view.layout);
+    (body, view.layout, rows)
+}
+
 fn threads() -> ThreadState {
     let mut threads = ThreadState::default();
     let human = Participant {
@@ -122,6 +132,21 @@ fn threads() -> ThreadState {
 
 const RAW: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
 const TWO_FILES: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-old_b\n+new_b\n";
+const LONG_DIFF: &str = concat!(
+    "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n",
+    "@@ -1,5 +1,5 @@ first\n one\n two\n-old three\n+new three\n four\n five\n",
+    "@@ -20,4 +20,4 @@ second\n twenty\n-old twenty one\n+new twenty one\n twenty two\n twenty three\n",
+    "diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n",
+    "@@ -40,6 +40,6 @@ middle\n forty\n forty one\n-old forty two\n+new forty two with a line that wraps across a narrow review viewport for geometry\n forty three\n forty four\n forty five\n",
+    "diff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n",
+    "@@ -80,5 +80,5 @@ last\n eighty\n eighty one\n-old eighty two\n+new eighty two\n eighty three\n eighty four\n",
+);
+const RELOADED_LONG_DIFF: &str = concat!(
+    "diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n",
+    "@@ -42,4 +42,4 @@ middle\n forty one\n-old forty two\n+new forty two\n forty three\n forty four\n",
+    "diff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n",
+    "@@ -80,3 +80,3 @@ last\n eighty\n-old eighty one\n+new eighty one\n eighty two\n",
+);
 
 #[test]
 fn all_mode_state_is_persistent_and_transitions_reset_explicitly() {
@@ -257,7 +282,429 @@ fn viewport_is_scenario_input_and_controls_page_scrolling() {
     });
     scenario.when_event(review::Event::ScrollViewport(1));
 
-    assert_eq!(scenario.model.review.scroll(), 7);
+    assert_eq!(scenario.model.review.scroll(), 2);
+}
+
+#[test]
+fn long_review_reports_sticky_context_and_complete_position_at_top_middle_and_end() {
+    let mut scenario = Scenario::given(LONG_DIFF, ThreadState::default());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 7,
+        columns: 80,
+    });
+    let selection = scenario.model.review.selected_location();
+
+    let (top, _, _) = review_geometry(&scenario.model);
+    assert_eq!(top.scroll, 0);
+    assert_eq!(
+        top.viewport
+            .sticky_context
+            .as_ref()
+            .map(|context| context.file.as_str()),
+        Some("a.rs")
+    );
+    assert!(top.viewport.total_rows > top.viewport.visible_rows);
+
+    scenario.when_event(review::Event::ScrollViewport(2));
+    let (middle, _, _) = review_geometry(&scenario.model);
+    let maximum = middle
+        .viewport
+        .total_rows
+        .saturating_sub(middle.viewport.visible_rows);
+    assert!(middle.scroll > 0);
+    assert!(middle.scroll < maximum);
+    assert!(middle.viewport.sticky_context.is_some());
+
+    scenario.when_event(review::Event::JumpToStreamEdge { end: true });
+    let (end, _, _) = review_geometry(&scenario.model);
+    assert_eq!(
+        end.scroll,
+        end.viewport
+            .total_rows
+            .saturating_sub(end.viewport.visible_rows)
+    );
+    assert_eq!(
+        end.viewport
+            .sticky_context
+            .as_ref()
+            .map(|context| context.file.as_str()),
+        Some("c.rs")
+    );
+    assert_eq!(scenario.model.review.selected_location(), selection);
+}
+
+#[test]
+fn logical_stream_position_reaches_beyond_terminal_coordinate_limits() {
+    let mut raw = String::from(
+        "diff --git a/huge.rs b/huge.rs\n--- a/huge.rs\n+++ b/huge.rs\n@@ -1,70000 +1,70000 @@\n",
+    );
+    for _ in 0..70_000 {
+        raw.push_str(" unchanged\n");
+    }
+    raw.push_str("@@ -80000 +80000 @@ target\n-old target\n+new target\n");
+    let mut scenario = Scenario::given(&raw, ThreadState::default());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 10,
+        columns: 80,
+    });
+    scenario.when_event(review::Event::MoveHunk(1));
+
+    let (targeted, _, target_rows) = review_geometry(&scenario.model);
+    let target = target_rows
+        .selected_target_row()
+        .expect("large direct jump resolves a logical target row");
+    assert!(targeted.scroll > usize::from(u16::MAX));
+    assert!(target >= targeted.scroll);
+    assert!(target < targeted.scroll + targeted.viewport.visible_rows);
+
+    scenario.when_event(review::Event::JumpToStreamEdge { end: false });
+    scenario.when_event(review::Event::JumpToStreamEdge { end: true });
+
+    let (body, _, _) = review_geometry(&scenario.model);
+    assert!(body.scroll > usize::from(u16::MAX));
+    assert_eq!(
+        body.scroll,
+        body.viewport
+            .total_rows
+            .saturating_sub(body.viewport.visible_rows)
+    );
+    scenario.when_event(review::Event::ScrollRows(-3));
+    let (before_end, _, _) = review_geometry(&scenario.model);
+    assert_eq!(before_end.scroll, body.scroll.saturating_sub(3));
+}
+
+#[test]
+fn file_and_hunk_jumps_reveal_the_semantic_target_without_recentering_visible_rows() {
+    let mut scenario = Scenario::given(LONG_DIFF, ThreadState::default());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 6,
+        columns: 80,
+    });
+    scenario.when_event(review::Event::MoveFile(1));
+
+    let (body, _, rows) = review_geometry(&scenario.model);
+    let selected = rows
+        .selected_target_row()
+        .expect("file jump keeps a selected hunk");
+    assert!(selected >= body.scroll);
+    assert!(selected < body.scroll + body.viewport.visible_rows);
+    assert_eq!(
+        scenario.model.review.selected_location(),
+        Some(HunkLocation::new("b.rs", "@@ -40,6 +40,6 @@ middle"))
+    );
+
+    let already_visible_scroll = body.scroll;
+    scenario.when_event(review::Event::MoveHunk(-1));
+    let (previous, _, previous_rows) = review_geometry(&scenario.model);
+    let previous_target = previous_rows
+        .selected_target_row()
+        .expect("hunk jump keeps a selected hunk");
+    assert!(previous_target >= previous.scroll);
+    assert!(previous_target < previous.scroll + previous.viewport.visible_rows);
+
+    scenario.when_event(review::Event::MoveHunk(1));
+    let (returned, _, _) = review_geometry(&scenario.model);
+    assert_eq!(returned.scroll, already_visible_scroll);
+}
+
+#[test]
+fn hunkless_file_jump_reveals_its_header_and_hunk_navigation_continues() {
+    let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/image.bin b/image.bin\nBinary files a/image.bin and b/image.bin differ\ndiff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -3 +3 @@\n-c\n+d\n";
+    let mut scenario = Scenario::given(raw, ThreadState::default());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 4,
+        columns: 64,
+    });
+    scenario.when_event(review::Event::MoveFile(1));
+
+    let (body, _, rows) = review_geometry(&scenario.model);
+    let file_header = rows
+        .selected_target_row()
+        .expect("hunkless selected file has a physical header target");
+    assert!(file_header >= body.scroll);
+    assert!(file_header < body.scroll + body.viewport.visible_rows);
+    assert_eq!(
+        super::view(&scenario.model)
+            .file_rail
+            .as_ref()
+            .and_then(|rail| rail.selected),
+        Some(1)
+    );
+
+    scenario.when_event(review::Event::MoveHunk(1));
+    assert_eq!(
+        scenario.model.review.selected_location(),
+        Some(HunkLocation::new("c.rs", "@@ -3 +3 @@"))
+    );
+}
+
+#[test]
+fn rollup_jump_reveals_its_thread_target_on_the_first_review_frame() {
+    let mut state = ThreadState::default();
+    let id = state.post(
+        Anchor::new(
+            "deadbeef",
+            HunkLocation::new("c.rs", "@@ -80,5 +80,5 @@ last"),
+        ),
+        Participant {
+            id: "human".into(),
+            kind: ParticipantKind::Human,
+        },
+        "last file".into(),
+        1,
+    );
+    let mut scenario = Scenario::given(LONG_DIFF, state);
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 6,
+        columns: 80,
+    });
+    scenario.when_event(review::Event::ShowRollup);
+    scenario.when_event(rollup::Event::OpenSelected);
+    scenario.inject(
+        ActiveMode::Rollup,
+        Outcome::ThreadResolved {
+            id,
+            result: Ok(HunkLocation::new("c.rs", "@@ -80,5 +80,5 @@ last")),
+        },
+    );
+
+    assert_eq!(scenario.model.active_mode, ActiveMode::Review);
+    let (body, _, rows) = review_geometry(&scenario.model);
+    let selected = rows
+        .selected_target_row()
+        .expect("rollup jump selects a review hunk");
+    assert!(selected >= body.scroll);
+    assert!(selected < body.scroll + body.viewport.visible_rows);
+    assert_eq!(scenario.model.review.focus(), FocusArea::Threads);
+}
+
+#[test]
+fn inline_thread_jumps_reveal_each_selected_card() {
+    let mut state = ThreadState::default();
+    let human = Participant {
+        id: "human".into(),
+        kind: ParticipantKind::Human,
+    };
+    let location = HunkLocation::new("b.rs", "@@ -40,6 +40,6 @@ middle");
+    state.post(
+        Anchor::new("deadbeef", location.clone()),
+        human.clone(),
+        "first".into(),
+        1,
+    );
+    state.post(Anchor::new("deadbeef", location), human, "second".into(), 2);
+    let mut scenario = Scenario::given(LONG_DIFF, state);
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 5,
+        columns: 64,
+    });
+    scenario.when_event(review::Event::MoveFile(1));
+
+    for expected in [0, 1] {
+        scenario.when_event(review::Event::MoveThread(1));
+        let (body, _, rows) = review_geometry(&scenario.model);
+        let target = rows
+            .selected_target_row()
+            .expect("thread jump produces a physical target row");
+        assert!(target >= body.scroll);
+        assert!(target < body.scroll + body.viewport.visible_rows);
+        assert_eq!(
+            scenario.model.review.session().cursor().selected_thread(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn resize_and_presentation_toggles_preserve_selection_and_viewport_anchor() {
+    let mut scenario = Scenario::given(LONG_DIFF, ThreadState::default());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 8,
+        columns: 120,
+    });
+    scenario.when_event(review::Event::MoveFile(1));
+    scenario.when_event(review::Event::ScrollRows(2));
+    let selection = scenario.model.review.selected_location();
+
+    for columns in [88, 64, 120] {
+        scenario.when_event(global::Event::ViewportResized { rows: 8, columns });
+        let (body, _, rows) = review_geometry(&scenario.model);
+        let selected = rows
+            .selected_target_row()
+            .expect("resize preserves semantic selection");
+        assert!(selected >= body.scroll);
+        assert!(selected < body.scroll + body.viewport.visible_rows);
+        assert_eq!(scenario.model.review.selected_location(), selection);
+    }
+
+    for event in [
+        review::Event::SetLayout(LayoutMode::Stack),
+        review::Event::ToggleWrap,
+        review::Event::ToggleHunkHeaders,
+        review::Event::ToggleSidebar,
+        review::Event::SetLayout(LayoutMode::Split),
+    ] {
+        scenario.when_event(event);
+        let (body, _, _) = review_geometry(&scenario.model);
+        assert_eq!(scenario.model.review.selected_location(), selection);
+        assert_eq!(
+            body.viewport
+                .sticky_context
+                .as_ref()
+                .map(|context| context.file.as_str()),
+            Some("b.rs")
+        );
+    }
+}
+
+#[test]
+fn height_shrink_and_wrapping_keep_a_previously_visible_target_visible() {
+    let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n+new\n@@ -20 +20 @@\n-old target\n+new target\n";
+    let mut scenario = Scenario::given(raw, ThreadState::default());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 11,
+        columns: 80,
+    });
+    scenario.when_event(review::Event::SetLayout(LayoutMode::Stack));
+    scenario.when_event(review::Event::MoveHunk(1));
+
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 6,
+        columns: 80,
+    });
+    for event in [review::Event::ToggleWrap, review::Event::ToggleSidebar] {
+        scenario.when_event(event);
+        let (body, _, rows) = review_geometry(&scenario.model);
+        let target = rows
+            .selected_target_row()
+            .expect("geometry transition retains a selected target");
+        assert!(target >= body.scroll);
+        assert!(target < body.scroll + body.viewport.visible_rows);
+    }
+}
+
+#[test]
+fn end_relative_height_shrink_keeps_a_previously_visible_target_visible() {
+    let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,4 +1,4 @@\n-old one\n+new one\n context two\n context three\n context four\n";
+    let mut scenario = Scenario::given(raw, ThreadState::default());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 12,
+        columns: 80,
+    });
+    scenario.when_event(review::Event::JumpToStreamEdge { end: true });
+    let (before, _, rows) = review_geometry(&scenario.model);
+    let target = rows
+        .selected_target_row()
+        .expect("review has a selected hunk target");
+    assert!(target >= before.scroll);
+    assert!(target < before.scroll + before.viewport.visible_rows);
+
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 5,
+        columns: 80,
+    });
+    let (after, _, rows) = review_geometry(&scenario.model);
+    let target = rows
+        .selected_target_row()
+        .expect("review retains its selected hunk target");
+    assert!(target >= after.scroll);
+    assert!(target < after.scroll + after.viewport.visible_rows);
+
+    scenario.when_event(review::Event::ToggleWrap);
+    let (wrapped, _, rows) = review_geometry(&scenario.model);
+    let target = rows
+        .selected_target_row()
+        .expect("review retains its target after wrapping");
+    assert!(target >= wrapped.scroll);
+    assert!(target < wrapped.scroll + wrapped.viewport.visible_rows);
+}
+
+#[test]
+fn end_relative_and_transient_mode_transitions_preserve_review_position() {
+    let mut scenario = Scenario::given(LONG_DIFF, ThreadState::default());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 7,
+        columns: 80,
+    });
+    scenario.when_event(review::Event::JumpToStreamEdge { end: true });
+
+    for event in [
+        review::Event::SetLayout(LayoutMode::Stack),
+        review::Event::ToggleWrap,
+        review::Event::ToggleSidebar,
+    ] {
+        scenario.when_event(event);
+        let (body, _, _) = review_geometry(&scenario.model);
+        assert_eq!(
+            body.scroll,
+            body.viewport
+                .total_rows
+                .saturating_sub(body.viewport.visible_rows)
+        );
+    }
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 10,
+        columns: 120,
+    });
+    let (at_end, _, _) = review_geometry(&scenario.model);
+    assert_eq!(
+        at_end.scroll,
+        at_end
+            .viewport
+            .total_rows
+            .saturating_sub(at_end.viewport.visible_rows)
+    );
+
+    scenario.when_event(review::Event::ScrollRows(-2));
+    let (before_modes, _, _) = review_geometry(&scenario.model);
+    scenario.when_event(review::Event::BeginThread { always_new: true });
+    scenario.when_event(composer::Event::Cancel);
+    scenario.when_event(global::Event::OpenHelp);
+    scenario.when_event(help::Event::Close);
+    scenario.when_event(review::Event::ShowRollup);
+    scenario.when_event(rollup::Event::Close);
+    let (after_modes, _, _) = review_geometry(&scenario.model);
+    assert_eq!(after_modes.scroll, before_modes.scroll);
+}
+
+#[test]
+fn reload_and_context_adjustment_keep_the_closest_location_and_clamp_geometry() {
+    let mut scenario = Scenario::given(LONG_DIFF, ThreadState::default());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 6,
+        columns: 64,
+    });
+    scenario.when_event(review::Event::MoveFile(1));
+    scenario.when_event(review::Event::ScrollRows(3));
+    scenario.when_event(review::Event::AdjustContext(1));
+    scenario.inject(
+        ActiveMode::Review,
+        Outcome::DiffReloaded {
+            purpose: review::ReloadPurpose::ContextChanged,
+            result: Ok(LoadedDiff {
+                text: RELOADED_LONG_DIFF.into(),
+                document: DiffDocument::parse(RELOADED_LONG_DIFF),
+            }),
+        },
+    );
+
+    assert_eq!(
+        scenario.model.review.selected_location(),
+        Some(HunkLocation::new("b.rs", "@@ -42,4 +42,4 @@ middle"))
+    );
+    let (body, _, rows) = review_geometry(&scenario.model);
+    let selected = rows
+        .selected_target_row()
+        .expect("reloaded snapshot retains a selected hunk");
+    assert!(selected >= body.scroll);
+    assert!(selected < body.scroll + body.viewport.visible_rows);
+    assert!(
+        body.scroll
+            <= body
+                .viewport
+                .total_rows
+                .saturating_sub(body.viewport.visible_rows)
+    );
 }
 
 #[test]
@@ -300,7 +747,7 @@ fn scenario_trace_uses_virtual_time_without_wall_clock_dependency() {
     scenario.advance_virtual_time(250);
     scenario.when_event(review::Event::ScrollRows(1));
     assert_eq!(scenario.virtual_time_ms, 250);
-    assert_eq!(scenario.model.review.scroll(), 1);
+    assert_eq!(scenario.model.review.scroll(), 0);
     assert_eq!(scenario.trace.len(), 1);
 }
 

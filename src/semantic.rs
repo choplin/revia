@@ -1,4 +1,5 @@
 use crate::{
+    anchor::HunkLocation,
     diff::{DiffLine, HunkCoordinates},
     thread::ThreadId,
     ui::{FocusArea, LayoutMode},
@@ -52,15 +53,34 @@ pub enum Body {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewBody {
-    pub scroll: u16,
-    pub scroll_from_end: Option<u16>,
+    pub scroll: usize,
+    pub viewport: ReviewViewport,
     pub empty_state: Option<String>,
     pub files: Vec<ReviewFile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewViewport {
+    pub presentation_width: u16,
+    pub total_rows: usize,
+    pub visible_rows: usize,
+    pub sticky_context: Option<StickyReviewContext>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StickyReviewContext {
+    pub file: String,
+    pub file_index: usize,
+    pub file_count: usize,
+    pub hunk_header: Option<String>,
+    pub hunk_index: Option<usize>,
+    pub hunk_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewFile {
     pub path: String,
+    pub selected: bool,
     pub extension: Option<String>,
     pub metadata: Vec<String>,
     pub hunks: Vec<ReviewHunk>,
@@ -68,6 +88,7 @@ pub struct ReviewFile {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewHunk {
+    pub anchor: HunkLocation,
     pub header: Option<String>,
     pub coordinates: Option<HunkCoordinates>,
     pub selected: bool,

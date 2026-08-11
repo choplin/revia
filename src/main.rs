@@ -77,7 +77,7 @@ fn run_app(
     let effects = app::update(
         model,
         app::global::Event::ViewportResized {
-            rows: size.height.saturating_sub(4),
+            rows: size.height.saturating_sub(5),
             columns: size.width,
         },
     );
@@ -118,7 +118,7 @@ fn run_app(
                 let effects = app::update(
                     model,
                     app::global::Event::ViewportResized {
-                        rows: height.saturating_sub(4),
+                        rows: height.saturating_sub(5),
                         columns: width,
                     },
                 );

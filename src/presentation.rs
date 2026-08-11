@@ -13,14 +13,265 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
+    anchor::HunkLocation,
     diff::{DiffLine, DiffLineKind, HunkCoordinates},
     renderer::SemanticTheme,
-    semantic::Tone,
-    ui::fit_width,
+    semantic::{LayoutPolicy, ReviewBody, StickyReviewContext, Tone},
+    ui::{LayoutMode, fit_width},
 };
 
 const TAB_WIDTH: usize = 4;
 const SPLIT_SEPARATOR: &str = " │ ";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReviewRowMap {
+    total_rows: usize,
+    files: Vec<FileRows>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileRows {
+    path: String,
+    selected: bool,
+    index: usize,
+    start: usize,
+    end: usize,
+    hunks: Vec<HunkRows>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HunkRows {
+    anchor: HunkLocation,
+    header: Option<String>,
+    index: usize,
+    start: usize,
+    end: usize,
+    selected: bool,
+    active_thread_row: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ViewportAnchor {
+    section: ViewportSection,
+    offset: usize,
+    extent: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ViewportSection {
+    Start,
+    File(String),
+    Hunk {
+        location: HunkLocation,
+        index: usize,
+    },
+}
+
+impl ReviewRowMap {
+    pub(crate) fn total_rows(&self) -> usize {
+        self.total_rows
+    }
+
+    pub(crate) fn anchor_at(&self, row: usize) -> ViewportAnchor {
+        for file in &self.files {
+            if row < file.start || row >= file.end {
+                continue;
+            }
+            if let Some(hunk) = file
+                .hunks
+                .iter()
+                .find(|hunk| row >= hunk.start && row < hunk.end)
+            {
+                return ViewportAnchor {
+                    section: ViewportSection::Hunk {
+                        location: hunk.anchor.clone(),
+                        index: hunk.index,
+                    },
+                    offset: row.saturating_sub(hunk.start),
+                    extent: hunk.end.saturating_sub(hunk.start).max(1),
+                };
+            }
+            return ViewportAnchor {
+                section: ViewportSection::File(file.path.clone()),
+                offset: row.saturating_sub(file.start),
+                extent: file.end.saturating_sub(file.start).max(1),
+            };
+        }
+        ViewportAnchor {
+            section: ViewportSection::Start,
+            offset: 0,
+            extent: 1,
+        }
+    }
+
+    pub(crate) fn row_for_anchor(&self, anchor: &ViewportAnchor) -> usize {
+        let (start, extent) = match &anchor.section {
+            ViewportSection::Start => return 0,
+            ViewportSection::File(path) => self
+                .files
+                .iter()
+                .find(|file| &file.path == path)
+                .map(|file| (file.start, file.end.saturating_sub(file.start))),
+            ViewportSection::Hunk { location, .. } => self
+                .files
+                .iter()
+                .flat_map(|file| &file.hunks)
+                .find(|hunk| &hunk.anchor == location)
+                .map(|hunk| (hunk.start, hunk.end.saturating_sub(hunk.start))),
+        }
+        .or_else(|| self.closest_section(anchor))
+        .unwrap_or((0, self.total_rows));
+        let relative = anchor.offset.saturating_mul(extent.max(1)) / anchor.extent.max(1);
+        start.saturating_add(relative.min(extent.saturating_sub(1)))
+    }
+
+    fn closest_section(&self, anchor: &ViewportAnchor) -> Option<(usize, usize)> {
+        let ViewportSection::Hunk { location, index } = &anchor.section else {
+            return None;
+        };
+        let file = self
+            .files
+            .iter()
+            .find(|file| file.path == location.path())?;
+        let hunk = file
+            .hunks
+            .get((*index).min(file.hunks.len().saturating_sub(1)))?;
+        Some((hunk.start, hunk.end.saturating_sub(hunk.start)))
+    }
+
+    pub(crate) fn selected_target_row(&self) -> Option<usize> {
+        self.files
+            .iter()
+            .flat_map(|file| &file.hunks)
+            .find(|hunk| hunk.selected)
+            .map(|hunk| hunk.active_thread_row.unwrap_or(hunk.start))
+            .or_else(|| {
+                self.files
+                    .iter()
+                    .find(|file| file.selected)
+                    .map(|file| file.start.saturating_add(1))
+            })
+    }
+
+    pub(crate) fn sticky_context(&self, row: usize) -> Option<StickyReviewContext> {
+        let file = self
+            .files
+            .iter()
+            .find(|file| row >= file.start && row < file.end)
+            .or_else(|| self.files.last())?;
+        let hunk = file
+            .hunks
+            .iter()
+            .find(|hunk| row >= hunk.start && row < hunk.end)
+            .or_else(|| file.hunks.iter().rev().find(|hunk| hunk.start <= row))
+            .or_else(|| file.hunks.first());
+        Some(StickyReviewContext {
+            file: file.path.clone(),
+            file_index: file.index,
+            file_count: self.files.len(),
+            hunk_header: hunk.and_then(|hunk| hunk.header.clone()),
+            hunk_index: hunk.map(|hunk| hunk.index),
+            hunk_count: file.hunks.len(),
+        })
+    }
+}
+
+pub(crate) fn review_row_map(
+    review: &ReviewBody,
+    available_width: u16,
+    layout: LayoutPolicy,
+) -> ReviewRowMap {
+    let mut cursor = review
+        .empty_state
+        .as_deref()
+        .map_or(0, |message| message.lines().count());
+    let mut files = Vec::with_capacity(review.files.len());
+    for (file_index, file) in review.files.iter().enumerate() {
+        let file_start = cursor;
+        cursor = cursor.saturating_add(2 + file.metadata.len());
+        let number_width = line_number_width(
+            file.hunks
+                .iter()
+                .map(|hunk| (hunk.lines.as_slice(), hunk.coordinates)),
+        );
+        let mut hunks = Vec::with_capacity(file.hunks.len());
+        for (hunk_index, hunk) in file.hunks.iter().enumerate() {
+            let start = cursor;
+            cursor = cursor.saturating_add(usize::from(hunk.header.is_some()));
+            let diff_rows = match layout.diff_layout.resolved(available_width) {
+                LayoutMode::Split => {
+                    split_rows(&numbered_lines(&hunk.lines, hunk.coordinates)).len()
+                }
+                LayoutMode::Stack | LayoutMode::Auto => stack_hunk_row_count(
+                    &hunk.lines,
+                    available_width,
+                    number_width,
+                    layout.wrap_lines,
+                ),
+            };
+            cursor = cursor.saturating_add(diff_rows);
+            let active_thread_row = hunk
+                .threads
+                .iter()
+                .position(|thread| thread.active)
+                .map(|index| cursor.saturating_add(index.saturating_mul(3)));
+            cursor = cursor.saturating_add(hunk.threads.len().saturating_mul(3));
+            hunks.push(HunkRows {
+                anchor: hunk.anchor.clone(),
+                header: hunk.header.clone(),
+                index: hunk_index,
+                start,
+                end: cursor.max(start + 1),
+                selected: hunk.selected,
+                active_thread_row,
+            });
+        }
+        files.push(FileRows {
+            path: file.path.clone(),
+            selected: file.selected,
+            index: file_index,
+            start: file_start,
+            end: cursor.max(file_start + 1),
+            hunks,
+        });
+    }
+    ReviewRowMap {
+        total_rows: cursor,
+        files,
+    }
+}
+
+fn stack_hunk_row_count(
+    lines: &[DiffLine],
+    available_width: u16,
+    number_width: usize,
+    wrap: bool,
+) -> usize {
+    let content_width = usize::from(available_width)
+        .saturating_sub(number_width.saturating_mul(2).saturating_add(7));
+    numbered_lines(lines, None)
+        .iter()
+        .map(|line| {
+            if line.line.kind == DiffLineKind::Meta || !wrap || content_width == 0 {
+                1
+            } else {
+                wrapped_row_count(&expand_tabs(&line.line.text), content_width)
+            }
+        })
+        .sum()
+}
+
+fn wrapped_row_count(value: &str, width: usize) -> usize {
+    chunk_graphemes(
+        value
+            .graphemes(true)
+            .map(|grapheme| (grapheme.to_owned(), None))
+            .collect(),
+        width,
+        true,
+    )
+    .len()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NumberedLine {
