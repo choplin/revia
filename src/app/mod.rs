@@ -30,7 +30,7 @@ impl Model {
             global: global::Model::new(threads),
             review: review::Model::new(request, diff),
             composer: composer::Model::default(),
-            help: help::Model,
+            help: help::Model::default(),
             rollup: rollup::Model::default(),
             active_mode: ActiveMode::Review,
         }
@@ -119,7 +119,9 @@ pub fn handle_input(
     input: PhysicalInput,
 ) -> (BindingResolution<()>, Vec<Effect>) {
     match model.active_mode {
-        ActiveMode::Review => handle_mode_binding(model, input, review::bindings(input)),
+        ActiveMode::Review => {
+            handle_mode_binding(model, input, review::bindings(&model.review, input))
+        }
         ActiveMode::Composer => handle_mode_binding(model, input, composer::bindings(input)),
         ActiveMode::Help => handle_mode_binding(model, input, help::bindings(input)),
         ActiveMode::Rollup => handle_mode_binding(model, input, rollup::bindings(input)),
@@ -221,7 +223,10 @@ fn update_rollup(model: &mut Model, event: rollup::Event) -> Vec<Effect> {
 fn apply_global(model: &mut Model, result: global::Update) -> Vec<Effect> {
     for intent in result.intents {
         match intent {
-            global::Intent::OpenHelp => model.active_mode = ActiveMode::Help,
+            global::Intent::OpenHelp => {
+                model.help.begin(model.review.help_context());
+                model.active_mode = ActiveMode::Help;
+            }
             global::Intent::ResizeViewport { rows, columns } => {
                 model
                     .review
@@ -431,22 +436,48 @@ pub fn view(model: &Model) -> semantic::View {
                 id.is_some(),
             )
         }
-        ActiveMode::Review => (
-            match layout.focus {
-                crate::ui::FocusArea::Review => semantic::SurfaceContext::Review,
-                crate::ui::FocusArea::Threads => semantic::SurfaceContext::Threads,
-            },
-            match layout.focus {
-                crate::ui::FocusArea::Threads => selected_thread.map(|id| {
-                    format!(
-                        "{} • thread #{id}",
-                        review_target.as_deref().unwrap_or("unknown hunk")
-                    )
+        ActiveMode::Review => match model.review.search_summary() {
+            Some(search) if search.editing => (
+                semantic::SurfaceContext::SearchInput,
+                Some(if search.query.is_empty() {
+                    "empty query".into()
+                } else {
+                    format!("query “{}”", search.query)
                 }),
-                crate::ui::FocusArea::Review => review_target,
-            },
-            selected_thread.is_some(),
-        ),
+                false,
+            ),
+            Some(search) => (
+                semantic::SurfaceContext::SearchResults,
+                Some(search.selected.map_or_else(
+                    || format!("“{}” • no matches", search.query),
+                    |selected| {
+                        format!(
+                            "“{}” • {}/{}",
+                            search.query,
+                            selected + 1,
+                            search.match_count
+                        )
+                    },
+                )),
+                false,
+            ),
+            None => (
+                match layout.focus {
+                    crate::ui::FocusArea::Review => semantic::SurfaceContext::Review,
+                    crate::ui::FocusArea::Threads => semantic::SurfaceContext::Threads,
+                },
+                match layout.focus {
+                    crate::ui::FocusArea::Threads => selected_thread.map(|id| {
+                        format!(
+                            "{} • thread #{id}",
+                            review_target.as_deref().unwrap_or("unknown hunk")
+                        )
+                    }),
+                    crate::ui::FocusArea::Review => review_target,
+                },
+                selected_thread.is_some(),
+            ),
+        },
     };
     let global = global::view(
         &model.global,

@@ -100,6 +100,13 @@ fn repeated(key: Key) -> PhysicalInput {
     }
 }
 
+fn type_search(scenario: &mut Scenario, query: &str) {
+    scenario.when_input(input(Key::Char('/')));
+    for character in query.chars() {
+        scenario.when_input(input(Key::Char(character)));
+    }
+}
+
 fn review_geometry(model: &Model) -> (ReviewBody, LayoutPolicy, ReviewRowMap) {
     let view = super::view(model);
     let Body::Review(body) = view.body else {
@@ -148,6 +155,354 @@ const RELOADED_LONG_DIFF: &str = concat!(
     "@@ -80,3 +80,3 @@ last\n eighty\n-old eighty one\n+new eighty one\n eighty two\n",
 );
 
+const SEARCH_DIFF: &str = concat!(
+    "diff --git a/alpha.rs b/alpha.rs\n--- a/alpha.rs\n+++ b/alpha.rs\n",
+    "@@ -1 +1 @@ first\n-old first\n+Needle first\n",
+    "@@ -20 +20 @@ second\n-old second\n+needle second\n",
+    "diff --git a/needle.rs b/needle.rs\n--- a/needle.rs\n+++ b/needle.rs\n",
+    "@@ -1 +1 @@ last\n-old last\n+final NEEDLE\n",
+);
+
+#[test]
+fn incremental_search_uses_semantic_git_order_and_wraps_both_directions() {
+    let mut scenario = Scenario::given(SEARCH_DIFF, ThreadState::default());
+
+    type_search(&mut scenario, "NeEdLe");
+    assert_eq!(
+        scenario.model.review.selected_location(),
+        Some(HunkLocation::new("alpha.rs", "@@ -1 +1 @@ first"))
+    );
+    assert_eq!(
+        scenario.model.review.search_summary(),
+        Some(review::SearchSummary {
+            query: "NeEdLe".into(),
+            selected: Some(0),
+            match_count: 4,
+            editing: true,
+        })
+    );
+
+    scenario.when_input(input(Key::Enter));
+    scenario.when_input(input(Key::Char('n')));
+    assert_eq!(
+        scenario.model.review.selected_location(),
+        Some(HunkLocation::new("alpha.rs", "@@ -20 +20 @@ second"))
+    );
+    scenario.when_input(input(Key::Char('n')));
+    assert_eq!(
+        scenario.model.review.selected_location(),
+        Some(HunkLocation::new("needle.rs", "@@ -1 +1 @@ last"))
+    );
+    scenario.when_input(input(Key::Char('n')));
+    scenario.when_input(input(Key::Char('n')));
+    assert_eq!(
+        scenario.model.review.selected_location(),
+        Some(HunkLocation::new("alpha.rs", "@@ -1 +1 @@ first"))
+    );
+    assert!(
+        scenario
+            .model
+            .global
+            .status
+            .as_deref()
+            .is_some_and(|status| status.contains("(wrapped)"))
+    );
+    scenario.when_input(input(Key::Char('N')));
+    assert_eq!(
+        scenario.model.review.selected_location(),
+        Some(HunkLocation::new("needle.rs", "@@ -1 +1 @@ last"))
+    );
+}
+
+#[test]
+fn deleted_file_search_targets_keep_unique_paths() {
+    let raw = concat!(
+        "diff --git a/old-a.rs b/old-a.rs\ndeleted file mode 100644\n",
+        "--- a/old-a.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-unique_a\n",
+        "diff --git a/old-b.rs b/old-b.rs\ndeleted file mode 100644\n",
+        "--- a/old-b.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-unique_b\n",
+    );
+    let mut scenario = Scenario::given(raw, ThreadState::default());
+    type_search(&mut scenario, "unique_b");
+    assert_eq!(
+        scenario.model.review.selected_location(),
+        Some(HunkLocation::new("old-b.rs", "@@ -1 +0,0 @@"))
+    );
+
+    scenario.when_input(input(Key::Esc));
+    type_search(&mut scenario, "old-b.rs");
+    assert_eq!(
+        scenario.model.review.search_summary().unwrap().match_count,
+        1
+    );
+    assert_eq!(
+        scenario.model.review.selected_location(),
+        Some(HunkLocation::new("old-b.rs", "@@ -1 +0,0 @@"))
+    );
+}
+
+#[test]
+fn empty_and_missing_search_queries_are_visible_and_do_not_move() {
+    let mut scenario = Scenario::given(SEARCH_DIFF, ThreadState::default());
+    scenario.when_event(review::Event::MoveHunk(1));
+    let location = scenario.model.review.selected_location();
+
+    scenario.when_input(input(Key::Char('/')));
+    let view = super::view(&scenario.model);
+    assert!(view.footer.current_context.text.contains("empty query"));
+    scenario.when_input(input(Key::Enter));
+    assert_eq!(scenario.model.review.selected_location(), location);
+    assert_eq!(
+        scenario.model.global.status.as_deref(),
+        Some("search query is empty; type text or press Esc to cancel")
+    );
+
+    for character in "absent".chars() {
+        scenario.when_input(input(Key::Char(character)));
+    }
+    assert_eq!(scenario.model.review.selected_location(), location);
+    assert!(
+        scenario
+            .model
+            .global
+            .status
+            .as_deref()
+            .is_some_and(|status| status.contains("no matches"))
+    );
+}
+
+#[test]
+fn cancelling_search_restores_exact_cursor_and_viewport() {
+    let mut scenario = Scenario::given(LONG_DIFF, ThreadState::default());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 7,
+        columns: 80,
+    });
+    scenario.when_event(review::Event::MoveHunk(1));
+    scenario.when_event(review::Event::JumpToStreamEdge { end: true });
+    scenario.when_event(review::Event::ScrollRows(-2));
+    let location = scenario.model.review.selected_location();
+    let (before, _, _) = review_geometry(&scenario.model);
+
+    type_search(&mut scenario, "eighty two");
+    assert_ne!(scenario.model.review.selected_location(), location);
+    assert!(matches!(
+        scenario.when_input(input(Key::Esc)),
+        BindingResolution::Override(())
+    ));
+
+    let (after, _, _) = review_geometry(&scenario.model);
+    assert_eq!(scenario.model.review.selected_location(), location);
+    assert_eq!(after.scroll, before.scroll);
+    assert!(scenario.model.is_running());
+}
+
+#[test]
+fn search_editing_handles_unicode_backspace_and_escape_repeat_without_unwinding() {
+    let raw =
+        "diff --git a/画面.rs b/画面.rs\n--- a/画面.rs\n+++ b/画面.rs\n@@ -1 +1 @@\n-old\n+new\n";
+    let mut scenario = Scenario::given(raw, ThreadState::default());
+    type_search(&mut scenario, "画a");
+    assert_eq!(scenario.model.review.search_summary().unwrap().query, "画a");
+    scenario.when_input(input(Key::Backspace));
+    assert_eq!(scenario.model.review.search_summary().unwrap().query, "画");
+    assert_eq!(
+        scenario.model.review.search_summary().unwrap().match_count,
+        1
+    );
+
+    assert!(matches!(
+        scenario.when_input(repeated(Key::Esc)),
+        BindingResolution::Consume
+    ));
+    assert!(scenario.model.review.search_summary().is_some());
+    assert!(scenario.model.is_running());
+    scenario.when_input(input(Key::Esc));
+    assert!(scenario.model.review.search_summary().is_none());
+    assert!(scenario.model.is_running());
+
+    for query in ["e\u{301}", "👨‍👩‍👧‍👦"] {
+        type_search(&mut scenario, query);
+        scenario.when_input(input(Key::Backspace));
+        assert_eq!(scenario.model.review.search_summary().unwrap().query, "");
+        scenario.when_input(input(Key::Esc));
+    }
+
+    type_search(&mut scenario, "画");
+    scenario.when_input(input(Key::Enter));
+    assert!(matches!(
+        scenario.when_input(repeated(Key::Esc)),
+        BindingResolution::Consume
+    ));
+    assert!(scenario.model.review.search_summary().is_some());
+    scenario.when_input(input(Key::Esc));
+    assert!(scenario.model.review.search_summary().is_none());
+    assert!(scenario.model.is_running());
+    scenario.when_input(input(Key::Esc));
+    assert!(!scenario.model.is_running());
+}
+
+#[test]
+fn cancelling_search_restores_inline_thread_focus_and_target() {
+    let mut scenario = Scenario::given(RAW, threads());
+    scenario.when_input(input(Key::Char('t')));
+    assert_eq!(scenario.model.review.focus(), FocusArea::Threads);
+    let thread = scenario
+        .model
+        .review
+        .selected_thread_id(&scenario.model.global.threads);
+
+    type_search(&mut scenario, "new");
+    assert_eq!(scenario.model.review.focus(), FocusArea::Review);
+    scenario.when_input(input(Key::Esc));
+
+    assert_eq!(scenario.model.review.focus(), FocusArea::Threads);
+    assert_eq!(
+        scenario
+            .model
+            .review
+            .selected_thread_id(&scenario.model.global.threads),
+        thread
+    );
+}
+
+#[test]
+fn active_search_reveals_its_semantic_match_after_resize_and_layout_changes() {
+    let mut scenario = Scenario::given(LONG_DIFF, ThreadState::default());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 6,
+        columns: 80,
+    });
+    type_search(&mut scenario, "geometry");
+
+    for event in [
+        review::Event::SetLayout(LayoutMode::Split),
+        review::Event::SetLayout(LayoutMode::Stack),
+        review::Event::ToggleWrap,
+        review::Event::ToggleHunkHeaders,
+    ] {
+        scenario.when_event(event);
+        let (body, _, rows) = review_geometry(&scenario.model);
+        let target = rows
+            .row_for_search_target(
+                body.search_target
+                    .as_ref()
+                    .expect("active search has a semantic target"),
+            )
+            .expect("semantic search target resolves after relayout");
+        assert!(target >= body.scroll);
+        assert!(target < body.scroll + body.viewport.visible_rows);
+    }
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 4,
+        columns: 64,
+    });
+    let (body, _, rows) = review_geometry(&scenario.model);
+    let target = rows
+        .row_for_search_target(body.search_target.as_ref().unwrap())
+        .unwrap();
+    assert!(target >= body.scroll);
+    assert!(target < body.scroll + body.viewport.visible_rows);
+
+    scenario.when_input(input(Key::Esc));
+    let (restored, _, _) = review_geometry(&scenario.model);
+    assert!(
+        restored.scroll
+            <= restored
+                .viewport
+                .total_rows
+                .saturating_sub(restored.viewport.visible_rows)
+    );
+}
+
+#[test]
+fn successful_reload_clears_stale_search_and_failed_reload_preserves_it() {
+    let mut scenario = Scenario::given(SEARCH_DIFF, ThreadState::default());
+    type_search(&mut scenario, "needle");
+    scenario.when_input(input(Key::Enter));
+    scenario.when_event(review::Event::ReloadDiff);
+    scenario.inject(
+        ActiveMode::Review,
+        Outcome::DiffReloaded {
+            purpose: review::ReloadPurpose::Manual,
+            result: Err("boom".into()),
+        },
+    );
+    assert!(scenario.model.review.search_summary().is_some());
+
+    scenario.when_event(review::Event::ReloadDiff);
+    scenario.inject(
+        ActiveMode::Review,
+        Outcome::DiffReloaded {
+            purpose: review::ReloadPurpose::Manual,
+            result: Ok(LoadedDiff {
+                text: RAW.into(),
+                document: DiffDocument::parse(RAW),
+            }),
+        },
+    );
+    assert_eq!(scenario.model.review.search_summary(), None);
+    assert_eq!(
+        scenario.model.global.status.as_deref(),
+        Some("reloaded current diff; cleared search because the diff changed")
+    );
+}
+
+#[test]
+fn help_marks_invocation_commands_and_returns_to_search_location() {
+    let mut scenario = Scenario::given(SEARCH_DIFF, ThreadState::default());
+    scenario.when_event(review::Event::MoveHunk(1));
+    let invocation = scenario.model.review.selected_location();
+    type_search(&mut scenario, "needle");
+    scenario.when_input(input(Key::Enter));
+    let location = scenario.model.review.selected_location();
+    let view = super::view(&scenario.model);
+    assert!(view.footer.contextual_keys.text.contains("n/N"));
+    assert!(view.footer.contextual_keys.text.contains("/ new search"));
+
+    scenario.when_input(input(Key::Char('?')));
+    let view = super::view(&scenario.model);
+    let Some(Overlay::Help { text }) = view.overlay else {
+        panic!("help overlay is visible");
+    };
+    assert!(text.contains("commands valid from search results"));
+    assert!(text.contains("◆ n/N next/previous match (wrap)"));
+    assert!(text.contains("Navigation"));
+    assert!(text.contains("View"));
+    assert!(text.contains("Review actions"));
+
+    scenario.when_input(input(Key::Esc));
+    assert_eq!(scenario.model.active_mode, ActiveMode::Review);
+    assert_eq!(scenario.model.review.selected_location(), location);
+    assert!(scenario.model.review.search_summary().is_some());
+    scenario.when_input(input(Key::Esc));
+    assert_eq!(scenario.model.review.selected_location(), invocation);
+    assert!(scenario.model.review.search_summary().is_none());
+}
+
+#[test]
+fn help_emphasizes_thread_commands_only_for_a_thread_target() {
+    let mut scenario = Scenario::given(RAW, threads());
+    scenario.when_input(input(Key::Char('?')));
+    let Some(Overlay::Help { text }) = super::view(&scenario.model).overlay else {
+        panic!("help overlay is visible");
+    };
+    assert!(text.contains("commands valid from review stream"));
+    assert!(text.contains("· x/R resolve/reopen"));
+    scenario.when_input(input(Key::Esc));
+
+    scenario.when_input(input(Key::Char('t')));
+    let footer = super::view(&scenario.model).footer.contextual_keys.text;
+    assert!(footer.contains("x resolve"));
+    scenario.when_input(input(Key::Char('?')));
+    let Some(Overlay::Help { text }) = super::view(&scenario.model).overlay else {
+        panic!("help overlay is visible");
+    };
+    assert!(text.contains("commands valid from inline thread"));
+    assert!(text.contains("◆ x/R resolve/reopen"));
+    assert!(text.contains("◆ a/o flags"));
+}
+
 #[test]
 fn all_mode_state_is_persistent_and_transitions_reset_explicitly() {
     let mut scenario = Scenario::given(RAW, threads());
@@ -184,8 +539,9 @@ fn active_mode_dispatches_the_mode_program() {
 
 #[test]
 fn binding_resolution_distinguishes_all_mode_intents() {
+    let scenario = Scenario::given(RAW, ThreadState::default());
     assert_eq!(
-        review::bindings(input(Key::Char('q'))),
+        review::bindings(&scenario.model.review, input(Key::Char('q'))),
         BindingResolution::Delegate
     );
     assert_eq!(
@@ -197,7 +553,7 @@ fn binding_resolution_distinguishes_all_mode_intents() {
         BindingResolution::Consume
     );
     assert_eq!(
-        review::bindings(input(Key::Other)),
+        review::bindings(&scenario.model.review, input(Key::Other)),
         BindingResolution::Unbound
     );
     assert!(matches!(

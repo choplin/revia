@@ -15,10 +15,11 @@ use syntect::{
 };
 
 use crate::{
+    diff::DiffLineKind,
     presentation,
     semantic::{
-        Body, FileAttention, Overlay, ReviewBody, RollupBody, StickyReviewContext, ThreadState,
-        Tone, View,
+        Body, DiffSearchTarget, FileAttention, Overlay, ReviewBody, RollupBody,
+        StickyReviewContext, ThreadState, Tone, View,
     },
     ui::{FocusArea, LayoutMode, ShellSize, truncate_end, truncate_start},
 };
@@ -346,9 +347,21 @@ impl Renderer {
         for file in &review.files {
             lines.push(Line::raw(""));
             let path_width = usize::from(available_width).saturating_sub(6);
+            let path_match = matches!(
+                review.search_target.as_ref(),
+                Some(DiffSearchTarget::FilePath { path }) if path == &file.path
+            );
             lines.push(Line::styled(
-                format!("── {} ──", truncate_start(&file.path, path_width)),
-                self.semantic_theme.style(Tone::Attention),
+                format!(
+                    "{}─ {} ──",
+                    if path_match { "⌕" } else { "─" },
+                    truncate_start(&file.path, path_width)
+                ),
+                if path_match {
+                    self.semantic_theme.selection()
+                } else {
+                    self.semantic_theme.style(Tone::Attention)
+                },
             ));
             lines.extend(file.metadata.iter().map(|line| {
                 Line::styled(
@@ -369,41 +382,90 @@ impl Renderer {
             );
             for hunk in &file.hunks {
                 if let Some(header) = &hunk.header {
-                    let style = if hunk.selected {
+                    let header_match = matches!(
+                        review.search_target.as_ref(),
+                        Some(DiffSearchTarget::HunkHeader { location }) if location == &hunk.anchor
+                    );
+                    let style = if header_match || hunk.selected {
                         self.semantic_theme.selection()
                     } else {
                         self.semantic_theme.style(Tone::FocusSelection)
                     };
                     lines.push(Line::styled(
                         truncate_end(
-                            &format!("{} {header}", if hunk.selected { "▶" } else { " " }),
+                            &format!(
+                                "{} {header}",
+                                if header_match {
+                                    "⌕"
+                                } else if hunk.selected {
+                                    "▶"
+                                } else {
+                                    " "
+                                }
+                            ),
                             usize::from(available_width),
                         ),
                         style,
                     ));
                 }
-                if view.layout.diff_layout.resolved(available_width) == LayoutMode::Split {
-                    lines.extend(presentation::split_hunk_lines(
-                        &hunk.lines,
-                        hunk.coordinates,
-                        available_width,
-                        number_width,
-                        hunk.selected,
-                        self.semantic_theme,
-                    ));
-                } else {
-                    lines.extend(presentation::stack_hunk_lines(
-                        &hunk.lines,
-                        hunk.coordinates,
-                        available_width,
-                        number_width,
-                        view.layout.wrap_lines,
-                        hunk.selected,
-                        &mut highlighter,
-                        &self.syntax_set,
-                        self.semantic_theme,
-                    ));
+                let mut hunk_lines =
+                    if view.layout.diff_layout.resolved(available_width) == LayoutMode::Split {
+                        presentation::split_hunk_lines(
+                            &hunk.lines,
+                            hunk.coordinates,
+                            available_width,
+                            number_width,
+                            hunk.selected,
+                            self.semantic_theme,
+                        )
+                    } else {
+                        presentation::stack_hunk_lines(
+                            &hunk.lines,
+                            hunk.coordinates,
+                            available_width,
+                            number_width,
+                            view.layout.wrap_lines,
+                            hunk.selected,
+                            &mut highlighter,
+                            &self.syntax_set,
+                            self.semantic_theme,
+                        )
+                    };
+                let search_row = match review.search_target.as_ref() {
+                    Some(DiffSearchTarget::HunkHeader { location })
+                        if location == &hunk.anchor && hunk.header.is_none() =>
+                    {
+                        Some((0, "⌕ "))
+                    }
+                    Some(DiffSearchTarget::DiffLine {
+                        location,
+                        line_index,
+                    }) if location == &hunk.anchor => {
+                        let marker = hunk
+                            .lines
+                            .get(*line_index)
+                            .map(|line| search_marker(line.kind))
+                            .unwrap_or("⌕ ");
+                        presentation::search_line_row(
+                            &hunk.lines,
+                            hunk.coordinates,
+                            *line_index,
+                            available_width,
+                            number_width,
+                            view.layout,
+                        )
+                        .map(|row| (row, marker))
+                    }
+                    _ => None,
+                };
+                if let Some((row, search_marker)) = search_row
+                    && let Some(line) = hunk_lines.get_mut(row)
+                    && let Some(marker) = line.spans.first_mut()
+                {
+                    marker.content = search_marker.into();
+                    marker.style = self.semantic_theme.style(Tone::Attention);
                 }
+                lines.extend(hunk_lines);
                 for thread in &hunk.threads {
                     let state = match thread.state {
                         ThreadState::NeedsAttention => "NEEDS ATTENTION",
@@ -480,17 +542,27 @@ impl Renderer {
                 let area = centered_rect(86, 20, frame.area());
                 frame.render_widget(Clear, area);
                 frame.render_widget(
-                    Paragraph::new(*text).wrap(Wrap { trim: false }).block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_type(BorderType::Double)
-                            .border_style(self.semantic_theme.style(Tone::FocusSelection))
-                            .title("Keyboard help — Esc/? to close"),
-                    ),
+                    Paragraph::new(text.as_str())
+                        .wrap(Wrap { trim: false })
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .border_type(BorderType::Double)
+                                .border_style(self.semantic_theme.style(Tone::FocusSelection))
+                                .title("Keyboard help — Esc/? to close"),
+                        ),
                     area,
                 );
             }
         }
+    }
+}
+
+fn search_marker(kind: DiffLineKind) -> &'static str {
+    match kind {
+        DiffLineKind::Added => "⌕+",
+        DiffLineKind::Removed => "⌕-",
+        DiffLineKind::Context | DiffLineKind::Meta => "⌕ ",
     }
 }
 
@@ -905,6 +977,75 @@ mod tests {
                 .iter()
                 .all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset)
         );
+    }
+
+    #[test]
+    fn selected_semantic_search_match_has_a_non_color_marker() {
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::no_color(),
+            ..Renderer::default()
+        };
+        let mut model = model_with_diff(READABLE_DIFF);
+        for event in [
+            review::Event::BeginSearch,
+            review::Event::InsertSearchCharacter('i'),
+            review::Event::InsertSearchCharacter('n'),
+            review::Event::InsertSearchCharacter('s'),
+            review::Event::InsertSearchCharacter('e'),
+            review::Event::InsertSearchCharacter('r'),
+            review::Event::InsertSearchCharacter('t'),
+            review::Event::InsertSearchCharacter('e'),
+            review::Event::InsertSearchCharacter('d'),
+        ] {
+            crate::app::update(&mut model, event);
+        }
+
+        let rendered = rows(&render(&renderer, &mut model, 80, 24)).join("\n");
+        assert!(rendered.contains("⌕+"));
+        assert!(rendered.contains("Context: Search input"));
+        assert!(rendered.contains("Esc cancel"));
+    }
+
+    #[test]
+    fn hidden_hunk_header_search_marks_the_resolved_content_row() {
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::no_color(),
+            ..Renderer::default()
+        };
+        let mut model = model_with_diff(READABLE_DIFF);
+        crate::app::update(&mut model, review::Event::ToggleHunkHeaders);
+        crate::app::update(&mut model, review::Event::BeginSearch);
+        for character in "second()".chars() {
+            crate::app::update(&mut model, review::Event::InsertSearchCharacter(character));
+        }
+
+        let rendered = rows(&render(&renderer, &mut model, 80, 24)).join("\n");
+        assert!(!rendered.contains("@@ -100,2 +200,3 @@ fn second()"));
+        assert!(rendered.contains("⌕ "));
+        assert!(rendered.contains("next"));
+    }
+
+    #[test]
+    fn split_search_marker_identifies_the_selected_change_side() {
+        let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-needle old\n+needle new\n";
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::no_color(),
+            ..Renderer::default()
+        };
+        let mut model = model_with_diff(raw);
+        crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Split));
+        crate::app::update(&mut model, review::Event::BeginSearch);
+        for character in "needle".chars() {
+            crate::app::update(&mut model, review::Event::InsertSearchCharacter(character));
+        }
+
+        let removed = rows(&render(&renderer, &mut model, 120, 16)).join("\n");
+        assert!(removed.contains("⌕-"));
+        crate::app::update(&mut model, review::Event::FinishSearch);
+        crate::app::update(&mut model, review::Event::MoveSearch(1));
+        let added = rows(&render(&renderer, &mut model, 120, 16)).join("\n");
+        assert!(added.contains("⌕+"));
+        assert!(!added.contains("⌕-"));
     }
 
     #[test]

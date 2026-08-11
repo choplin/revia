@@ -3,10 +3,10 @@ use crate::{
     diff::{DiffRequest, LoadedDiff},
     input::{BindingResolution, Key, PhysicalInput},
     presentation::{self, ReviewRowMap, ViewportAnchor},
-    review::ReviewSession,
+    review::{ReviewCursor, ReviewSession},
     semantic::{
-        Body, FileAttention, FileItem, FileRail, LayoutPolicy, ReviewBody, ReviewFile, ReviewHunk,
-        ReviewViewport, ThreadCard, ThreadState as SemanticThreadState,
+        Body, DiffSearchTarget, FileAttention, FileItem, FileRail, LayoutPolicy, ReviewBody,
+        ReviewFile, ReviewHunk, ReviewViewport, ThreadCard, ThreadState as SemanticThreadState,
     },
     thread::{
         Resolution, ReviewThread, ThreadChange, ThreadId, ThreadOperation, ThreadState as Threads,
@@ -14,6 +14,7 @@ use crate::{
     },
     ui::{FocusArea, LayoutMode, ViewState, review_body_width},
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug)]
 pub struct Model {
@@ -25,6 +26,44 @@ pub struct Model {
     wrap_lines: bool,
     viewport_rows: u16,
     viewport_columns: u16,
+    search: Option<SearchState>,
+}
+
+#[derive(Debug)]
+struct SearchState {
+    query: String,
+    matches: Vec<DiffSearchTarget>,
+    selected: Option<usize>,
+    editing: bool,
+    origin: SearchOrigin,
+}
+
+#[derive(Debug, Clone)]
+struct SearchOrigin {
+    cursor: ReviewCursor,
+    focus: FocusArea,
+    viewport_anchor: ViewportAnchor,
+    scroll: usize,
+    scroll_from_end: Option<usize>,
+    geometry: SearchGeometry,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SearchGeometry {
+    viewport_rows: u16,
+    viewport_columns: u16,
+    sidebar_visible: bool,
+    show_hunk_headers: bool,
+    wrap_lines: bool,
+    layout: LayoutMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchSummary {
+    pub query: String,
+    pub selected: Option<usize>,
+    pub match_count: usize,
+    pub editing: bool,
 }
 
 impl Model {
@@ -38,6 +77,7 @@ impl Model {
             wrap_lines: false,
             viewport_rows: 20,
             viewport_columns: 120,
+            search: None,
         }
     }
 
@@ -67,6 +107,25 @@ impl Model {
 
     pub fn viewport_columns(&self) -> u16 {
         self.viewport_columns
+    }
+
+    pub fn search_summary(&self) -> Option<SearchSummary> {
+        self.search.as_ref().map(|search| SearchSummary {
+            query: search.query.clone(),
+            selected: search.selected,
+            match_count: search.matches.len(),
+            editing: search.editing,
+        })
+    }
+
+    pub fn help_context(&self) -> crate::mode::help::Context {
+        if self.search.as_ref().is_some_and(|search| !search.editing) {
+            crate::mode::help::Context::SearchResults
+        } else if self.focus() == FocusArea::Threads {
+            crate::mode::help::Context::Threads
+        } else {
+            crate::mode::help::Context::Review
+        }
     }
 
     pub fn selected_location(&self) -> Option<HunkLocation> {
@@ -227,11 +286,80 @@ impl Model {
                 self.view.scroll_from_end = Some(max_scroll.saturating_sub(self.view.scroll));
             }
         }
+        if let Some(target) = self.current_search_target().cloned() {
+            self.reveal_search_target(&target, threads);
+        }
+    }
+
+    fn search_geometry(&self) -> SearchGeometry {
+        SearchGeometry {
+            viewport_rows: self.viewport_rows,
+            viewport_columns: self.viewport_columns,
+            sidebar_visible: self.sidebar_visible,
+            show_hunk_headers: self.show_hunk_headers,
+            wrap_lines: self.wrap_lines,
+            layout: self.view.layout,
+        }
+    }
+
+    fn current_search_target(&self) -> Option<&DiffSearchTarget> {
+        let search = self.search.as_ref()?;
+        search.selected.and_then(|index| search.matches.get(index))
+    }
+
+    fn reveal_search_target(&mut self, target: &DiffSearchTarget, threads: &Threads) {
+        match target {
+            DiffSearchTarget::FilePath { path } => {
+                if let Some(file_index) = self
+                    .session
+                    .diff()
+                    .document
+                    .files
+                    .iter()
+                    .position(|file| &file.path == path)
+                {
+                    self.session.select_file(file_index);
+                }
+            }
+            DiffSearchTarget::HunkHeader { location }
+            | DiffSearchTarget::DiffLine { location, .. } => {
+                let target = self
+                    .session
+                    .diff()
+                    .document
+                    .files
+                    .iter()
+                    .enumerate()
+                    .find_map(|(file_index, file)| {
+                        (file.path == location.path()).then(|| {
+                            file.hunks
+                                .iter()
+                                .position(|hunk| hunk.header == location.hunk_header())
+                                .map(|hunk_index| (file_index, hunk_index))
+                        })?
+                    });
+                if let Some((file_index, hunk_index)) = target {
+                    self.session.select_hunk(file_index, hunk_index);
+                }
+            }
+        }
+        self.view.focus = FocusArea::Review;
+        let rows = self.row_map(threads);
+        if let Some(row) = rows.row_for_search_target(target) {
+            self.view.reveal(row, self.visible_rows());
+            self.view.clamp(rows.total_rows(), self.visible_rows());
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
+    BeginSearch,
+    InsertSearchCharacter(char),
+    DeleteSearchCharacter,
+    FinishSearch,
+    CancelSearch,
+    MoveSearch(i32),
     CycleFocus,
     PreviousFocus,
     ScrollRows(i16),
@@ -325,7 +453,30 @@ pub struct Update {
     pub effects: Vec<Effect>,
 }
 
-pub fn bindings(input: PhysicalInput) -> BindingResolution<Event> {
+pub fn bindings(model: &Model, input: PhysicalInput) -> BindingResolution<Event> {
+    if model.search.as_ref().is_some_and(|search| search.editing) {
+        if input.phase == crate::input::KeyPhase::Release
+            || input.phase == crate::input::KeyPhase::Repeat
+                && matches!(input.key, Key::Esc | Key::Enter)
+        {
+            return BindingResolution::Consume;
+        }
+        return match input.key {
+            Key::Esc => BindingResolution::Override(Event::CancelSearch),
+            Key::Enter => BindingResolution::Handle(Event::FinishSearch),
+            Key::Backspace => BindingResolution::Handle(Event::DeleteSearchCharacter),
+            Key::Char(character) => {
+                BindingResolution::Override(Event::InsertSearchCharacter(character))
+            }
+            _ => BindingResolution::Consume,
+        };
+    }
+    if model.search.is_some()
+        && matches!(input.key, Key::Esc)
+        && input.phase == crate::input::KeyPhase::Press
+    {
+        return BindingResolution::Override(Event::CancelSearch);
+    }
     if input.phase == crate::input::KeyPhase::Release {
         return BindingResolution::Consume;
     }
@@ -355,12 +506,17 @@ pub fn bindings(input: PhysicalInput) -> BindingResolution<Event> {
                 | Key::Char('T')
                 | Key::Char('}')
                 | Key::Char('{')
+                | Key::Char('n')
+                | Key::Char('N')
         )
     {
         return BindingResolution::Consume;
     }
     match input.key {
         Key::Char('q') | Key::Esc | Key::Char('?') => BindingResolution::Delegate,
+        Key::Char('/') => BindingResolution::Handle(Event::BeginSearch),
+        Key::Char('n') => BindingResolution::Handle(Event::MoveSearch(1)),
+        Key::Char('N') => BindingResolution::Handle(Event::MoveSearch(-1)),
         Key::Tab => BindingResolution::Handle(Event::CycleFocus),
         Key::BackTab => BindingResolution::Handle(Event::PreviousFocus),
         Key::Char('j') | Key::Down => BindingResolution::Handle(Event::ScrollRows(1)),
@@ -415,6 +571,73 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
         return result;
     }
     match event {
+        Event::BeginSearch => {
+            let rows = model.row_map(input.threads);
+            let scroll = model
+                .view
+                .resolved_scroll(rows.total_rows(), model.visible_rows());
+            model.search = Some(SearchState {
+                query: String::new(),
+                matches: Vec::new(),
+                selected: None,
+                editing: true,
+                origin: SearchOrigin {
+                    cursor: model.session.cursor(),
+                    focus: model.focus(),
+                    viewport_anchor: rows.anchor_at(scroll),
+                    scroll: model.view.scroll,
+                    scroll_from_end: model.view.scroll_from_end,
+                    geometry: model.search_geometry(),
+                },
+            });
+            status(&mut result, "search: type a query");
+        }
+        Event::InsertSearchCharacter(character) => {
+            if let Some(search) = model.search.as_mut() {
+                search.query.push(character);
+                refresh_search(model, input.threads, &mut result);
+            }
+        }
+        Event::DeleteSearchCharacter => {
+            if let Some(search) = model.search.as_mut() {
+                if let Some((index, _)) = search.query.grapheme_indices(true).next_back() {
+                    search.query.truncate(index);
+                }
+                refresh_search(model, input.threads, &mut result);
+            }
+        }
+        Event::FinishSearch => {
+            let Some(search) = model.search.as_mut() else {
+                status(&mut result, "no active search; press / to search");
+                return result;
+            };
+            if search.query.is_empty() {
+                status(
+                    &mut result,
+                    "search query is empty; type text or press Esc to cancel",
+                );
+            } else {
+                search.editing = false;
+                status(
+                    &mut result,
+                    search_position_status(search, "search ready; n/N wrap through matches"),
+                );
+            }
+        }
+        Event::CancelSearch => {
+            let Some(search) = model.search.take() else {
+                status(&mut result, "no active search to cancel");
+                return result;
+            };
+            restore_search_origin(model, search.origin, input.threads);
+            status(
+                &mut result,
+                "cancelled search; restored previous review position",
+            );
+        }
+        Event::MoveSearch(direction) => {
+            move_search(model, direction, input.threads, &mut result);
+        }
         Event::CycleFocus => {
             move_focus(model, input.threads, &mut result, false);
         }
@@ -717,6 +940,7 @@ fn apply_outcome(model: &mut Model, threads: &Threads, outcome: Outcome, result:
             result: outcome,
         } => match outcome {
             Ok(diff) => {
+                let search_was_active = model.search.take().is_some();
                 let preserve_end = model.view.scroll_from_end.is_some();
                 let viewport_anchor = (!preserve_end).then(|| model.viewport_anchor(threads));
                 let selected_was_visible = model.selected_target_is_visible(threads);
@@ -759,7 +983,14 @@ fn apply_outcome(model: &mut Model, threads: &Threads, outcome: Outcome, result:
                     }
                     ReloadPurpose::Manual => "reloaded current diff".into(),
                 };
-                status(result, message);
+                status(
+                    result,
+                    if search_was_active {
+                        format!("{message}; cleared search because the diff changed")
+                    } else {
+                        message
+                    },
+                );
             }
             Err(error) => status(result, format!("could not reload diff: {error}")),
         },
@@ -834,6 +1065,160 @@ fn success_status(success: ThreadSuccess) -> String {
         ThreadSuccess::Reopened => "thread reopened".into(),
         ThreadSuccess::AttentionToggled => "needs-attention toggled".into(),
         ThreadSuccess::OutdatedToggled => "outdated toggled".into(),
+    }
+}
+
+fn refresh_search(model: &mut Model, threads: &Threads, result: &mut Update) {
+    let Some(mut search) = model.search.take() else {
+        return;
+    };
+    let previous = search
+        .selected
+        .and_then(|index| search.matches.get(index))
+        .cloned();
+    search.matches = diff_search_matches(model.session.diff(), &search.query);
+    search.selected = if search.matches.is_empty() {
+        None
+    } else {
+        previous
+            .as_ref()
+            .and_then(|target| {
+                search
+                    .matches
+                    .iter()
+                    .position(|candidate| candidate == target)
+            })
+            .or(Some(0))
+    };
+    let target = search
+        .selected
+        .and_then(|index| search.matches.get(index))
+        .cloned();
+    let message = search_position_status(&search, "search");
+    let origin = search.origin.clone();
+    model.search = Some(search);
+    if let Some(target) = target {
+        model.reveal_search_target(&target, threads);
+    } else {
+        restore_search_origin(model, origin, threads);
+    }
+    status(result, message);
+}
+
+fn move_search(model: &mut Model, direction: i32, threads: &Threads, result: &mut Update) {
+    let Some(mut search) = model.search.take() else {
+        status(result, "no active search; press / to search");
+        return;
+    };
+    if search.editing {
+        status(result, "press Enter to finish the search before using n/N");
+        model.search = Some(search);
+        return;
+    }
+    if search.matches.is_empty() {
+        status(
+            result,
+            format!(
+                "no matches for “{}”; press / for a new search",
+                search.query
+            ),
+        );
+        model.search = Some(search);
+        return;
+    }
+    let current = search.selected.unwrap_or(0);
+    let next = wrapped_index(current, search.matches.len(), direction);
+    let wrapped = direction > 0 && next < current || direction < 0 && next > current;
+    search.selected = Some(next);
+    let target = search.matches[next].clone();
+    let message = if wrapped {
+        format!(
+            "search “{}”: {}/{} (wrapped)",
+            search.query,
+            next + 1,
+            search.matches.len()
+        )
+    } else {
+        search_position_status(&search, "search")
+    };
+    model.search = Some(search);
+    model.reveal_search_target(&target, threads);
+    status(result, message);
+}
+
+fn search_position_status(search: &SearchState, prefix: &str) -> String {
+    if search.query.is_empty() {
+        return "search query is empty".into();
+    }
+    match search.selected {
+        Some(index) => format!(
+            "{prefix} “{}”: {}/{}",
+            search.query,
+            index + 1,
+            search.matches.len()
+        ),
+        None => format!("no matches for “{}”", search.query),
+    }
+}
+
+fn diff_search_matches(diff: &LoadedDiff, query: &str) -> Vec<DiffSearchTarget> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let query = query.to_lowercase();
+    let matches = |value: &str| value.to_lowercase().contains(&query);
+    let mut targets = Vec::new();
+    for file in &diff.document.files {
+        if matches(&file.path) {
+            targets.push(DiffSearchTarget::FilePath {
+                path: file.path.clone(),
+            });
+        }
+        for hunk in &file.hunks {
+            let location = HunkLocation::new(&file.path, &hunk.header);
+            if matches(&hunk.header) {
+                targets.push(DiffSearchTarget::HunkHeader {
+                    location: location.clone(),
+                });
+            }
+            for (line_index, line) in hunk.lines.iter().enumerate() {
+                if matches(&line.text) {
+                    targets.push(DiffSearchTarget::DiffLine {
+                        location: location.clone(),
+                        line_index,
+                    });
+                }
+            }
+        }
+    }
+    targets
+}
+
+fn restore_search_origin(model: &mut Model, origin: SearchOrigin, threads: &Threads) {
+    if let Some(file) = model
+        .session
+        .diff()
+        .document
+        .files
+        .get(origin.cursor.selected_file())
+    {
+        if origin.cursor.selected_hunk() < file.hunks.len() {
+            model
+                .session
+                .select_hunk(origin.cursor.selected_file(), origin.cursor.selected_hunk());
+        } else {
+            model.session.select_file(origin.cursor.selected_file());
+        }
+        model.session.select_thread(origin.cursor.selected_thread());
+    }
+    model.view.focus = origin.focus;
+    if model.search_geometry() == origin.geometry {
+        model.view.scroll = origin.scroll;
+        model.view.scroll_from_end = origin.scroll_from_end;
+        let rows = model.row_map(threads);
+        model.view.clamp(rows.total_rows(), model.visible_rows());
+    } else {
+        model.restore_viewport(origin.viewport_anchor, threads);
     }
 }
 
@@ -929,6 +1314,7 @@ fn review_body(model: &Model, threads: &Threads) -> ReviewBody {
             .files
             .is_empty()
             .then(|| empty_diff_message(&model.request.target)),
+        search_target: model.current_search_target().cloned(),
         files: model
             .session
             .diff()

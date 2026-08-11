@@ -171,6 +171,8 @@ fn context_label(context: SurfaceContext) -> &'static str {
     match context {
         SurfaceContext::Review => "Context: Review stream",
         SurfaceContext::Threads => "Context: Inline threads",
+        SurfaceContext::SearchInput => "Context: Search input",
+        SurfaceContext::SearchResults => "Context: Search results",
         SurfaceContext::Rollup => "Context: Thread rollup",
         SurfaceContext::Composer => "Context: Thread composer",
         SurfaceContext::Help => "Context: Keyboard help",
@@ -220,6 +222,8 @@ fn compact_context(
     let label = match context {
         SurfaceContext::Review => "Review",
         SurfaceContext::Threads => "Thread",
+        SurfaceContext::SearchInput => "Search",
+        SurfaceContext::SearchResults => "Matches",
         SurfaceContext::Rollup => "Rollup",
         SurfaceContext::Composer => "Compose",
         SurfaceContext::Help => "Help",
@@ -262,13 +266,15 @@ fn context_keys(
     if width < 72 {
         return match context {
             SurfaceContext::Review if selected_thread_available => {
-                "j/k stream · [/] hunk · ,/. file · t/T"
+                "j/k stream · [/] hunk · ,/. file · / search"
             }
-            SurfaceContext::Review => "j/k stream · [/] hunk · ,/. file · {/}",
+            SurfaceContext::Review => "j/k stream · [/] hunk · ,/. file · / search",
             SurfaceContext::Threads if selected_thread_available => {
                 "Tab stream · t/T · c/C · x/R · a/o"
             }
             SurfaceContext::Threads => "Tab stream · c new · ? help",
+            SurfaceContext::SearchInput => "type query · Enter keep · Esc cancel",
+            SurfaceContext::SearchResults => "n/N matches · / new · Esc cancel",
             SurfaceContext::Rollup if selected_thread_available => {
                 "j/k select · Enter jump · v/Esc return"
             }
@@ -279,15 +285,19 @@ fn context_keys(
     }
     match context {
         SurfaceContext::Review if selected_thread_available => {
-            "j/k stream • [/] hunk • ,/. file • t/T thread • {/} attention • Tab thread"
+            "j/k stream • [/] hunk • ,/. file • / search • t/T thread • Tab thread"
         }
         SurfaceContext::Review => {
-            "j/k stream • [/] hunk • ,/. file • {/} attention • c new thread • ? help"
+            "j/k stream • [/] hunk • ,/. file • / search • c new thread • ? help"
         }
         SurfaceContext::Threads if selected_thread_available => {
             "t/T thread • c reply • C new • x resolve • R reopen • a attention • Tab stream • ? help"
         }
         SurfaceContext::Threads => "c new thread • Tab stream • ? help",
+        SurfaceContext::SearchInput => "type query • Backspace delete • Enter keep • Esc cancel",
+        SurfaceContext::SearchResults => {
+            "n/N next/previous (wrap) • / new search • ? help • Esc cancel"
+        }
         SurfaceContext::Rollup if selected_thread_available => {
             "j/k select • Enter jump • v/Esc return"
         }

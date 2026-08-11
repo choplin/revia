@@ -16,7 +16,7 @@ use crate::{
     anchor::HunkLocation,
     diff::{DiffLine, DiffLineKind, HunkCoordinates},
     renderer::SemanticTheme,
-    semantic::{LayoutPolicy, ReviewBody, StickyReviewContext, Tone},
+    semantic::{DiffSearchTarget, LayoutPolicy, ReviewBody, StickyReviewContext, Tone},
     ui::{LayoutMode, fit_width},
 };
 
@@ -48,6 +48,7 @@ struct HunkRows {
     end: usize,
     selected: bool,
     active_thread_row: Option<usize>,
+    line_rows: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +154,31 @@ impl ReviewRowMap {
             })
     }
 
+    pub(crate) fn row_for_search_target(&self, target: &DiffSearchTarget) -> Option<usize> {
+        match target {
+            DiffSearchTarget::FilePath { path } => self
+                .files
+                .iter()
+                .find(|file| &file.path == path)
+                .map(|file| file.start.saturating_add(1)),
+            DiffSearchTarget::HunkHeader { location } => self
+                .files
+                .iter()
+                .flat_map(|file| &file.hunks)
+                .find(|hunk| &hunk.anchor == location)
+                .map(|hunk| hunk.start),
+            DiffSearchTarget::DiffLine {
+                location,
+                line_index,
+            } => self
+                .files
+                .iter()
+                .flat_map(|file| &file.hunks)
+                .find(|hunk| &hunk.anchor == location)
+                .and_then(|hunk| hunk.line_rows.get(*line_index).copied()),
+        }
+    }
+
     pub(crate) fn sticky_context(&self, row: usize) -> Option<StickyReviewContext> {
         let file = self
             .files
@@ -198,17 +224,14 @@ pub(crate) fn review_row_map(
         for (hunk_index, hunk) in file.hunks.iter().enumerate() {
             let start = cursor;
             cursor = cursor.saturating_add(usize::from(hunk.header.is_some()));
-            let diff_rows = match layout.diff_layout.resolved(available_width) {
-                LayoutMode::Split => {
-                    split_rows(&numbered_lines(&hunk.lines, hunk.coordinates)).len()
-                }
-                LayoutMode::Stack | LayoutMode::Auto => stack_hunk_row_count(
-                    &hunk.lines,
-                    available_width,
-                    number_width,
-                    layout.wrap_lines,
-                ),
-            };
+            let (diff_rows, line_rows) = hunk_line_rows(
+                &hunk.lines,
+                hunk.coordinates,
+                cursor,
+                available_width,
+                number_width,
+                layout,
+            );
             cursor = cursor.saturating_add(diff_rows);
             let active_thread_row = hunk
                 .threads
@@ -224,6 +247,7 @@ pub(crate) fn review_row_map(
                 end: cursor.max(start + 1),
                 selected: hunk.selected,
                 active_thread_row,
+                line_rows,
             });
         }
         files.push(FileRows {
@@ -241,24 +265,92 @@ pub(crate) fn review_row_map(
     }
 }
 
-fn stack_hunk_row_count(
+fn hunk_line_rows(
     lines: &[DiffLine],
+    coordinates: Option<HunkCoordinates>,
+    start: usize,
     available_width: u16,
     number_width: usize,
-    wrap: bool,
-) -> usize {
-    let content_width = usize::from(available_width)
-        .saturating_sub(number_width.saturating_mul(2).saturating_add(7));
-    numbered_lines(lines, None)
-        .iter()
-        .map(|line| {
-            if line.line.kind == DiffLineKind::Meta || !wrap || content_width == 0 {
-                1
-            } else {
-                wrapped_row_count(&expand_tabs(&line.line.text), content_width)
+    layout: LayoutPolicy,
+) -> (usize, Vec<usize>) {
+    match layout.diff_layout.resolved(available_width) {
+        LayoutMode::Split => {
+            let numbered = numbered_lines(lines, coordinates);
+            let rows = split_rows(&numbered);
+            let mut line_rows = vec![start; lines.len()];
+            let mut line_index = 0;
+            let mut row_index = 0;
+            while line_index < lines.len() {
+                if matches!(
+                    lines[line_index].kind,
+                    DiffLineKind::Removed | DiffLineKind::Added
+                ) {
+                    let removed_start = line_index;
+                    while line_index < lines.len()
+                        && lines[line_index].kind == DiffLineKind::Removed
+                    {
+                        line_index += 1;
+                    }
+                    let added_start = line_index;
+                    while line_index < lines.len() && lines[line_index].kind == DiffLineKind::Added
+                    {
+                        line_index += 1;
+                    }
+                    let removed_count = added_start.saturating_sub(removed_start);
+                    let added_count = line_index.saturating_sub(added_start);
+                    for offset in 0..removed_count {
+                        line_rows[removed_start + offset] =
+                            start.saturating_add(row_index + offset);
+                    }
+                    for offset in 0..added_count {
+                        line_rows[added_start + offset] = start.saturating_add(row_index + offset);
+                    }
+                    row_index = row_index.saturating_add(removed_count.max(added_count));
+                } else {
+                    line_rows[line_index] = start.saturating_add(row_index);
+                    line_index += 1;
+                    row_index += 1;
+                }
             }
-        })
-        .sum()
+            (rows.len(), line_rows)
+        }
+        LayoutMode::Stack | LayoutMode::Auto => {
+            let content_width = usize::from(available_width)
+                .saturating_sub(number_width.saturating_mul(2).saturating_add(7));
+            let mut cursor = start;
+            let line_rows = lines
+                .iter()
+                .map(|line| {
+                    let row = cursor;
+                    let height = if line.kind == DiffLineKind::Meta
+                        || !layout.wrap_lines
+                        || content_width == 0
+                    {
+                        1
+                    } else {
+                        wrapped_row_count(&expand_tabs(&line.text), content_width)
+                    };
+                    cursor = cursor.saturating_add(height);
+                    row
+                })
+                .collect();
+            (cursor.saturating_sub(start), line_rows)
+        }
+    }
+}
+
+pub(crate) fn search_line_row(
+    lines: &[DiffLine],
+    coordinates: Option<HunkCoordinates>,
+    line_index: usize,
+    available_width: u16,
+    number_width: usize,
+    layout: LayoutPolicy,
+) -> Option<usize> {
+    hunk_line_rows(lines, coordinates, 0, available_width, number_width, layout)
+        .1
+        .get(line_index)
+        .copied()
 }
 
 fn wrapped_row_count(value: &str, width: usize) -> usize {

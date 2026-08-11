@@ -56,7 +56,22 @@ pub struct ReviewBody {
     pub scroll: usize,
     pub viewport: ReviewViewport,
     pub empty_state: Option<String>,
+    pub search_target: Option<DiffSearchTarget>,
     pub files: Vec<ReviewFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffSearchTarget {
+    FilePath {
+        path: String,
+    },
+    HunkHeader {
+        location: HunkLocation,
+    },
+    DiffLine {
+        location: HunkLocation,
+        line_index: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +164,8 @@ pub struct ContextualKeys {
 pub enum SurfaceContext {
     Review,
     Threads,
+    SearchInput,
+    SearchResults,
     Rollup,
     Composer,
     Help,
@@ -166,7 +183,7 @@ pub enum Tone {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Overlay {
     Composer { input: String, replying: bool },
-    Help { text: &'static str },
+    Help { text: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

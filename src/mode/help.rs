@@ -3,8 +3,24 @@ use crate::{
     semantic::Overlay,
 };
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Context {
+    #[default]
+    Review,
+    Threads,
+    SearchResults,
+}
+
 #[derive(Debug, Default)]
-pub struct Model;
+pub struct Model {
+    context: Context,
+}
+
+impl Model {
+    pub fn begin(&mut self, context: Context) {
+        self.context = context;
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
@@ -49,10 +65,26 @@ pub fn update(_: &mut Model, event: Event) -> Update {
     result
 }
 
-pub fn view(_: &Model) -> Overlay {
+pub fn view(model: &Model) -> Overlay {
+    let context = match model.context {
+        Context::Review => "review stream",
+        Context::Threads => "inline thread",
+        Context::SearchResults => "search results",
+    };
+    let search = marker(model.context == Context::SearchResults);
+    let thread = marker(model.context == Context::Threads);
+    let escape = if model.context == Context::SearchResults {
+        "Esc cancel search"
+    } else {
+        "Esc quit review"
+    };
     Overlay::Help {
-        text: HUNK_KEYBOARD_HELP,
+        text: format!(
+            "◆ commands valid from {context}\n\nNavigation\n◆ j/k, ↑/↓ rows   f/Space, b pages   d/u half page\n◆ g/G edges        [/] hunk          ,/. file\n◆ / new search     {search} n/N next/previous match (wrap)\n\nView\n◆ 1/2/0 layout     s file rail       m headers · w wrap\n◆ =/- context      r reload\n\nReview actions\n◆ t/T thread       Tab stream/thread c/C compose/new\n{thread} x/R resolve/reopen   {thread} a/o flags\n◆ {{/}} attention   v rollup\n\nGlobal / exit\n◆ ? help           q quit review     {escape}\n  In help: Esc/? closes and returns to {context}"
+        ),
     }
 }
 
-const HUNK_KEYBOARD_HELP: &str = "Hunk-compatible review stream\n\n  j/k, ↑/↓ rows      f/Space, b pages\n  d/u half page      g/G, Home/End edges\n  [/] hunk           ,/. file\n  1/2/0 layout       s file rail\n  =/- context        r reload\n  m headers          w wrapping\n\nrevia review extensions\n\n  t/T thread         {/} attention\n  c/C compose        x/R resolve/reopen\n  a/o flags          v rollup\n  Tab stream/thread  ? close help\n  q quit review      Esc close/quit";
+fn marker(valid: bool) -> &'static str {
+    if valid { "◆" } else { "·" }
+}

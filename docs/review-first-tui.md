@@ -46,6 +46,8 @@ semantic state also has a non-color carrier: `+`/`-` change markers,
 double border plus an explicit `◆ STREAM FOCUS` or `◆ THREAD TARGET` label.
 With `NO_COLOR` set, semantic and syntax colors are omitted while those
 markers, labels, border shapes, boldness, dimming, and reverse emphasis remain.
+The selected search match also carries `⌕`, with `⌕-` and `⌕+` distinguishing
+the old and new sides when two matches share one split-layout row.
 
 - The left rail is navigation only. File jumps use `,` / `.` and reveal the
   selected file's first hunk; the rail never reduces the main pane to one-file
@@ -80,6 +82,22 @@ markers, labels, border shapes, boldness, dimming, and reverse emphasis remain.
   the same anchored file/hunk-relative position and clamp only at stream edges.
   Reloads preserve the exact file/hunk identity when possible and choose the
   closest hunk in the same file when changed context shifts its coordinates.
+- `/` opens incremental plain-text search over file paths, hunk headers, and
+  diff-line content. Matching uses a case-insensitive Unicode-lowercase
+  substring comparison. Results retain semantic file/hunk/line identities and
+  resolve through the current row map, so resize, layout, wrapping, header, and
+  rail changes keep the selected match visible without treating a terminal row
+  as its identity. Search order is the Git stream order: a file path, then each
+  hunk header and its lines, followed by the next file. `n` and `N` move to the
+  next and previous match and wrap at both ends.
+- Search starts with an empty query and reports both that state and no-match
+  results; an empty or no-match query restores the invocation position instead
+  of leaving an earlier incremental match selected. `Enter` keeps a
+  non-empty search for `n`/`N`; `Esc` while entering a query cancels and restores
+  the exact pre-search review cursor and viewport when geometry is unchanged,
+  or the same viewport anchor clamped to valid rows after relayout. A successful
+  diff reload explicitly clears search because its semantic identities belong
+  to the old snapshot; a failed reload leaves search intact.
 
 ## Hunk-compatible keyboard contract
 
@@ -95,6 +113,8 @@ review cursor rather than a second scrolling model.
 | `g` / `G`, Home / End | Jump to the start / end of the review stream. |
 | `[` / `]` | Jump to previous / next hunk. |
 | `,` / `.` | Jump to previous / next changed file. |
+| `/` | Start incremental file-path and diff-content search. While entering, `Enter` keeps the search and `Esc` cancels it. |
+| `n` / `N` | Move to the next / previous retained search match, wrapping at either end. |
 | `1` / `2` / `0` | Force split / stack / responsive layout. |
 | `s` | Enable or disable the file rail. Below 72 columns an enabled rail remains hidden and reports why. |
 | `r` | Reload the current Git diff with the selected context setting. |
@@ -102,9 +122,9 @@ review cursor rather than a second scrolling model.
 | `w` | Toggle line wrapping in stack layout. |
 | `=` / `-` | Increase / decrease diff context and reload. Context cannot go below zero. |
 | `Tab` / Shift-Tab | Switch between the review stream and an available selected inline thread. |
-| `?` | Show this keyboard reference. |
+| `?` | Show the grouped keyboard reference. It marks commands valid in the invoking review, thread, or search-results context. |
 | `q` | Quit from review. In the composer it is text; help and rollup consume it. |
-| `Esc` | Close the topmost composer, help, or rollup; from review, quit. |
+| `Esc` | Cancel active search or close the topmost composer, help, or rollup; from review without transient state, quit. |
 
 The only deliberate revia extensions are review actions because Hunk does not
 have persistent local review threads: `c` replies when a thread is targeted and
@@ -132,6 +152,8 @@ when an inline thread is actually available and selected.
 | --- | --- |
 | Review stream | Hunk-compatible stream keys plus dedicated file, hunk, thread, and attention jumps; `Esc` quits. |
 | Inline thread | `t` / `T` cycles the visible target, thread verbs act on it, and `Tab` returns to the stream. |
+| Search input | Character keys edit the incremental query, Backspace deletes, `Enter` keeps a non-empty search, and `Esc` restores the invocation location. |
+| Search results | `n` / `N` wraps through matches, `/` starts a new search from the current location, `?` opens context-marked help, and `Esc` cancels back to the invocation location. |
 | Composer | `Enter` posts and `Esc` cancels the draft before any quit behavior. |
 | Keyboard help | `Esc` or `?` closes help before any quit behavior. |
 | Thread rollup | `j` / `k` selects, `Enter` jumps, and `v` or `Esc` returns before any quit behavior. |
@@ -153,7 +175,8 @@ result cannot clear or overwrite a newer pending operation.
 Included: Git working-tree, staged, commit, and range diffs; multi-file hunk
 reading; syntax-highlighted patch lines; inline persistent review threads;
 open/resolved/outdated/needs-attention state; deterministic review rollup;
-keyboard-only traversal; and runtime context adjustment.
+keyboard-only traversal; case-insensitive plain-text diff search; and runtime
+context adjustment.
 
 Excluded deliberately: staging or patch editing, line-level Git mutations,
 remote pull-request providers, prose/LLM summaries, non-Git VCS support,
@@ -168,6 +191,7 @@ and leave Git's patch plus immutable anchors as the source of truth.
 | Place threads beneath their hunk | The discussion, lifecycle state, and the changed code are readable together. | A rollup-only or modal CRUD view loses the code context. |
 | Keep the current file/hunk selection as the sole navigation model | File, hunk, thread, and attention jumps can all resolve to the same canonical anchor and visible location. | Separate sidebar and diff selections can drift and make the current target ambiguous. |
 | Preserve the existing anchor and JSON thread store | They already provide immutable Git revision provenance and restart persistence. | Display row coordinates are not stable review identities. |
+| Keep search identity semantic and snapshot-local | File paths plus hunk/line locations preserve Git order and can be re-resolved after relayout; clearing on reload prevents stale navigation. | Terminal cell or physical row matches break when width, wrapping, or diff content changes. |
 
 ## Discussion points
 

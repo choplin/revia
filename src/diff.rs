@@ -154,7 +154,10 @@ impl DiffFile {
 
     fn absorb_metadata(&mut self, line: &str) {
         if let Some(path) = line.strip_prefix("+++ ") {
-            self.path = normalize_patch_path(path);
+            let path = normalize_patch_path(path);
+            if path != "/dev/null" {
+                self.path = path;
+            }
         } else if let Some(path) = line.strip_prefix("--- ") {
             self.previous_path = Some(normalize_patch_path(path));
         }
@@ -331,5 +334,15 @@ mod tests {
                 new: HunkRange { start: 1, count: 1 },
             })
         );
+    }
+
+    #[test]
+    fn deleted_files_keep_their_unique_repository_paths() {
+        let document = DiffDocument::parse(
+            "diff --git a/old-a.rs b/old-a.rs\ndeleted file mode 100644\n--- a/old-a.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-old a\ndiff --git a/old-b.rs b/old-b.rs\ndeleted file mode 100644\n--- a/old-b.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-old b\n",
+        );
+
+        assert_eq!(document.files[0].path, "old-a.rs");
+        assert_eq!(document.files[1].path, "old-b.rs");
     }
 }
