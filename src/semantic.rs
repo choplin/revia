@@ -1,5 +1,5 @@
 use crate::{
-    diff::DiffLine,
+    diff::{DiffLine, HunkCoordinates},
     thread::ThreadId,
     ui::{FocusArea, LayoutMode},
 };
@@ -70,6 +70,7 @@ pub struct ReviewFile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewHunk {
     pub header: Option<String>,
+    pub coordinates: Option<HunkCoordinates>,
     pub selected: bool,
     pub lines: Vec<DiffLine>,
     pub threads: Vec<ThreadCard>,

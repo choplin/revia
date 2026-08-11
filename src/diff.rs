@@ -104,6 +104,7 @@ impl DiffDocument {
             if line.starts_with("@@") {
                 file.hunks.push(DiffHunk {
                     header: line.to_owned(),
+                    coordinates: HunkCoordinates::parse(line),
                     lines: Vec::new(),
                 });
             } else if let Some(hunk) = file.hunks.last_mut() {
@@ -184,7 +185,41 @@ fn normalize_patch_path(path: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffHunk {
     pub header: String,
+    pub coordinates: Option<HunkCoordinates>,
     pub lines: Vec<DiffLine>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HunkCoordinates {
+    pub old: HunkRange,
+    pub new: HunkRange,
+}
+
+impl HunkCoordinates {
+    fn parse(header: &str) -> Option<Self> {
+        let mut fields = header.strip_prefix("@@ ")?.split_whitespace();
+        Some(Self {
+            old: HunkRange::parse(fields.next()?, '-')?,
+            new: HunkRange::parse(fields.next()?, '+')?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HunkRange {
+    pub start: usize,
+    pub count: usize,
+}
+
+impl HunkRange {
+    fn parse(value: &str, prefix: char) -> Option<Self> {
+        let value = value.strip_prefix(prefix)?;
+        let (start, count) = value.split_once(',').unwrap_or((value, "1"));
+        Some(Self {
+            start: start.parse().ok()?,
+            count: count.parse().ok()?,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,7 +253,7 @@ pub enum DiffLineKind {
 
 #[cfg(test)]
 mod tests {
-    use super::{DiffDocument, DiffLineKind, DiffRequest, DiffTarget};
+    use super::{DiffDocument, DiffLineKind, DiffRequest, DiffTarget, HunkCoordinates, HunkRange};
 
     #[test]
     fn working_tree_uses_git_diff_with_requested_context() {
@@ -282,5 +317,19 @@ mod tests {
             DiffLineKind::Added
         );
         assert_eq!(document.files[1].path, "readme.md");
+        assert_eq!(
+            document.files[0].hunks[0].coordinates,
+            Some(HunkCoordinates {
+                old: HunkRange { start: 1, count: 1 },
+                new: HunkRange { start: 1, count: 2 },
+            })
+        );
+        assert_eq!(
+            document.files[1].hunks[0].coordinates,
+            Some(HunkCoordinates {
+                old: HunkRange { start: 0, count: 0 },
+                new: HunkRange { start: 1, count: 1 },
+            })
+        );
     }
 }

@@ -39,7 +39,7 @@ impl SemanticTheme {
     }
 
     #[cfg(test)]
-    fn no_color() -> Self {
+    pub(crate) fn no_color() -> Self {
         Self {
             colors_enabled: false,
         }
@@ -234,13 +234,7 @@ impl Renderer {
                 self.semantic_theme,
             ))
             .scroll((scroll, 0));
-        if view.layout.wrap_lines
-            && view.layout.diff_layout.resolved(body_inner_width) == LayoutMode::Stack
-        {
-            frame.render_widget(paragraph.wrap(Wrap { trim: false }), areas.review_body);
-        } else {
-            frame.render_widget(paragraph, areas.review_body);
-        }
+        frame.render_widget(paragraph, areas.review_body);
 
         frame.render_widget(
             Paragraph::new(format!("◆ {}", view.footer.current_context.text))
@@ -271,7 +265,7 @@ impl Renderer {
             ));
             lines.extend(file.metadata.iter().map(|line| {
                 Line::styled(
-                    truncate_end(line, usize::from(available_width)),
+                    truncate_end(&format!("· {line}"), usize::from(available_width)),
                     self.semantic_theme.style(Tone::MutedResolved),
                 )
             }));
@@ -281,6 +275,11 @@ impl Renderer {
                 .and_then(|extension| self.syntax_set.find_syntax_by_extension(extension))
                 .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
             let mut highlighter = HighlightLines::new(syntax, &self.theme);
+            let number_width = presentation::line_number_width(
+                file.hunks
+                    .iter()
+                    .map(|hunk| (hunk.lines.as_slice(), hunk.coordinates)),
+            );
             for hunk in &file.hunks {
                 if let Some(header) = &hunk.header {
                     let style = if hunk.selected {
@@ -299,20 +298,24 @@ impl Renderer {
                 if view.layout.diff_layout.resolved(available_width) == LayoutMode::Split {
                     lines.extend(presentation::split_hunk_lines(
                         &hunk.lines,
+                        hunk.coordinates,
                         available_width,
+                        number_width,
                         hunk.selected,
                         self.semantic_theme,
                     ));
                 } else {
-                    lines.extend(hunk.lines.iter().map(|line| {
-                        presentation::highlight_line(
-                            line,
-                            &mut highlighter,
-                            &self.syntax_set,
-                            hunk.selected,
-                            self.semantic_theme,
-                        )
-                    }));
+                    lines.extend(presentation::stack_hunk_lines(
+                        &hunk.lines,
+                        hunk.coordinates,
+                        available_width,
+                        number_width,
+                        view.layout.wrap_lines,
+                        hunk.selected,
+                        &mut highlighter,
+                        &self.syntax_set,
+                        self.semantic_theme,
+                    ));
                 }
                 for thread in &hunk.threads {
                     let state = match thread.state {
@@ -527,6 +530,8 @@ mod tests {
     use crate::ui::truncate_start;
 
     const RESPONSIVE_DIFF: &str = "diff --git a/src/components/review/navigation.rs b/src/components/review/navigation.rs\n--- a/src/components/review/navigation.rs\n+++ b/src/components/review/navigation.rs\n@@ -1 +1 @@\n-old_navigation\n+new_navigation\ndiff --git a/src/画面/とても長いレビュー項目.rs b/src/画面/とても長いレビュー項目.rs\n--- a/src/画面/とても長いレビュー項目.rs\n+++ b/src/画面/とても長いレビュー項目.rs\n@@ -1 +1 @@\n-old_wide\n+new_wide\n";
+    const READABLE_DIFF: &str = "diff --git a/src/readable.rs b/src/readable.rs\nindex 111..222 100644\n--- a/src/readable.rs\n+++ b/src/readable.rs\n@@ -8,3 +18,3 @@ fn first()\n context\n-old_ascii_line_that_is_far_too_long_for_the_available_terminal_region\n+new\twide_画面_👨‍👩‍👧‍👦_that_is_also_far_too_long_for_the_available_terminal_region\n tail\n@@ -100,2 +200,3 @@ fn second()\n next\n+inserted\n last\n";
+    const HIDDEN_SELECTION_DIFF: &str = "diff --git a/selection.rs b/selection.rs\n--- a/selection.rs\n+++ b/selection.rs\n@@ -8,3 +18,3 @@\n before\n-old_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n+new\n after\n";
 
     fn model_with_diff(raw: &str) -> Model {
         Model::new(
@@ -790,8 +795,8 @@ mod tests {
         assert!(rendered.contains("›"));
         assert!(rendered.contains("▶"));
         assert!(rendered.contains("◆ FOCUSED"));
-        assert!(rendered.contains("-- old_navigation"));
-        assert!(rendered.contains("++ new_navigation"));
+        assert!(rendered.contains("1 -old_navigation"));
+        assert!(rendered.contains("1 +new_navigation"));
         assert!(
             buffer
                 .content()
@@ -818,6 +823,175 @@ mod tests {
                 .iter()
                 .any(|cell| { cell.symbol() == "-" && cell.modifier.contains(Modifier::REVERSED) })
         );
+    }
+
+    #[test]
+    fn hidden_headers_keep_every_selected_source_row_visible_without_color() {
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::no_color(),
+            ..Renderer::default()
+        };
+        let mut model = model_with_diff(HIDDEN_SELECTION_DIFF);
+        crate::app::update(&mut model, review::Event::ToggleSidebar);
+        crate::app::update(&mut model, review::Event::ToggleHunkHeaders);
+
+        crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Split));
+        let split = render(&renderer, &model, 120, 24);
+        assert_selected_source_block(&split, &["┃  8  before", "┃  9 -old_", "┃ 10  after"]);
+
+        crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Stack));
+        crate::app::update(&mut model, review::Event::ToggleWrap);
+        let stack = render(&renderer, &model, 64, 24);
+        assert_selected_source_block(
+            &stack,
+            &[
+                "┃  8 18 │  before",
+                "┃  9    │ -old_",
+                "┃       │ ↪",
+                "┃    19 │ +new",
+                "┃ 10 20 │  after",
+            ],
+        );
+    }
+
+    fn assert_selected_source_block(buffer: &Buffer, expected_rows: &[&str]) {
+        let rendered = rows(buffer);
+        assert!(rendered.iter().all(|row| !row.contains("@@")));
+        let start = rendered
+            .iter()
+            .position(|row| row.contains(expected_rows[0]))
+            .expect("first expected selected source row is visible");
+        assert_eq!(
+            rendered.iter().filter(|row| row.contains('┃')).count(),
+            expected_rows.len()
+        );
+        for (offset, expected) in expected_rows.iter().enumerate() {
+            let y = start + offset;
+            assert!(
+                rendered[y].contains(expected),
+                "row {y} did not contain {expected:?}: {:?}",
+                rendered[y]
+            );
+            for x in 1..buffer.area.width.saturating_sub(1) {
+                assert!(
+                    buffer[(x, y as u16)].modifier.contains(Modifier::REVERSED),
+                    "selection style missing at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wide_and_narrow_diff_rows_preserve_number_gutters_and_region_bounds() {
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::no_color(),
+            ..Renderer::default()
+        };
+        let mut model = model_with_diff(READABLE_DIFF);
+        crate::app::update(&mut model, review::Event::ToggleSidebar);
+
+        let wide_buffer = render(&renderer, &model, 120, 32);
+        let wide = rows(&wide_buffer);
+        let replacement = wide
+            .iter()
+            .find(|row| row.contains("old_ascii_line"))
+            .expect("wide fixture renders its replacement row");
+        assert!(replacement.contains("┃   9 -old_ascii_line"));
+        assert!(replacement.contains("│  19 +new wide_"), "{replacement:?}");
+        let split_at = replacement.find(" │ ").expect("split separator is visible");
+        let split_column = unicode_width::UnicodeWidthStr::width(&replacement[..split_at]);
+        let context = wide
+            .iter()
+            .find(|row| row.contains("┃   8  context"))
+            .expect("wide fixture renders context numbers");
+        let context_split = context.find(" │ ").expect("context separator is visible");
+        assert_eq!(
+            unicode_width::UnicodeWidthStr::width(&context[..context_split]),
+            split_column
+        );
+        assert!(wide.iter().any(|row| row.contains("100  next")));
+        assert!(wide.iter().any(|row| row.contains("│ 200  next")));
+        assert!(wide.iter().any(|row| row.contains("· index 111..222")));
+        assert!(wide.iter().any(|row| row.contains("▶ @@ -8,3 +18,3 @@")));
+
+        crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Stack));
+        let narrow_buffer = render(&renderer, &model, 64, 32);
+        let narrow = rows(&narrow_buffer);
+        assert!(
+            narrow
+                .iter()
+                .any(|row| row.contains("┃   9     │ -old_ascii_line"))
+        );
+        assert!(
+            narrow
+                .iter()
+                .any(|row| row.contains("┃      19 │ +new wide_"))
+        );
+        assert!(narrow.iter().any(|row| row.contains('…')));
+        assert!(narrow.iter().all(|row| !row.contains('\t')));
+        assert!(narrow.iter().any(|row| row.contains("  100 200 │  next")));
+        assert!(
+            narrow_buffer
+                .content()
+                .iter()
+                .all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset)
+        );
+
+        for (y, _row) in narrow
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.contains('┃'))
+        {
+            assert_eq!(narrow_buffer[(63, y as u16)].symbol(), "║");
+            assert!(
+                narrow_buffer[(1, y as u16)]
+                    .modifier
+                    .contains(Modifier::REVERSED)
+            );
+            assert!(
+                narrow_buffer[(62, y as u16)]
+                    .modifier
+                    .contains(Modifier::REVERSED)
+            );
+        }
+        let ascii_selection_row = narrow
+            .iter()
+            .position(|row| row.contains("-old_ascii_line"))
+            .expect("selected ASCII row is visible") as u16;
+        for x in 1..63 {
+            assert!(
+                narrow_buffer[(x, ascii_selection_row)]
+                    .modifier
+                    .contains(Modifier::REVERSED)
+            );
+        }
+    }
+
+    #[test]
+    fn wrapped_stack_rows_keep_gutters_and_selected_hunk_shape() {
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::no_color(),
+            ..Renderer::default()
+        };
+        let mut model = model_with_diff(READABLE_DIFF);
+        crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Stack));
+        crate::app::update(&mut model, review::Event::ToggleWrap);
+        let buffer = render(&renderer, &model, 64, 40);
+        let rendered = rows(&buffer);
+        let continuation = rendered
+            .iter()
+            .find(|row| row.contains("┃         │ ↪"))
+            .expect("wrapped source has a gutter-preserving continuation");
+        assert_eq!(
+            unicode_width::UnicodeWidthStr::width(continuation.as_str()),
+            64
+        );
+
+        let selected_source_rows = rendered
+            .iter()
+            .filter(|row| row.contains("║┃ "))
+            .collect::<Vec<_>>();
+        assert!(selected_source_rows.len() >= 6);
     }
 
     #[test]

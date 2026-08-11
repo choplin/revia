@@ -561,6 +561,7 @@ pub fn view(model: &Model, input: ViewInput<'_>) -> View {
                         let location = HunkLocation::new(&file.path, &hunk.header);
                         ReviewHunk {
                             header: model.show_hunk_headers.then(|| hunk.header.clone()),
+                            coordinates: hunk.coordinates,
                             selected,
                             lines: hunk.lines.clone(),
                             threads: input

@@ -60,8 +60,13 @@ boldness, dimming, and reverse emphasis remain.
   `t` selects the current hunk's thread list, and `}`/`{` jump to the
   next/previous needs-attention thread.
 - The diff is side-by-side by default on wide terminals and stacked on narrow
-  terminals. `s` explicitly switches between the two layouts. The selected
-  hunk uses a high-contrast region in either layout.
+  terminals. Each source row has stable old/new line-number gutters derived
+  from its parsed Git hunk range. Split mode allocates the two sides evenly
+  around an explicit separator; stack mode keeps both numbers beside the
+  change marker. Tabs use four-column stops, and long or wide-character lines
+  are clipped at grapheme boundaries (or continued with `↪` when stack wrapping
+  is enabled). The selected hunk is marked on every row by `┃` as well as a
+  high-contrast style, including when hunk headers are hidden.
 - Thread actions operate on the visibly selected inline thread. `c` replies,
   `C` starts a separate thread, `x` resolves, `R` reopens, and `a` toggles
   needs-attention. The existing immutable revision/path/hunk anchor remains
