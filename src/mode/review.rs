@@ -533,6 +533,13 @@ pub fn view(model: &Model, input: ViewInput<'_>) -> View {
     let body = Body::Review(ReviewBody {
         focused: model.focus() == FocusArea::Review,
         scroll: model.scroll(),
+        empty_state: model
+            .session
+            .diff()
+            .document
+            .files
+            .is_empty()
+            .then(|| empty_diff_message(&model.request.target)),
         files: model
             .session
             .diff()
@@ -592,6 +599,13 @@ pub fn view(model: &Model, input: ViewInput<'_>) -> View {
             wrap_lines: model.wrap_lines,
         },
     }
+}
+
+fn empty_diff_message(target: &crate::diff::DiffTarget) -> String {
+    format!(
+        "No changes found.\nSelected diff target: {}.\nUpdate the target or make a change, then press r to reload.",
+        target.description()
+    )
 }
 
 fn thread_state(thread: &ReviewThread) -> SemanticThreadState {

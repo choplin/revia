@@ -35,6 +35,17 @@ impl DiffRequest {
     }
 }
 
+impl DiffTarget {
+    pub fn description(&self) -> String {
+        match self {
+            Self::WorkingTree => "working tree".into(),
+            Self::Staged => "staged changes".into(),
+            Self::Commit(revision) => format!("commit {revision}"),
+            Self::Range(range) => format!("range {range}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedDiff {
     pub text: String,
@@ -52,7 +63,11 @@ impl LoadedDiff {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("git could not load this diff: {}", stderr.trim());
+            bail!(
+                "git could not load the selected {} diff: {}",
+                request.target.description(),
+                stderr.trim()
+            );
         }
 
         let text = String::from_utf8(output.stdout).context("git produced a non-UTF-8 diff")?;
@@ -236,6 +251,20 @@ mod tests {
         assert_eq!(
             commit.git_arguments(),
             ["show", "--no-ext-diff", "--unified=3", "--format=", "HEAD"]
+        );
+    }
+
+    #[test]
+    fn target_descriptions_identify_every_selectable_diff() {
+        assert_eq!(DiffTarget::WorkingTree.description(), "working tree");
+        assert_eq!(DiffTarget::Staged.description(), "staged changes");
+        assert_eq!(
+            DiffTarget::Commit("abc123".into()).description(),
+            "commit abc123"
+        );
+        assert_eq!(
+            DiffTarget::Range("main...HEAD".into()).description(),
+            "range main...HEAD"
         );
     }
 

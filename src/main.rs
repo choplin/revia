@@ -19,15 +19,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use app::{ActiveMode, Effect, Model};
 use clap::Parser;
 use cli::Args;
-use crossterm::{
-    event::{self, Event as CrosstermEvent},
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
+use crossterm::event::{self, Event as CrosstermEvent};
 use diff::LoadedDiff;
 use input::{Key, KeyPhase};
 use ratatui::{Terminal, backend::CrosstermBackend};
@@ -37,35 +33,41 @@ use runtime::Runtime;
 fn main() -> Result<()> {
     let args = Args::parse();
     let request = args.request();
-    let diff = LoadedDiff::load(&args.repo, &request)?;
+    let diff = LoadedDiff::load(&args.repo, &request).with_context(|| {
+        format!(
+            "could not load the selected {} diff from {}",
+            request.target.description(),
+            args.repo.display()
+        )
+    })?;
 
     if args.print || !io::IsTerminal::is_terminal(&io::stdout()) {
         print!("{}", diff.text);
         return Ok(());
     }
 
-    let (runtime, threads) = Runtime::open(&args.repo)?;
+    let (runtime, threads) = Runtime::open(&args.repo).with_context(|| {
+        format!(
+            "could not open the review thread store for {}",
+            args.repo.display()
+        )
+    })?;
     let model = Model::new(request, diff, threads);
     run_tui(model, runtime)
 }
 
 fn run_tui(mut model: Model, runtime: Runtime) -> Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut session = crossterm_adapter::TerminalSession::start(io::stdout())?;
+    let backend = CrosstermBackend::new(session.writer_mut());
+    let mut terminal = Terminal::new(backend).context("could not initialize terminal renderer")?;
 
     let result = run_app(&mut terminal, &mut model, &runtime);
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-    result
+    drop(terminal);
+    session.finish(result)
 }
 
 fn run_app(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut Terminal<CrosstermBackend<&mut io::Stdout>>,
     model: &mut Model,
     runtime: &Runtime,
 ) -> Result<()> {
@@ -85,6 +87,9 @@ fn run_app(
         }
         match event::read()? {
             CrosstermEvent::Key(key) => {
+                if crossterm_adapter::is_interrupt(key) {
+                    bail!("interrupted by Ctrl-C");
+                }
                 let input = crossterm_adapter::physical_input(key);
                 if input.phase == KeyPhase::Release {
                     continue;

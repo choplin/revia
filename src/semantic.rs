@@ -55,6 +55,7 @@ pub enum Body {
 pub struct ReviewBody {
     pub focused: bool,
     pub scroll: u16,
+    pub empty_state: Option<String>,
     pub files: Vec<ReviewFile>,
 }
 

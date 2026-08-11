@@ -40,6 +40,10 @@ impl Default for Renderer {
 
 impl Renderer {
     pub fn render(&self, frame: &mut Frame, view: &View) {
+        if frame.area().width < 48 || frame.area().height < 8 {
+            self.render_too_small(frame);
+            return;
+        }
         let [header, content, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(1),
@@ -140,8 +144,8 @@ impl Renderer {
     }
 
     fn review_text(&self, review: &ReviewBody, available_width: u16, view: &View) -> Text<'static> {
-        if review.files.is_empty() {
-            return Text::raw("No changed files.");
+        if let Some(message) = &review.empty_state {
+            return Text::raw(message.clone());
         }
         let mut lines = Vec::new();
         for file in &review.files {
@@ -221,6 +225,19 @@ impl Renderer {
             }
         }
         Text::from(lines)
+    }
+
+    fn render_too_small(&self, frame: &mut Frame) {
+        let area = frame.area();
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Paragraph::new(format!(
+                "Terminal is too small for revia ({0}×{1}).\nResize to at least 48×8, then continue.\nPress q to quit.",
+                area.width, area.height
+            ))
+            .wrap(Wrap { trim: false }),
+            area,
+        );
     }
 
     fn render_overlay(&self, frame: &mut Frame, overlay: &Overlay) {
@@ -396,5 +413,74 @@ mod tests {
             .collect::<String>();
         assert!(stack.contains("-old_a"));
         assert!(stack.contains("+new_a"));
+    }
+
+    #[test]
+    fn renders_a_stable_explanation_below_the_minimum_layout_size() {
+        let renderer = Renderer::default();
+        let model = Model::new(
+            DiffRequest {
+                target: DiffTarget::WorkingTree,
+                context_lines: 3,
+            },
+            LoadedDiff {
+                text: String::new(),
+                document: DiffDocument::default(),
+            },
+            ThreadState::default(),
+        );
+        let semantic = crate::app::view(&model);
+
+        for (width, height) in [(1, 1), (12, 7), (47, 20)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| renderer.render(frame, &semantic))
+                .unwrap();
+            let rendered = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(rendered.contains("Terminal") || width < 8);
+        }
+    }
+
+    #[test]
+    fn renders_empty_states_with_the_selected_diff_target() {
+        let renderer = Renderer::default();
+        for (target, expected) in [
+            (DiffTarget::WorkingTree, "working tree"),
+            (DiffTarget::Staged, "staged changes"),
+            (DiffTarget::Commit("abc123".into()), "commit abc123"),
+            (DiffTarget::Range("main...HEAD".into()), "range main...HEAD"),
+        ] {
+            let model = Model::new(
+                DiffRequest {
+                    target,
+                    context_lines: 3,
+                },
+                LoadedDiff {
+                    text: String::new(),
+                    document: DiffDocument::default(),
+                },
+                ThreadState::default(),
+            );
+            let semantic = crate::app::view(&model);
+            let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
+            terminal
+                .draw(|frame| renderer.render(frame, &semantic))
+                .unwrap();
+            let rendered = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(rendered.contains("No changes found."));
+            assert!(rendered.contains(expected));
+        }
     }
 }
