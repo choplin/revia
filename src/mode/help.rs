@@ -80,7 +80,7 @@ pub fn view(model: &Model) -> Overlay {
     };
     Overlay::Help {
         text: format!(
-            "◆ commands valid from {context}\n\nNavigation\n◆ j/k, ↑/↓ rows   f/Space, b pages   d/u half page\n◆ g/G edges        [/] hunk          ,/. file\n◆ / new search     {search} n/N next/previous match (wrap)\n\nView\n◆ 1/2/0 layout     s file rail       m headers · w wrap\n◆ =/- context      r reload\n\nReview actions\n◆ t/T thread       Tab stream/thread c/C compose/new\n{thread} x/R resolve/reopen   {thread} a/o flags\n◆ {{/}} attention   v rollup\n\nGlobal / exit\n◆ ? help           q quit review     {escape}\n  In help: Esc/? closes and returns to {context}"
+            "◆ commands valid from {context}\n\nNavigation\n◆ j/k, ↑/↓ rows   f/Space, b pages   d/u half page\n◆ g/G edges        [/] hunk          ,/. file\n◆ / new search     {search} n/N next/previous match (wrap)\n\nView\n◆ 1/2/0 layout     s file rail       m headers · w wrap\n◆ =/- context      r reload\n\nReview actions\n◆ t/T thread       Tab stream/thread c/C compose/new\n{thread} x/R resolve/reopen   {thread} a/o flags   {thread} e resolved fold\n◆ {{/}} attention   v rollup\n\nGlobal / exit\n◆ ? help           q quit review     {escape}\n  In help: Esc/? closes and returns to {context}"
         ),
     }
 }

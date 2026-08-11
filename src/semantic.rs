@@ -115,8 +115,12 @@ pub struct ReviewHunk {
 pub struct ThreadCard {
     pub id: ThreadId,
     pub state: ThreadState,
+    pub resolved: bool,
     pub outdated: bool,
     pub active: bool,
+    pub expanded: bool,
+    pub message_count: usize,
+    pub closed_by: Option<String>,
     pub latest: String,
 }
 

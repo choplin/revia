@@ -75,8 +75,18 @@ the old and new sides when two matches share one split-layout row.
   high-contrast style, including when hunk headers are hidden.
 - Thread actions operate on the visibly selected inline thread. `c` replies,
   `C` starts a separate thread, `x` resolves, `R` reopens, and `a` toggles
-  needs-attention. The existing immutable revision/path/hunk anchor remains
+  needs-attention. `e` keeps a resolved card expanded or lets it fold when it
+  becomes inactive. The existing immutable revision/path/hunk anchor remains
   the canonical location.
+- Inline cards continue the hunk gutter with `├─` / `╰─` connectors. Their
+  lifecycle hierarchy is also textual: `▶ ACTIVE`, `! NEEDS ATTENTION`,
+  `• OPEN`, `✓ RESOLVED`, and `~ OUTDATED` remain distinct with `NO_COLOR`.
+  Inactive resolved cards use a compact provenance-bearing summary with the
+  exact thread ID, closer, and message count, continuing the closer on a narrow
+  row when necessary. Selected, attention, open, or explicitly kept cards show
+  the latest authored message and applicable actions. Message text
+  wraps at grapheme boundaries and is intentionally capped with `…` after two
+  rows, or three for the active/attention context.
 - The viewport is presentation state, separate from the review cursor. Resizes,
   split/stack changes, wrapping, header visibility, and rail visibility restore
   the same anchored file/hunk-relative position and clamp only at stream edges.
@@ -130,7 +140,8 @@ The only deliberate revia extensions are review actions because Hunk does not
 have persistent local review threads: `c` replies when a thread is targeted and
 otherwise creates a thread, `C` always creates one, `t` / `T` select or cycle
 next/previous inline threads, `x` resolves, `R` reopens, `a` toggles
-needs-attention, `o` toggles outdated, `v` opens the rollup, and `{` / `}` jump
+needs-attention, `o` toggles outdated, `e` keeps/folds resolved context, `v`
+opens the rollup, and `{` / `}` jump
 among needs-attention threads. Mutating thread actions are available only while
 the inline thread is visibly targeted; otherwise the footer explains how to
 select one.

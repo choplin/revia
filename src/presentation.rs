@@ -16,8 +16,11 @@ use crate::{
     anchor::HunkLocation,
     diff::{DiffLine, DiffLineKind, HunkCoordinates},
     renderer::SemanticTheme,
-    semantic::{DiffSearchTarget, LayoutPolicy, ReviewBody, StickyReviewContext, Tone},
-    ui::{LayoutMode, fit_width},
+    semantic::{
+        DiffSearchTarget, LayoutPolicy, ReviewBody, StickyReviewContext, ThreadCard, ThreadState,
+        Tone,
+    },
+    ui::{LayoutMode, fit_width, truncate_end},
 };
 
 const TAB_WIDTH: usize = 4;
@@ -233,12 +236,20 @@ pub(crate) fn review_row_map(
                 layout,
             );
             cursor = cursor.saturating_add(diff_rows);
-            let active_thread_row = hunk
-                .threads
-                .iter()
-                .position(|thread| thread.active)
-                .map(|index| cursor.saturating_add(index.saturating_mul(3)));
-            cursor = cursor.saturating_add(hunk.threads.len().saturating_mul(3));
+            let mut active_thread_row = None;
+            for (thread_index, thread) in hunk.threads.iter().enumerate() {
+                if thread.active {
+                    active_thread_row = Some(cursor);
+                }
+                cursor = cursor.saturating_add(
+                    thread_card_rows(
+                        thread,
+                        available_width,
+                        thread_index + 1 == hunk.threads.len(),
+                    )
+                    .len(),
+                );
+            }
             hunks.push(HunkRows {
                 anchor: hunk.anchor.clone(),
                 header: hunk.header.clone(),
@@ -263,6 +274,174 @@ pub(crate) fn review_row_map(
         total_rows: cursor,
         files,
     }
+}
+
+/// Produces the complete, width-bounded physical rows for one inline thread card.
+///
+/// Keeping this transform shared by row mapping and rendering makes card height
+/// changes safe for viewport anchoring and selected-target navigation.
+pub(crate) fn thread_card_rows(
+    thread: &ThreadCard,
+    available_width: u16,
+    is_last: bool,
+) -> Vec<String> {
+    let width = usize::from(available_width);
+    let narrow = width < 72;
+    let state = match (thread.state, thread.resolved, narrow) {
+        (ThreadState::NeedsAttention, true, true) => "! ATTENTION · ✓ RESOLVED",
+        (ThreadState::NeedsAttention, false, true) => "! ATTENTION · • OPEN",
+        (ThreadState::NeedsAttention, true, false) => "! NEEDS ATTENTION · ✓ RESOLVED",
+        (ThreadState::NeedsAttention, false, false) => "! NEEDS ATTENTION · • OPEN",
+        (ThreadState::Open, _, _) => "• OPEN",
+        (ThreadState::Resolved, _, _) => "✓ RESOLVED",
+    };
+    let active = if thread.active { "▶ ACTIVE · " } else { "" };
+    let outdated = if thread.outdated {
+        " · ~ OUTDATED"
+    } else {
+        ""
+    };
+    let connector = if is_last { "╰─" } else { "├─" };
+    let provenance = thread
+        .closed_by
+        .as_ref()
+        .map_or_else(String::new, |actor| format!(" · closed by {actor}"));
+    let messages = match thread.message_count {
+        1 => "1 message".to_owned(),
+        count => format!("{count} messages"),
+    };
+    let expanded = thread.active
+        || thread.expanded
+        || matches!(
+            thread.state,
+            ThreadState::NeedsAttention | ThreadState::Open
+        );
+
+    if !expanded {
+        let summary = format!(
+            "  {connector} #{:03} {state}{outdated}{provenance} · {messages}",
+            thread.id
+        );
+        if UnicodeWidthStr::width(summary.as_str()) <= width || thread.closed_by.is_none() {
+            return vec![truncate_end(&summary, width)];
+        }
+        let mut rows = vec![truncate_end(
+            &format!(
+                "  {connector} #{:03} {state}{outdated} · {messages}",
+                thread.id
+            ),
+            width,
+        )];
+        rows.extend(wrap_thread_message(
+            &format!(
+                "closed by {}",
+                thread.closed_by.as_deref().unwrap_or_default()
+            ),
+            width,
+            usize::MAX,
+        ));
+        return rows;
+    }
+
+    let mut rows = if narrow && (thread.active || thread.state == ThreadState::NeedsAttention) {
+        let narrow_active = if thread.active { "▶ ACTIVE · " } else { "" };
+        let mut rows = vec![truncate_end(
+            &format!(
+                "  {connector} {narrow_active}#{:03} · {messages}",
+                thread.id
+            ),
+            width,
+        )];
+        rows.push(truncate_end(&format!("  │ {state}{outdated}"), width));
+        if let Some(actor) = thread.closed_by.as_deref() {
+            rows.extend(wrap_thread_message(
+                &format!("closed by {actor}"),
+                width,
+                usize::MAX,
+            ));
+        }
+        rows
+    } else {
+        vec![truncate_end(
+            &format!(
+                "  {connector} {active}#{:03} {state}{outdated}{provenance} · {messages}",
+                thread.id
+            ),
+            width,
+        )]
+    };
+    let max_message_rows = if thread.active || thread.state == ThreadState::NeedsAttention {
+        3
+    } else {
+        2
+    };
+    rows.extend(wrap_thread_message(&thread.latest, width, max_message_rows));
+    let actions = if thread.active && narrow {
+        if thread.resolved {
+            vec![
+                "  │ c reply · R reopen · a attention",
+                "  └─ o outdated · e keep/fold",
+            ]
+        } else {
+            vec!["  │ c reply · x resolve · a attention", "  └─ o outdated"]
+        }
+    } else if thread.active {
+        if thread.resolved {
+            vec!["  └─ c reply · R reopen · a attention · o outdated · e keep/fold"]
+        } else {
+            vec!["  └─ c reply · x resolve · a attention · o outdated"]
+        }
+    } else if thread.state == ThreadState::NeedsAttention {
+        vec!["  └─ t/T select · action required"]
+    } else {
+        vec!["  └─ t/T select for thread actions"]
+    };
+    rows.extend(
+        actions
+            .into_iter()
+            .map(|action| truncate_end(action, width)),
+    );
+    rows
+}
+
+fn wrap_thread_message(value: &str, width: usize, max_rows: usize) -> Vec<String> {
+    const PREFIX: &str = "  │ ";
+    let prefix_width = UnicodeWidthStr::width(PREFIX);
+    let content_width = width.saturating_sub(prefix_width);
+    if content_width == 0 {
+        return vec![truncate_end(PREFIX, width)];
+    }
+
+    let mut chunks = Vec::new();
+    for source_line in value.lines() {
+        let mut chunk = String::new();
+        let mut chunk_width: usize = 0;
+        for grapheme in source_line.graphemes(true) {
+            let grapheme_width = UnicodeWidthStr::width(grapheme);
+            if !chunk.is_empty() && chunk_width.saturating_add(grapheme_width) > content_width {
+                chunks.push(std::mem::take(&mut chunk));
+                chunk_width = 0;
+            }
+            if grapheme_width <= content_width {
+                chunk.push_str(grapheme);
+                chunk_width = chunk_width.saturating_add(grapheme_width);
+            }
+        }
+        chunks.push(chunk);
+    }
+    if chunks.is_empty() {
+        chunks.push(String::new());
+    }
+
+    let truncated = chunks.len() > max_rows;
+    chunks.truncate(max_rows);
+    if truncated && let Some(last) = chunks.last_mut() {
+        *last = truncate_end(&format!("{last}…"), content_width);
+    }
+    chunks
+        .into_iter()
+        .map(|chunk| truncate_end(&format!("{PREFIX}{chunk}"), width))
+        .collect()
 }
 
 fn hunk_line_rows(
@@ -843,10 +1022,13 @@ fn merge_syntect_style(base: Style, source: SyntectStyle) -> Style {
 mod tests {
     use super::{
         chunk_graphemes, expand_tabs, line_number_width, numbered_lines, split_hunk_lines,
-        split_rows,
+        split_rows, thread_card_rows,
     };
+    use crate::anchor::{Anchor, HunkLocation};
     use crate::diff::{DiffLine, DiffLineKind, HunkCoordinates, HunkRange};
     use crate::renderer::SemanticTheme;
+    use crate::semantic::{ThreadCard, ThreadState as SemanticThreadState};
+    use crate::thread::{Participant, ParticipantKind, ThreadState};
     use unicode_segmentation::UnicodeSegmentation;
     use unicode_width::UnicodeWidthStr;
 
@@ -855,6 +1037,56 @@ mod tests {
             kind,
             text: text.into(),
         }
+    }
+
+    #[test]
+    fn lifecycle_cards_are_width_bounded_and_resolved_cards_fold_with_provenance() {
+        let human = Participant {
+            id: "レビュー担当".into(),
+            kind: ParticipantKind::Human,
+        };
+        let mut threads = ThreadState::default();
+        let id = threads.post(
+            Anchor::new("deadbeef", HunkLocation::new("画面.rs", "@@ -1 +1 @@")),
+            human,
+            "message".into(),
+            1,
+        );
+        let compact = ThreadCard {
+            id,
+            state: SemanticThreadState::Resolved,
+            resolved: true,
+            outdated: true,
+            active: false,
+            expanded: false,
+            message_count: 4,
+            closed_by: Some("レビュー担当".into()),
+            latest: "human: 長い画面メッセージ👨‍👩‍👧‍👦 that must wrap without crossing the card edge"
+                .into(),
+        };
+
+        let compact_rows = thread_card_rows(&compact, 48, true);
+        assert_eq!(compact_rows.len(), 2);
+        assert!(compact_rows[0].contains("#000"));
+        assert!(compact_rows[0].contains("RESOLVED"));
+        assert!(compact_rows.join("").contains("closed by レビュー担当"));
+
+        let expanded_rows = thread_card_rows(
+            &ThreadCard {
+                active: true,
+                ..compact
+            },
+            28,
+            true,
+        );
+        assert!(expanded_rows.len() >= 3);
+        assert!(expanded_rows[0].contains("▶ ACTIVE"));
+        assert!(
+            expanded_rows
+                .iter()
+                .all(|row| UnicodeWidthStr::width(row.as_str()) <= 28)
+        );
+        assert!(expanded_rows.iter().any(|row| row.contains('…')));
     }
 
     #[test]

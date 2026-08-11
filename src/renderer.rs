@@ -466,12 +466,7 @@ impl Renderer {
                     marker.style = self.semantic_theme.style(Tone::Attention);
                 }
                 lines.extend(hunk_lines);
-                for thread in &hunk.threads {
-                    let state = match thread.state {
-                        ThreadState::NeedsAttention => "NEEDS ATTENTION",
-                        ThreadState::Open => "OPEN",
-                        ThreadState::Resolved => "RESOLVED",
-                    };
+                for (thread_index, thread) in hunk.threads.iter().enumerate() {
                     let style = match (thread.active, thread.state) {
                         (true, _) => self.semantic_theme.selection(),
                         (false, ThreadState::NeedsAttention) => {
@@ -482,24 +477,15 @@ impl Renderer {
                         }
                         (false, ThreadState::Open) => Style::default(),
                     };
-                    lines.push(Line::styled(
-                        format!(
-                            "{} ┌ #{:03} {state}{}",
-                            if thread.active { "▶" } else { " " },
-                            thread.id,
-                            if thread.outdated { " · outdated" } else { "" }
-                        ),
-                        style,
-                    ));
-                    lines.push(Line::styled(format!("  │ {}", thread.latest), style));
-                    lines.push(Line::styled(
-                        if thread.active {
-                            "  └ c reply · x resolve · R reopen · a attention"
-                        } else {
-                            "  └ select with t/T to use thread actions"
-                        },
-                        style,
-                    ));
+                    lines.extend(
+                        presentation::thread_card_rows(
+                            thread,
+                            available_width,
+                            thread_index + 1 == hunk.threads.len(),
+                        )
+                        .into_iter()
+                        .map(|row| Line::styled(row, style)),
+                    );
                 }
             }
         }
@@ -854,6 +840,89 @@ mod tests {
             .collect::<String>();
         assert!(stack.contains("-old_a"));
         assert!(stack.contains("+new_a"));
+    }
+
+    #[test]
+    fn lifecycle_cards_remain_legible_at_wide_narrow_and_no_color_sizes() {
+        let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let human = Participant {
+            id: "reviewer".into(),
+            kind: ParticipantKind::Human,
+        };
+        let location = HunkLocation::new("a.rs", "@@ -1 +1 @@");
+        let mut threads = ThreadState::default();
+        threads.post(
+            Anchor::new("deadbeef", location.clone()),
+            human.clone(),
+            "open context".into(),
+            1,
+        );
+        let resolved = threads.post(
+            Anchor::new("deadbeef", location.clone()),
+            human.clone(),
+            "resolved context".into(),
+            2,
+        );
+        threads.close(resolved, &human).unwrap();
+        let attention = threads.post(
+            Anchor::new("deadbeef", location),
+            human,
+            "reviewer: 長い画面メッセージ👨‍👩‍👧‍👦 that wraps across a narrow card without corrupting the next row".into(),
+            3,
+        );
+        threads.set_needs_attention(attention, true).unwrap();
+        threads.set_outdated(attention, true).unwrap();
+        let mut model = Model::new(
+            DiffRequest {
+                target: DiffTarget::WorkingTree,
+                context_lines: 3,
+            },
+            LoadedDiff {
+                text: raw.into(),
+                document: DiffDocument::parse(raw),
+            },
+            threads,
+        );
+        crate::app::update(&mut model, review::Event::MoveThread(1));
+        crate::app::update(&mut model, review::Event::MoveThread(1));
+        crate::app::update(&mut model, review::Event::MoveThread(1));
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::no_color(),
+            ..Renderer::default()
+        };
+
+        let wide = render(&renderer, &mut model, 120, 40);
+        let wide_text = rows(&wide).join("\n");
+        assert!(wide_text.contains("├─"));
+        assert!(wide_text.contains("╰─ ▶ ACTIVE · #002 ! NEEDS ATTENTION · • OPEN · ~ OUTDATED"));
+        assert!(wide_text.contains("✓ RESOLVED · closed by reviewer"));
+        assert!(wide.content().iter().all(|cell| cell.fg == Color::Reset));
+
+        let narrow = render(&renderer, &mut model, 48, 40);
+        let narrow_rows = rows(&narrow);
+        let narrow_text = narrow_rows.join("\n");
+        assert!(narrow_text.contains("▶ ACTIVE"));
+        assert!(narrow_text.contains("! ATTENTION"));
+        assert!(narrow_text.contains("• OPEN"));
+        assert!(narrow_text.contains("~ OUTDATED"));
+        assert!(narrow_text.contains('…'));
+        assert!(narrow.content().iter().all(|cell| cell.fg == Color::Reset));
+
+        crate::app::update(&mut model, review::Event::MoveThread(-1));
+        let resolved = render(&renderer, &mut model, 48, 40);
+        let resolved_text = rows(&resolved).join("\n");
+        for action in [
+            "c reply",
+            "R reopen",
+            "a attention",
+            "o outdated",
+            "e keep/fold",
+        ] {
+            assert!(
+                resolved_text.contains(action),
+                "missing {action}: {resolved_text}"
+            );
+        }
     }
 
     #[test]

@@ -137,6 +137,36 @@ fn threads() -> ThreadState {
     threads
 }
 
+fn lifecycle_threads() -> ThreadState {
+    let mut threads = ThreadState::default();
+    let human = Participant {
+        id: "reviewer".into(),
+        kind: ParticipantKind::Human,
+    };
+    threads.post(
+        Anchor::new("deadbeef", HunkLocation::new("a.rs", "@@ -1 +1 @@")),
+        human.clone(),
+        "open context".into(),
+        1,
+    );
+    let resolved = threads.post(
+        Anchor::new("deadbeef", HunkLocation::new("a.rs", "@@ -1 +1 @@")),
+        human.clone(),
+        "resolved provenance".into(),
+        2,
+    );
+    threads.close(resolved, &human).unwrap();
+    let attention = threads.post(
+        Anchor::new("deadbeef", HunkLocation::new("a.rs", "@@ -1 +1 @@")),
+        human,
+        "wide 画面 context requiring an explicit decision".into(),
+        3,
+    );
+    threads.set_needs_attention(attention, true).unwrap();
+    threads.set_outdated(attention, true).unwrap();
+    threads
+}
+
 const RAW: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
 const TWO_FILES: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-old_b\n+new_b\n";
 const LONG_DIFF: &str = concat!(
@@ -1237,6 +1267,79 @@ fn one_review_cursor_drives_file_hunk_thread_and_stream_targets() {
             .as_deref()
             .is_some_and(|status| status == format!("review stream row {}", previous_scroll + 2))
     );
+}
+
+#[test]
+fn lifecycle_cards_fold_deterministically_and_actions_follow_the_visible_target() {
+    let mut scenario = Scenario::given(RAW, lifecycle_threads());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 12,
+        columns: 56,
+    });
+
+    let view = super::view(&scenario.model);
+    let Body::Review(review) = view.body else {
+        panic!("review body")
+    };
+    let cards = &review.files[0].hunks[0].threads;
+    assert_eq!(
+        cards
+            .iter()
+            .map(|card| card.id.to_string())
+            .collect::<Vec<_>>(),
+        ["0", "1", "2"]
+    );
+    assert_eq!(
+        presentation::thread_card_rows(&cards[1], 54, false).len(),
+        1
+    );
+    assert!(presentation::thread_card_rows(&cards[2], 54, true).len() > 1);
+
+    scenario.when_input(input(Key::Char('t')));
+    scenario.when_input(input(Key::Char('t')));
+    let view = super::view(&scenario.model);
+    let Body::Review(review) = view.body else {
+        panic!("review body")
+    };
+    assert!(review.files[0].hunks[0].threads[1].active);
+    assert!(
+        presentation::thread_card_rows(&review.files[0].hunks[0].threads[1], 54, false).len() > 1
+    );
+
+    scenario.when_input(input(Key::Char('e')));
+    scenario.when_input(input(Key::Tab));
+    let view = super::view(&scenario.model);
+    let Body::Review(review) = view.body else {
+        panic!("review body")
+    };
+    assert!(!review.files[0].hunks[0].threads[1].active);
+    assert!(review.files[0].hunks[0].threads[1].expanded);
+
+    scenario.when_input(input(Key::Char('t')));
+    scenario.when_input(input(Key::Char('e')));
+    scenario.when_input(input(Key::Tab));
+    let view = super::view(&scenario.model);
+    let Body::Review(review) = view.body else {
+        panic!("review body")
+    };
+    assert_eq!(
+        presentation::thread_card_rows(&review.files[0].hunks[0].threads[1], 54, false).len(),
+        1
+    );
+
+    scenario.when_input(input(Key::Char('t')));
+    scenario.when_input(input(Key::Char('R')));
+    let effects = scenario.trace.iter().rev().find_map(|trace| match trace {
+        Trace::Effect(effect) => Some(effect),
+        Trace::Event(_) => None,
+    });
+    assert!(matches!(
+        effects,
+        Some(Effect::ChangeThreads {
+            operation: crate::thread::ThreadOperation::Reopen { id },
+            ..
+        }) if id.to_string() == "1"
+    ));
 }
 
 #[test]

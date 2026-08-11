@@ -270,7 +270,7 @@ fn context_keys(
             }
             SurfaceContext::Review => "j/k stream · [/] hunk · ,/. file · / search",
             SurfaceContext::Threads if selected_thread_available => {
-                "Tab stream · t/T · c/C · x/R · a/o"
+                "Tab stream · t/T · c/C · x/R · a/o · e resolved"
             }
             SurfaceContext::Threads => "Tab stream · c new · ? help",
             SurfaceContext::SearchInput => "type query · Enter keep · Esc cancel",
@@ -291,7 +291,7 @@ fn context_keys(
             "j/k stream • [/] hunk • ,/. file • / search • c new thread • ? help"
         }
         SurfaceContext::Threads if selected_thread_available => {
-            "t/T thread • c reply • C new • x resolve • R reopen • a attention • Tab stream • ? help"
+            "t/T thread • c reply • C new • x resolve • R reopen • a/o flags • e resolved fold • Tab stream • ? help"
         }
         SurfaceContext::Threads => "c new thread • Tab stream • ? help",
         SurfaceContext::SearchInput => "type query • Backspace delete • Enter keep • Esc cancel",

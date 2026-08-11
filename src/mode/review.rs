@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::{
     anchor::HunkLocation,
     diff::{DiffRequest, LoadedDiff},
@@ -27,6 +29,7 @@ pub struct Model {
     viewport_rows: u16,
     viewport_columns: u16,
     search: Option<SearchState>,
+    expanded_threads: BTreeSet<ThreadId>,
 }
 
 #[derive(Debug)]
@@ -78,6 +81,7 @@ impl Model {
             viewport_rows: 20,
             viewport_columns: 120,
             search: None,
+            expanded_threads: BTreeSet::new(),
         }
     }
 
@@ -375,6 +379,7 @@ pub enum Event {
     ReopenThread,
     ToggleAttention,
     ToggleOutdated,
+    ToggleThreadExpansion,
     MoveAttention(i32),
     ShowRollup,
     SetLayout(LayoutMode),
@@ -547,6 +552,7 @@ pub fn bindings(model: &Model, input: PhysicalInput) -> BindingResolution<Event>
         Key::Char('R') => BindingResolution::Handle(Event::ReopenThread),
         Key::Char('a') => BindingResolution::Handle(Event::ToggleAttention),
         Key::Char('o') => BindingResolution::Handle(Event::ToggleOutdated),
+        Key::Char('e') => BindingResolution::Handle(Event::ToggleThreadExpansion),
         Key::Char('}') => BindingResolution::Handle(Event::MoveAttention(1)),
         Key::Char('{') => BindingResolution::Handle(Event::MoveAttention(-1)),
         Key::Char('v') => BindingResolution::Handle(Event::ShowRollup),
@@ -822,6 +828,35 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
                     value,
                 }));
         }
+        Event::ToggleThreadExpansion => {
+            let Some(id) = current_thread(model, input.threads, &mut result) else {
+                return result;
+            };
+            if !input
+                .threads
+                .thread(id)
+                .is_some_and(|thread| matches!(thread.resolution, Resolution::Resolved))
+            {
+                status(&mut result, "only resolved threads can be kept expanded");
+                return result;
+            }
+            let was_expanded = model.expanded_threads.contains(&id);
+            model.change_geometry(input.threads, |model| {
+                if was_expanded {
+                    model.expanded_threads.remove(&id);
+                } else {
+                    model.expanded_threads.insert(id);
+                }
+            });
+            status(
+                &mut result,
+                if was_expanded {
+                    format!("thread #{id} will collapse when inactive")
+                } else {
+                    format!("thread #{id} will stay expanded")
+                },
+            );
+        }
         Event::MoveAttention(direction) => {
             let attention = input.threads.attention_ids();
             if attention.is_empty() {
@@ -903,7 +938,7 @@ fn move_focus(model: &mut Model, threads: &Threads, result: &mut Update, previou
         status(result, "cannot focus threads: this hunk has no threads");
         return;
     }
-    model.view.focus = next;
+    model.change_geometry(threads, |model| model.view.focus = next);
     match next {
         FocusArea::Review => status(result, "review stream focused"),
         FocusArea::Threads => {
@@ -1348,10 +1383,17 @@ fn review_body(model: &Model, threads: &Threads) -> ReviewBody {
                                 .map(|(thread_index, thread)| ThreadCard {
                                     id: thread.id,
                                     state: thread_state(thread),
+                                    resolved: matches!(thread.resolution, Resolution::Resolved),
                                     outdated: thread.outdated,
                                     active: selected
                                         && thread_index == model.session.cursor().selected_thread()
                                         && model.focus() == FocusArea::Threads,
+                                    expanded: model.expanded_threads.contains(&thread.id),
+                                    message_count: thread.messages.len(),
+                                    closed_by: thread
+                                        .closed_by
+                                        .as_ref()
+                                        .map(|participant| participant.id.clone()),
                                     latest: thread
                                         .messages
                                         .last()
