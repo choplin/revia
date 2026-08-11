@@ -198,20 +198,6 @@ impl ThreadState {
         self.threads.iter().find(|thread| thread.id == id)
     }
 
-    pub fn at(&self, location: &HunkLocation) -> Vec<&ReviewThread> {
-        self.threads
-            .iter()
-            .filter(|thread| thread.anchor.is_at(location))
-            .collect()
-    }
-
-    pub fn in_file(&self, path: &str) -> Vec<&ReviewThread> {
-        self.threads
-            .iter()
-            .filter(|thread| thread.anchor.location().path() == path)
-            .collect()
-    }
-
     pub fn ordered_ids(&self) -> Vec<ThreadId> {
         let mut threads = self.threads.iter().collect::<Vec<_>>();
         threads.sort_by_key(|thread| {
@@ -224,16 +210,6 @@ impl ThreadState {
             }
         });
         threads.into_iter().map(|thread| thread.id).collect()
-    }
-
-    pub fn attention_ids(&self) -> Vec<ThreadId> {
-        self.ordered_ids()
-            .into_iter()
-            .filter(|id| {
-                self.thread(*id)
-                    .is_some_and(|thread| thread.needs_attention)
-            })
-            .collect()
     }
 }
 

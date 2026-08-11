@@ -18,6 +18,7 @@ pub struct View {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     pub file_count: usize,
+    pub active_filter: String,
     pub needs_attention: usize,
     pub open: usize,
     pub resolved: usize,

@@ -58,10 +58,6 @@ impl Anchor {
     pub fn location(&self) -> HunkLocation {
         HunkLocation::new(&self.path, &self.hunk_header)
     }
-
-    pub fn is_at(&self, location: &HunkLocation) -> bool {
-        self.path == location.path && self.hunk_header == location.hunk_header
-    }
 }
 
 pub struct AnchorStore<'a> {

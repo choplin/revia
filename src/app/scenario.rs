@@ -10,7 +10,10 @@ use crate::{
     mode::{composer, help, review, rollup},
     presentation::{self, ReviewRowMap},
     semantic::{Body, LayoutPolicy, Overlay, ReviewBody},
-    thread::{Participant, ParticipantKind, Resolution, ThreadChange, ThreadState, ThreadSuccess},
+    thread::{
+        Participant, ParticipantKind, Resolution, ThreadChange, ThreadId, ThreadState,
+        ThreadSuccess,
+    },
     ui::{FocusArea, LayoutMode},
 };
 
@@ -169,6 +172,82 @@ fn lifecycle_threads() -> ThreadState {
 
 const RAW: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
 const TWO_FILES: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-old_b\n+new_b\n";
+const FILTER_DIFF: &str = concat!(
+    "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n",
+    "@@ -1 +1 @@ first\n-old_a1\n+new_a1\n",
+    "@@ -10 +10 @@ second\n-old_a10\n+new_a10\n",
+    "diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n",
+    "@@ -1 +1 @@ only\n-old_b\n+new_b\n",
+    "diff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n",
+    "@@ -1 +1 @@ only\n-old_c\n+new_c\n",
+);
+const CONTEXT_U3_DIFF: &str = concat!(
+    "diff --git a/context.rs b/context.rs\n--- a/context.rs\n+++ b/context.rs\n",
+    "@@ -30,6 +30,49 @@ fn context()\n-old\n+new\n",
+);
+const CONTEXT_U4_DIFF: &str = concat!(
+    "diff --git a/context.rs b/context.rs\n--- a/context.rs\n+++ b/context.rs\n",
+    "@@ -29,8 +29,51 @@ fn context()\n before\n-old\n+new\n after\n",
+);
+const MERGED_ANCHOR_DIFF: &str = concat!(
+    "diff --git a/split.rs b/split.rs\n--- a/split.rs\n+++ b/split.rs\n",
+    "@@ -20,20 +20,20 @@ merged\n-old\n+new\n",
+);
+const SPLIT_HUNKS_DIFF: &str = concat!(
+    "diff --git a/split.rs b/split.rs\n--- a/split.rs\n+++ b/split.rs\n",
+    "@@ -10,15 +10,15 @@ first\n c10\n c11\n c12\n c13\n c14\n c15\n c16\n c17\n c18\n c19\n c20\n c21\n c22\n c23\n-old_first\n+new_first\n",
+    "@@ -30,15 +30,15 @@ second\n c30\n c31\n c32\n c33\n c34\n c35\n-old_second\n+new_second\n",
+);
+
+fn filter_threads() -> (ThreadState, [ThreadId; 5]) {
+    let mut state = ThreadState::default();
+    let human = Participant {
+        id: "reviewer".into(),
+        kind: ParticipantKind::Human,
+    };
+    let b_attention = state.post(
+        Anchor::new("deadbeef", HunkLocation::new("b.rs", "@@ -1 +1 @@ only")),
+        human.clone(),
+        "resolved attention in b".into(),
+        1,
+    );
+    state.close(b_attention, &human).unwrap();
+    state.set_needs_attention(b_attention, true).unwrap();
+    let c_attention = state.post(
+        Anchor::new("deadbeef", HunkLocation::new("c.rs", "@@ -1 +1 @@ only")),
+        human.clone(),
+        "open attention in c".into(),
+        2,
+    );
+    state.set_needs_attention(c_attention, true).unwrap();
+    let a_attention = state.post(
+        Anchor::new("deadbeef", HunkLocation::new("a.rs", "@@ -1 +1 @@ first")),
+        human.clone(),
+        "open attention in a".into(),
+        3,
+    );
+    state.set_needs_attention(a_attention, true).unwrap();
+    let a_open = state.post(
+        Anchor::new(
+            "deadbeef",
+            HunkLocation::new("a.rs", "@@ -10 +10 @@ second"),
+        ),
+        human.clone(),
+        "ordinary open in a".into(),
+        4,
+    );
+    let a_resolved = state.post(
+        Anchor::new("deadbeef", HunkLocation::new("a.rs", "@@ -1 +1 @@ first")),
+        human.clone(),
+        "ordinary resolved in a".into(),
+        5,
+    );
+    state.close(a_resolved, &human).unwrap();
+    (
+        state,
+        [a_attention, b_attention, c_attention, a_open, a_resolved],
+    )
+}
 const LONG_DIFF: &str = concat!(
     "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n",
     "@@ -1,5 +1,5 @@ first\n one\n two\n-old three\n+new three\n four\n five\n",
@@ -1674,6 +1753,582 @@ fn thread_mutation_reports_pending_failure_and_success_for_visible_target() {
             .map(|thread| &thread.resolution),
         Some(Resolution::Resolved)
     ));
+}
+
+#[test]
+fn review_filters_project_semantic_state_in_git_order() {
+    let (state, [a_attention, b_attention, c_attention, a_open, a_resolved]) = filter_threads();
+    let mut scenario = Scenario::given(FILTER_DIFF, state);
+
+    let (all, _, _) = review_geometry(&scenario.model);
+    assert_eq!(
+        all.files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>(),
+        ["a.rs", "b.rs", "c.rs"]
+    );
+    assert_eq!(
+        scenario.model.review.filter(),
+        review::ReviewFilter::AllChanges
+    );
+    scenario.when_event(review::Event::CycleFilter(1));
+    scenario.when_event(review::Event::ShowAllChanges);
+    assert_eq!(
+        scenario.model.review.filter(),
+        review::ReviewFilter::AllChanges
+    );
+
+    scenario.when_event(review::Event::CycleFilter(1));
+    let (attention, _, _) = review_geometry(&scenario.model);
+    assert_eq!(
+        scenario.model.review.filter(),
+        review::ReviewFilter::NeedsAttention
+    );
+    assert_eq!(
+        attention
+            .files
+            .iter()
+            .flat_map(|file| file.hunks.iter().map(|hunk| hunk.anchor.clone()))
+            .collect::<Vec<_>>(),
+        [
+            HunkLocation::new("a.rs", "@@ -1 +1 @@ first"),
+            HunkLocation::new("b.rs", "@@ -1 +1 @@ only"),
+            HunkLocation::new("c.rs", "@@ -1 +1 @@ only"),
+        ]
+    );
+    assert_eq!(
+        attention
+            .files
+            .iter()
+            .flat_map(|file| &file.hunks)
+            .flat_map(|hunk| &hunk.threads)
+            .map(|thread| thread.id)
+            .collect::<Vec<_>>(),
+        [a_attention, b_attention, c_attention]
+    );
+
+    scenario.when_event(review::Event::CycleFilter(1));
+    let (open, _, _) = review_geometry(&scenario.model);
+    assert_eq!(
+        scenario.model.review.filter(),
+        review::ReviewFilter::OpenThreads
+    );
+    assert_eq!(
+        open.files
+            .iter()
+            .flat_map(|file| &file.hunks)
+            .flat_map(|hunk| &hunk.threads)
+            .map(|thread| thread.id)
+            .collect::<Vec<_>>(),
+        [a_attention, a_open, c_attention]
+    );
+
+    scenario.when_event(review::Event::CycleFilter(1));
+    let (threaded, _, _) = review_geometry(&scenario.model);
+    assert_eq!(
+        scenario.model.review.filter(),
+        review::ReviewFilter::ThreadedHunks
+    );
+    assert_eq!(
+        threaded
+            .files
+            .iter()
+            .flat_map(|file| &file.hunks)
+            .map(|hunk| hunk.anchor.clone())
+            .collect::<Vec<_>>(),
+        [
+            HunkLocation::new("a.rs", "@@ -1 +1 @@ first"),
+            HunkLocation::new("a.rs", "@@ -10 +10 @@ second"),
+            HunkLocation::new("b.rs", "@@ -1 +1 @@ only"),
+            HunkLocation::new("c.rs", "@@ -1 +1 @@ only"),
+        ]
+    );
+    assert!(
+        threaded.files[0].hunks[0]
+            .threads
+            .iter()
+            .any(|thread| thread.id == a_resolved)
+    );
+
+    scenario.when_event(review::Event::CycleFilter(1));
+    assert_eq!(
+        scenario.model.review.filter(),
+        review::ReviewFilter::AllChanges
+    );
+    assert_eq!(
+        super::view(&scenario.model).header.active_filter,
+        "All changes"
+    );
+}
+
+#[test]
+fn filtered_empty_view_exposes_no_hidden_target_or_composer_action() {
+    let mut scenario = Scenario::given(FILTER_DIFF, ThreadState::default());
+    let raw_location = scenario.model.review.selected_location();
+    scenario.when_event(review::Event::CycleFilter(1));
+    let view = super::view(&scenario.model);
+    let Body::Review(body) = view.body else {
+        panic!("review mode must render the review body");
+    };
+    assert!(body.files.is_empty());
+    assert!(body.empty_state.is_some());
+    assert!(!view.footer.current_context.text.contains("Target:"));
+    assert!(
+        scenario
+            .model
+            .review
+            .projected_location(&scenario.model.global.threads)
+            .is_none()
+    );
+    assert_eq!(scenario.model.review.selected_location(), raw_location);
+
+    let effects = scenario.when_event(review::Event::BeginThread { always_new: true });
+    assert!(effects.is_empty());
+    assert_eq!(scenario.model.active_mode, ActiveMode::Review);
+    assert_eq!(scenario.model.global.pending, None);
+    assert_eq!(scenario.model.review.selected_location(), raw_location);
+    assert!(
+        scenario
+            .model
+            .global
+            .status
+            .as_deref()
+            .is_some_and(|status| {
+                status.contains("no target in Needs attention")
+                    && status.contains("A for All changes")
+            })
+    );
+}
+
+#[test]
+fn attention_traversal_uses_git_order_and_wraps_at_both_ends() {
+    let (state, [a_attention, b_attention, c_attention, _, _]) = filter_threads();
+    let mut scenario = Scenario::given(FILTER_DIFF, state);
+    scenario.when_event(review::Event::MoveHunk(1));
+
+    for (id, location) in [
+        (a_attention, HunkLocation::new("a.rs", "@@ -1 +1 @@ first")),
+        (b_attention, HunkLocation::new("b.rs", "@@ -1 +1 @@ only")),
+        (c_attention, HunkLocation::new("c.rs", "@@ -1 +1 @@ only")),
+        (a_attention, HunkLocation::new("a.rs", "@@ -1 +1 @@ first")),
+    ] {
+        let effects = scenario.when_event(review::Event::MoveAttention(1));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::ResolveThread {
+                owner: ActiveMode::Review,
+                id: emitted,
+                ..
+            }] if *emitted == id
+        ));
+        scenario.inject(
+            ActiveMode::Review,
+            Outcome::ThreadResolved {
+                id,
+                result: Ok(location),
+            },
+        );
+        assert_eq!(
+            scenario
+                .model
+                .review
+                .selected_thread_id(&scenario.model.global.threads),
+            Some(id)
+        );
+    }
+
+    let effects = scenario.when_event(review::Event::MoveAttention(-1));
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::ResolveThread {
+            owner: ActiveMode::Review,
+            id,
+            ..
+        }] if *id == c_attention
+    ));
+    scenario.inject(
+        ActiveMode::Review,
+        Outcome::ThreadResolved {
+            id: c_attention,
+            result: Ok(HunkLocation::new("c.rs", "@@ -1 +1 @@ only")),
+        },
+    );
+    assert_eq!(
+        scenario
+            .model
+            .review
+            .selected_thread_id(&scenario.model.global.threads),
+        Some(c_attention)
+    );
+
+    let mut no_attention = Scenario::given(FILTER_DIFF, ThreadState::default());
+    no_attention.when_event(review::Event::MoveAttention(1));
+    assert_eq!(
+        no_attention.model.global.status.as_deref(),
+        Some("no needs-attention threads")
+    );
+}
+
+#[test]
+fn mutation_reconciles_a_filtered_target_against_the_replacement_state() {
+    let (state, [_, b_attention, c_attention, _, _]) = filter_threads();
+    let mut scenario = Scenario::given(FILTER_DIFF, state);
+    scenario.when_event(review::Event::CycleFilter(1));
+    scenario
+        .model
+        .review
+        .select_thread_location(
+            b_attention,
+            &HunkLocation::new("b.rs", "@@ -1 +1 @@ only"),
+            &scenario.model.global.threads,
+        )
+        .unwrap();
+    scenario.when_event(review::Event::ToggleAttention);
+    let mut changed = scenario.model.global.threads.clone();
+    changed.set_needs_attention(b_attention, false).unwrap();
+    scenario.inject(
+        ActiveMode::Review,
+        Outcome::ThreadsChanged {
+            result: Ok(ThreadChange {
+                state: changed,
+                success: ThreadSuccess::AttentionToggled,
+            }),
+        },
+    );
+
+    assert_eq!(
+        scenario.model.review.filter(),
+        review::ReviewFilter::NeedsAttention
+    );
+    assert_eq!(
+        scenario.model.review.selected_location(),
+        Some(HunkLocation::new("c.rs", "@@ -1 +1 @@ only"))
+    );
+    assert_eq!(
+        scenario
+            .model
+            .review
+            .selected_thread_id(&scenario.model.global.threads),
+        Some(c_attention)
+    );
+    let (body, _, rows) = review_geometry(&scenario.model);
+    let selected = rows.selected_target_row().unwrap();
+    assert!(selected >= body.scroll && selected < body.scroll + body.viewport.visible_rows);
+}
+
+#[test]
+fn resolving_an_open_filtered_thread_keeps_the_closest_visible_target() {
+    let (state, [a_attention, _, _, a_open, _]) = filter_threads();
+    let mut scenario = Scenario::given(FILTER_DIFF, state);
+    scenario.when_event(review::Event::CycleFilter(1));
+    scenario.when_event(review::Event::CycleFilter(1));
+    scenario
+        .model
+        .review
+        .select_thread_location(
+            a_open,
+            &HunkLocation::new("a.rs", "@@ -10 +10 @@ second"),
+            &scenario.model.global.threads,
+        )
+        .unwrap();
+    scenario.when_event(review::Event::CloseThread);
+    let mut changed = scenario.model.global.threads.clone();
+    changed
+        .close(
+            a_open,
+            &Participant {
+                id: "reviewer".into(),
+                kind: ParticipantKind::Human,
+            },
+        )
+        .unwrap();
+    scenario.inject(
+        ActiveMode::Review,
+        Outcome::ThreadsChanged {
+            result: Ok(ThreadChange {
+                state: changed,
+                success: ThreadSuccess::Closed,
+            }),
+        },
+    );
+
+    assert_eq!(
+        scenario.model.review.filter(),
+        review::ReviewFilter::OpenThreads
+    );
+    assert_eq!(
+        scenario.model.review.selected_location(),
+        Some(HunkLocation::new("a.rs", "@@ -1 +1 @@ first"))
+    );
+    assert_eq!(
+        scenario
+            .model
+            .review
+            .selected_thread_id(&scenario.model.global.threads),
+        Some(a_attention)
+    );
+}
+
+#[test]
+fn rollup_jump_resets_a_hiding_filter_and_reveals_the_exact_thread() {
+    let (state, [_, b_attention, _, _, _]) = filter_threads();
+    let mut scenario = Scenario::given(FILTER_DIFF, state);
+    scenario.when_event(review::Event::CycleFilter(1));
+    scenario.when_event(review::Event::CycleFilter(1));
+    assert_eq!(
+        scenario.model.review.filter(),
+        review::ReviewFilter::OpenThreads
+    );
+
+    scenario.when_event(review::Event::ShowRollup);
+    scenario.when_event(rollup::Event::OpenSelected);
+    scenario.inject(
+        ActiveMode::Rollup,
+        Outcome::ThreadResolved {
+            id: b_attention,
+            result: Ok(HunkLocation::new("b.rs", "@@ -1 +1 @@ only")),
+        },
+    );
+
+    assert_eq!(scenario.model.active_mode, ActiveMode::Review);
+    assert_eq!(
+        scenario.model.review.filter(),
+        review::ReviewFilter::AllChanges
+    );
+    assert_eq!(
+        scenario
+            .model
+            .review
+            .selected_thread_id(&scenario.model.global.threads),
+        Some(b_attention)
+    );
+    assert!(
+        scenario
+            .model
+            .global
+            .status
+            .as_deref()
+            .is_some_and(|status| status.contains("filter reset to All changes"))
+    );
+    let (body, _, rows) = review_geometry(&scenario.model);
+    let selected = rows.selected_target_row().unwrap();
+    assert!(selected >= body.scroll && selected < body.scroll + body.viewport.visible_rows);
+}
+
+#[test]
+fn filter_survives_geometry_context_and_successful_reload() {
+    let (state, _) = filter_threads();
+    let mut scenario = Scenario::given(FILTER_DIFF, state);
+    for _ in 0..3 {
+        scenario.when_event(review::Event::CycleFilter(1));
+    }
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 9,
+        columns: 64,
+    });
+    scenario.when_event(review::Event::SetLayout(LayoutMode::Stack));
+    scenario.when_event(review::Event::ToggleWrap);
+    scenario.when_event(review::Event::AdjustContext(1));
+    scenario.inject(
+        ActiveMode::Review,
+        Outcome::DiffReloaded {
+            purpose: review::ReloadPurpose::ContextChanged,
+            result: Ok(LoadedDiff {
+                text: FILTER_DIFF.into(),
+                document: DiffDocument::parse(FILTER_DIFF),
+            }),
+        },
+    );
+    assert_eq!(
+        scenario.model.review.filter(),
+        review::ReviewFilter::ThreadedHunks
+    );
+    assert_eq!(
+        super::view(&scenario.model).header.active_filter,
+        "Threaded hunks"
+    );
+    scenario.when_event(review::Event::ReloadDiff);
+    scenario.inject(
+        ActiveMode::Review,
+        Outcome::DiffReloaded {
+            purpose: review::ReloadPurpose::Manual,
+            result: Err("repository unavailable".into()),
+        },
+    );
+    assert_eq!(
+        scenario.model.review.filter(),
+        review::ReviewFilter::ThreadedHunks
+    );
+}
+
+#[test]
+fn context_reload_resolves_the_immutable_anchor_to_the_new_hunk_header() {
+    let old_location = HunkLocation::new("context.rs", "@@ -30,6 +30,49 @@ fn context()");
+    let new_location = HunkLocation::new("context.rs", "@@ -29,8 +29,51 @@ fn context()");
+    let mut state = ThreadState::default();
+    let id = state.post(
+        Anchor::new("deadbeef", old_location.clone()),
+        Participant {
+            id: "reviewer".into(),
+            kind: ParticipantKind::Human,
+        },
+        "survives context change".into(),
+        1,
+    );
+    state.set_needs_attention(id, true).unwrap();
+    let mut scenario = Scenario::given(CONTEXT_U3_DIFF, state);
+    scenario.when_event(review::Event::CycleFilter(1));
+    scenario.when_event(review::Event::MoveThread(1));
+    scenario.when_event(review::Event::AdjustContext(1));
+    scenario.inject(
+        ActiveMode::Review,
+        Outcome::DiffReloaded {
+            purpose: review::ReloadPurpose::ContextChanged,
+            result: Ok(LoadedDiff {
+                text: CONTEXT_U4_DIFF.into(),
+                document: DiffDocument::parse(CONTEXT_U4_DIFF),
+            }),
+        },
+    );
+
+    assert_eq!(
+        scenario.model.review.selected_location(),
+        Some(new_location.clone())
+    );
+    assert_eq!(scenario.model.review.focus(), FocusArea::Threads);
+    assert_eq!(
+        scenario
+            .model
+            .review
+            .selected_thread_id(&scenario.model.global.threads),
+        Some(id)
+    );
+    let (body, _, rows) = review_geometry(&scenario.model);
+    assert_eq!(body.files[0].hunks[0].threads[0].id, id);
+    let selected = rows.selected_target_row().unwrap();
+    assert!(selected >= body.scroll && selected < body.scroll + body.viewport.visible_rows);
+
+    let effects = scenario.when_event(review::Event::MoveAttention(1));
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::ResolveThread { id: emitted, .. }] if *emitted == id
+    ));
+    scenario.inject(
+        ActiveMode::Review,
+        Outcome::ThreadResolved {
+            id,
+            result: Ok(old_location.clone()),
+        },
+    );
+    scenario.when_event(review::Event::ShowRollup);
+    let effects = scenario.when_event(rollup::Event::OpenSelected);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::ResolveThread { id: emitted, .. }] if *emitted == id
+    ));
+    scenario.inject(
+        ActiveMode::Rollup,
+        Outcome::ThreadResolved {
+            id,
+            result: Ok(old_location),
+        },
+    );
+    assert_eq!(
+        scenario.model.review.selected_location(),
+        Some(new_location)
+    );
+    assert_eq!(
+        scenario
+            .model
+            .review
+            .selected_thread_id(&scenario.model.global.threads),
+        Some(id)
+    );
+}
+
+#[test]
+fn ambiguous_split_hunks_choose_nearest_start_then_git_order() {
+    let old_location = HunkLocation::new("split.rs", "@@ -20,20 +20,20 @@ merged");
+    let mut state = ThreadState::default();
+    let id = state.post(
+        Anchor::new("deadbeef", old_location),
+        Participant {
+            id: "reviewer".into(),
+            kind: ParticipantKind::Human,
+        },
+        "ambiguous split".into(),
+        1,
+    );
+    let mut scenario = Scenario::given(MERGED_ANCHOR_DIFF, state);
+    for _ in 0..3 {
+        scenario.when_event(review::Event::CycleFilter(1));
+    }
+    scenario.when_event(review::Event::ReloadDiff);
+    scenario.inject(
+        ActiveMode::Review,
+        Outcome::DiffReloaded {
+            purpose: review::ReloadPurpose::Manual,
+            result: Ok(LoadedDiff {
+                text: SPLIT_HUNKS_DIFF.into(),
+                document: DiffDocument::parse(SPLIT_HUNKS_DIFF),
+            }),
+        },
+    );
+
+    let (body, _, _) = review_geometry(&scenario.model);
+    assert_eq!(body.files.len(), 1);
+    assert_eq!(body.files[0].hunks.len(), 1);
+    assert_eq!(
+        body.files[0].hunks[0].anchor,
+        HunkLocation::new("split.rs", "@@ -10,15 +10,15 @@ first")
+    );
+    assert_eq!(body.files[0].hunks[0].threads[0].id, id);
+}
+
+#[test]
+fn full_diff_search_resets_filter_explicitly_and_cancel_restores_it() {
+    let (state, _) = filter_threads();
+    let mut scenario = Scenario::given(FILTER_DIFF, state);
+    scenario.when_event(review::Event::CycleFilter(1));
+    let origin = scenario.model.review.selected_location();
+
+    type_search(&mut scenario, "old_a10");
+    assert_eq!(
+        scenario.model.review.filter(),
+        review::ReviewFilter::AllChanges
+    );
+    assert!(
+        scenario
+            .model
+            .global
+            .status
+            .as_deref()
+            .is_some_and(|status| status.contains("full-diff search"))
+    );
+    scenario.when_event(review::Event::CancelSearch);
+    assert_eq!(
+        scenario.model.review.filter(),
+        review::ReviewFilter::NeedsAttention
+    );
+    assert_eq!(scenario.model.review.selected_location(), origin);
+
+    type_search(&mut scenario, "old_a10");
+    scenario.when_event(review::Event::FinishSearch);
+    scenario.when_event(review::Event::CycleFilter(1));
+    assert_eq!(
+        scenario.model.review.filter(),
+        review::ReviewFilter::NeedsAttention
+    );
+    assert!(scenario.model.review.search_summary().is_none());
+    assert!(
+        scenario
+            .model
+            .global
+            .status
+            .as_deref()
+            .is_some_and(|status| status.contains("cleared search"))
+    );
 }
 
 #[test]

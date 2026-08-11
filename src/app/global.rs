@@ -120,6 +120,7 @@ pub fn update(model: &mut Model, event: Event) -> Update {
 
 pub struct ViewInput {
     pub file_count: usize,
+    pub active_filter: &'static str,
     pub context: SurfaceContext,
     pub target: Option<String>,
     pub selected_thread_available: bool,
@@ -145,6 +146,7 @@ pub fn view(model: &Model, input: ViewInput) -> View {
     View {
         header: Header {
             file_count: input.file_count,
+            active_filter: input.active_filter.into(),
             needs_attention,
             open,
             resolved,
@@ -285,10 +287,10 @@ fn context_keys(
     }
     match context {
         SurfaceContext::Review if selected_thread_available => {
-            "j/k stream • [/] hunk • ,/. file • / search • t/T thread • Tab thread"
+            "j/k stream • [/] hunk • ,/. file • F filter • A all • / search • t/T thread"
         }
         SurfaceContext::Review => {
-            "j/k stream • [/] hunk • ,/. file • / search • c new thread • ? help"
+            "j/k stream • [/] hunk • ,/. file • F filter • A all • / search • c new thread"
         }
         SurfaceContext::Threads if selected_thread_available => {
             "t/T thread • c reply • C new • x resolve • R reopen • a/o flags • e resolved fold • Tab stream • ? help"

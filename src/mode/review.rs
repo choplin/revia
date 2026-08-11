@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     anchor::HunkLocation,
-    diff::{DiffRequest, LoadedDiff},
+    diff::{DiffHunk, DiffLineKind, DiffRequest, HunkCoordinates, HunkRange, LoadedDiff},
     input::{BindingResolution, Key, PhysicalInput},
     presentation::{self, ReviewRowMap, ViewportAnchor},
     review::{ReviewCursor, ReviewSession},
@@ -30,6 +30,49 @@ pub struct Model {
     viewport_columns: u16,
     search: Option<SearchState>,
     expanded_threads: BTreeSet<ThreadId>,
+    filter: ReviewFilter,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReviewFilter {
+    #[default]
+    AllChanges,
+    NeedsAttention,
+    OpenThreads,
+    ThreadedHunks,
+}
+
+impl ReviewFilter {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::AllChanges => "All changes",
+            Self::NeedsAttention => "Needs attention",
+            Self::OpenThreads => "Open threads",
+            Self::ThreadedHunks => "Threaded hunks",
+        }
+    }
+
+    fn next(self, direction: i32) -> Self {
+        let filters = [
+            Self::AllChanges,
+            Self::NeedsAttention,
+            Self::OpenThreads,
+            Self::ThreadedHunks,
+        ];
+        let current = filters
+            .iter()
+            .position(|filter| *filter == self)
+            .unwrap_or(0);
+        filters[wrapped_index(current, filters.len(), direction)]
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SemanticSelection {
+    location: Option<HunkLocation>,
+    thread_id: Option<ThreadId>,
+    raw_hunk_position: usize,
+    thread_position: usize,
 }
 
 #[derive(Debug)]
@@ -49,6 +92,7 @@ struct SearchOrigin {
     scroll: usize,
     scroll_from_end: Option<usize>,
     geometry: SearchGeometry,
+    filter: ReviewFilter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +126,7 @@ impl Model {
             viewport_columns: 120,
             search: None,
             expanded_threads: BTreeSet::new(),
+            filter: ReviewFilter::AllChanges,
         }
     }
 
@@ -113,6 +158,10 @@ impl Model {
         self.viewport_columns
     }
 
+    pub fn filter(&self) -> ReviewFilter {
+        self.filter
+    }
+
     pub fn search_summary(&self) -> Option<SearchSummary> {
         self.search.as_ref().map(|search| SearchSummary {
             query: search.query.clone(),
@@ -136,12 +185,241 @@ impl Model {
         self.session.selected_location()
     }
 
+    pub fn projected_location(&self, threads: &Threads) -> Option<HunkLocation> {
+        let location = self.selected_location()?;
+        self.hunk_matches_filter(&location, threads)
+            .then_some(location)
+    }
+
+    fn hunk_matches_filter(&self, location: &HunkLocation, threads: &Threads) -> bool {
+        let threads = self.threads_at_current(location, threads);
+        match self.filter {
+            ReviewFilter::AllChanges => true,
+            ReviewFilter::NeedsAttention => threads.iter().any(|thread| thread.needs_attention),
+            ReviewFilter::OpenThreads => threads
+                .iter()
+                .any(|thread| matches!(thread.resolution, Resolution::Open)),
+            ReviewFilter::ThreadedHunks => !threads.is_empty(),
+        }
+    }
+
+    fn thread_matches_filter(&self, thread: &ReviewThread) -> bool {
+        match self.filter {
+            ReviewFilter::AllChanges | ReviewFilter::ThreadedHunks => true,
+            ReviewFilter::NeedsAttention => thread.needs_attention,
+            ReviewFilter::OpenThreads => matches!(thread.resolution, Resolution::Open),
+        }
+    }
+
+    fn visible_hunks(&self, threads: &Threads) -> Vec<(usize, usize)> {
+        self.session
+            .diff()
+            .document
+            .files
+            .iter()
+            .enumerate()
+            .flat_map(|(file_index, file)| {
+                file.hunks
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(hunk_index, hunk)| {
+                        let location = HunkLocation::new(&file.path, &hunk.header);
+                        self.hunk_matches_filter(&location, threads)
+                            .then_some((file_index, hunk_index))
+                    })
+            })
+            .collect()
+    }
+
+    fn visible_files(&self, threads: &Threads) -> Vec<usize> {
+        if self.filter == ReviewFilter::AllChanges {
+            return (0..self.session.diff().document.files.len()).collect();
+        }
+        let mut files = Vec::new();
+        for (file, _) in self.visible_hunks(threads) {
+            if files.last() != Some(&file) {
+                files.push(file);
+            }
+        }
+        files
+    }
+
+    fn visible_threads_at<'a>(
+        &self,
+        location: &HunkLocation,
+        threads: &'a Threads,
+    ) -> Vec<&'a ReviewThread> {
+        self.threads_at_current(location, threads)
+            .into_iter()
+            .filter(|thread| self.thread_matches_filter(thread))
+            .collect()
+    }
+
+    fn threads_at_current<'a>(
+        &self,
+        location: &HunkLocation,
+        threads: &'a Threads,
+    ) -> Vec<&'a ReviewThread> {
+        threads
+            .threads()
+            .iter()
+            .filter(|thread| {
+                self.resolve_current_location(&thread.anchor.location())
+                    .as_ref()
+                    == Some(location)
+            })
+            .collect()
+    }
+
+    fn resolve_current_location(&self, anchor: &HunkLocation) -> Option<HunkLocation> {
+        let file = self
+            .session
+            .diff()
+            .document
+            .files
+            .iter()
+            .find(|file| file.path == anchor.path())?;
+        if let Some(hunk) = file
+            .hunks
+            .iter()
+            .find(|hunk| hunk.header == anchor.hunk_header())
+        {
+            return Some(HunkLocation::new(&file.path, &hunk.header));
+        }
+        let anchor_coordinates = HunkCoordinates::parse(anchor.hunk_header())?;
+        file.hunks
+            .iter()
+            .filter_map(|hunk| {
+                let candidate = hunk.coordinates?;
+                hunk_change_overlaps(anchor_coordinates, hunk).then(|| {
+                    let distance = anchor_coordinates
+                        .old
+                        .start
+                        .abs_diff(candidate.old.start)
+                        .saturating_add(anchor_coordinates.new.start.abs_diff(candidate.new.start));
+                    (distance, hunk)
+                })
+            })
+            .min_by_key(|(distance, _)| *distance)
+            .map(|(_, hunk)| HunkLocation::new(&file.path, &hunk.header))
+    }
+
+    fn semantic_selection(&self, threads: &Threads) -> SemanticSelection {
+        let location = self.selected_location();
+        let visible_threads = location
+            .as_ref()
+            .map(|location| self.visible_threads_at(location, threads))
+            .unwrap_or_default();
+        let thread_position = self.session.cursor().selected_thread();
+        let thread_id = visible_threads.get(thread_position).map(|thread| thread.id);
+        let raw_hunk_position = self
+            .session
+            .diff()
+            .document
+            .files
+            .iter()
+            .take(self.session.cursor().selected_file())
+            .map(|file| file.hunks.len())
+            .sum::<usize>()
+            .saturating_add(self.session.cursor().selected_hunk());
+        SemanticSelection {
+            location,
+            thread_id,
+            raw_hunk_position,
+            thread_position,
+        }
+    }
+
+    fn reconcile_projection(&mut self, threads: &Threads, preferred: SemanticSelection) {
+        let visible = self.visible_hunks(threads);
+        if visible.is_empty() {
+            self.view.focus = FocusArea::Review;
+            self.view.set_scroll(0);
+            return;
+        }
+        let exact = preferred.location.as_ref().and_then(|location| {
+            visible.iter().position(|(file_index, hunk_index)| {
+                self.session
+                    .diff()
+                    .document
+                    .files
+                    .get(*file_index)
+                    .and_then(|file| file.hunks.get(*hunk_index).map(|hunk| (file, hunk)))
+                    .is_some_and(|(file, hunk)| {
+                        file.path == location.path() && hunk.header == location.hunk_header()
+                    })
+            })
+        });
+        let target_position = exact.unwrap_or_else(|| {
+            visible
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, (file_index, hunk_index))| {
+                    let position = self
+                        .session
+                        .diff()
+                        .document
+                        .files
+                        .iter()
+                        .take(*file_index)
+                        .map(|file| file.hunks.len())
+                        .sum::<usize>()
+                        .saturating_add(*hunk_index);
+                    position.abs_diff(preferred.raw_hunk_position)
+                })
+                .map(|(index, _)| index)
+                .unwrap_or(0)
+        });
+        let (file_index, hunk_index) = visible[target_position];
+        self.session.select_hunk(file_index, hunk_index);
+        let location = self.session.selected_location();
+        let visible_threads = location
+            .as_ref()
+            .map(|location| self.visible_threads_at(location, threads))
+            .unwrap_or_default();
+        if self.view.focus == FocusArea::Threads {
+            if visible_threads.is_empty() {
+                self.view.focus = FocusArea::Review;
+            } else {
+                let thread_index = preferred
+                    .thread_id
+                    .and_then(|id| visible_threads.iter().position(|thread| thread.id == id))
+                    .unwrap_or_else(|| {
+                        preferred
+                            .thread_position
+                            .min(visible_threads.len().saturating_sub(1))
+                    });
+                self.session.select_thread(thread_index);
+            }
+        }
+    }
+
+    pub fn reconcile_replaced_threads(&mut self, previous: &Threads, replacement: &Threads) {
+        let selection = self.semantic_selection(previous);
+        let anchor = self.viewport_anchor(previous);
+        self.reconcile_projection(replacement, selection);
+        self.restore_viewport(anchor, replacement);
+        self.reveal_selected_target(replacement);
+    }
+
+    fn set_filter(&mut self, filter: ReviewFilter, threads: &Threads) {
+        let selection = self.semantic_selection(threads);
+        let anchor = self.viewport_anchor(threads);
+        self.filter = filter;
+        self.reconcile_projection(threads, selection);
+        self.restore_viewport(anchor, threads);
+        self.reveal_selected_target(threads);
+    }
+
     pub fn select_thread_location(
         &mut self,
         id: ThreadId,
         location: &HunkLocation,
         threads: &Threads,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
+        let Some(current_location) = self.resolve_current_location(location) else {
+            return Err(format!("thread #{id} hunk is not in this diff"));
+        };
         let Some((file_index, file)) = self
             .session
             .diff()
@@ -149,33 +427,40 @@ impl Model {
             .files
             .iter()
             .enumerate()
-            .find(|(_, file)| file.path == location.path())
+            .find(|(_, file)| file.path == current_location.path())
         else {
             return Err(format!("thread #{id} anchor is not in this diff"));
         };
         let Some(hunk_index) = file
             .hunks
             .iter()
-            .position(|hunk| hunk.header == location.hunk_header())
+            .position(|hunk| hunk.header == current_location.hunk_header())
         else {
             return Err(format!("thread #{id} hunk is not in this diff"));
         };
         self.session.select_hunk(file_index, hunk_index);
+        let filter_was_reset = !self.hunk_matches_filter(&current_location, threads)
+            || !self
+                .visible_threads_at(&current_location, threads)
+                .iter()
+                .any(|thread| thread.id == id);
+        if filter_was_reset {
+            self.filter = ReviewFilter::AllChanges;
+        }
         self.session.select_thread(
-            threads
-                .at(location)
+            self.visible_threads_at(&current_location, threads)
                 .iter()
                 .position(|thread| thread.id == id)
                 .unwrap_or(0),
         );
         self.view.focus = FocusArea::Threads;
         self.reveal_selected_target(threads);
-        Ok(())
+        Ok(filter_was_reset)
     }
 
     fn selected_threads<'a>(&self, threads: &'a Threads) -> Vec<&'a ReviewThread> {
-        self.selected_location()
-            .map(|location| threads.at(&location))
+        self.projected_location(threads)
+            .map(|location| self.visible_threads_at(&location, threads))
             .unwrap_or_default()
     }
 
@@ -191,26 +476,44 @@ impl Model {
         self.current_thread_id(threads)
     }
 
-    pub fn selected_target_label(&self) -> Option<String> {
-        let cursor = self.session.cursor();
-        let file = self.session.file()?;
-        file.hunks.get(cursor.selected_hunk())?;
+    pub fn selected_target_label(&self, threads: &Threads) -> Option<String> {
+        let location = self.projected_location(threads)?;
+        let file = self
+            .session
+            .diff()
+            .document
+            .files
+            .iter()
+            .find(|file| file.path == location.path())?;
+        let visible_hunks = file
+            .hunks
+            .iter()
+            .filter(|hunk| {
+                self.hunk_matches_filter(&HunkLocation::new(&file.path, &hunk.header), threads)
+            })
+            .collect::<Vec<_>>();
+        let hunk_index = visible_hunks
+            .iter()
+            .position(|hunk| hunk.header == location.hunk_header())?;
         Some(format!(
             "{} • hunk {}/{}",
             file.path,
-            cursor.selected_hunk() + 1,
-            file.hunks.len()
+            hunk_index + 1,
+            visible_hunks.len()
         ))
     }
 
-    fn selected_file_label(&self) -> Option<String> {
-        let cursor = self.session.cursor();
-        let files = &self.session.diff().document.files;
-        let file = files.get(cursor.selected_file())?;
+    fn selected_file_label(&self, threads: &Threads) -> Option<String> {
+        let selected_file = self.session.cursor().selected_file();
+        let visible_files = self.visible_files(threads);
+        let position = visible_files
+            .iter()
+            .position(|file| *file == selected_file)?;
+        let file = self.session.diff().document.files.get(selected_file)?;
         Some(format!(
             "file {}/{}: {}",
-            cursor.selected_file() + 1,
-            files.len(),
+            position + 1,
+            visible_files.len(),
             file.path
         ))
     }
@@ -311,7 +614,11 @@ impl Model {
         search.selected.and_then(|index| search.matches.get(index))
     }
 
-    fn reveal_search_target(&mut self, target: &DiffSearchTarget, threads: &Threads) {
+    fn reveal_search_target(&mut self, target: &DiffSearchTarget, threads: &Threads) -> bool {
+        let filter_was_reset = self.filter != ReviewFilter::AllChanges;
+        if filter_was_reset {
+            self.filter = ReviewFilter::AllChanges;
+        }
         match target {
             DiffSearchTarget::FilePath { path } => {
                 if let Some(file_index) = self
@@ -353,11 +660,14 @@ impl Model {
             self.view.reveal(row, self.visible_rows());
             self.view.clamp(rows.total_rows(), self.visible_rows());
         }
+        filter_was_reset
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
+    CycleFilter(i32),
+    ShowAllChanges,
     BeginSearch,
     InsertSearchCharacter(char),
     DeleteSearchCharacter,
@@ -519,6 +829,8 @@ pub fn bindings(model: &Model, input: PhysicalInput) -> BindingResolution<Event>
     }
     match input.key {
         Key::Char('q') | Key::Esc | Key::Char('?') => BindingResolution::Delegate,
+        Key::Char('F') => BindingResolution::Handle(Event::CycleFilter(1)),
+        Key::Char('A') => BindingResolution::Handle(Event::ShowAllChanges),
         Key::Char('/') => BindingResolution::Handle(Event::BeginSearch),
         Key::Char('n') => BindingResolution::Handle(Event::MoveSearch(1)),
         Key::Char('N') => BindingResolution::Handle(Event::MoveSearch(-1)),
@@ -577,6 +889,35 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
         return result;
     }
     match event {
+        Event::CycleFilter(direction) => {
+            let filter = model.filter.next(direction);
+            let cleared_search = model.search.take().is_some();
+            model.set_filter(filter, input.threads);
+            status(
+                &mut result,
+                format!(
+                    "filter: {}; F cycles filters, A shows all changes{}",
+                    filter.label(),
+                    if cleared_search {
+                        "; cleared search"
+                    } else {
+                        ""
+                    }
+                ),
+            );
+        }
+        Event::ShowAllChanges => {
+            let cleared_search = model.search.take().is_some();
+            model.set_filter(ReviewFilter::AllChanges, input.threads);
+            status(
+                &mut result,
+                if cleared_search {
+                    "filter: All changes; cleared search"
+                } else {
+                    "filter: All changes"
+                },
+            );
+        }
         Event::BeginSearch => {
             let rows = model.row_map(input.threads);
             let scroll = model
@@ -594,6 +935,7 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
                     scroll: model.view.scroll,
                     scroll_from_end: model.view.scroll_from_end,
                     geometry: model.search_geometry(),
+                    filter: model.filter,
                 },
             });
             status(&mut result, "search: type a query");
@@ -686,7 +1028,35 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
             );
         }
         Event::MoveHunk(direction) => {
-            if model.session.move_hunk(direction) {
+            let hunks = model.visible_hunks(input.threads);
+            let current = hunks.iter().position(|(file, hunk)| {
+                *file == model.session.cursor().selected_file()
+                    && *hunk == model.session.cursor().selected_hunk()
+            });
+            if let Some(target) = (!hunks.is_empty()).then(|| {
+                current.map_or_else(
+                    || {
+                        if direction < 0 {
+                            hunks
+                                .iter()
+                                .rposition(|(file, _)| {
+                                    *file < model.session.cursor().selected_file()
+                                })
+                                .unwrap_or(hunks.len() - 1)
+                        } else {
+                            hunks
+                                .iter()
+                                .position(|(file, _)| {
+                                    *file > model.session.cursor().selected_file()
+                                })
+                                .unwrap_or(0)
+                        }
+                    },
+                    |current| wrapped_index(current, hunks.len(), direction),
+                )
+            }) {
+                let (file, hunk) = hunks[target];
+                model.session.select_hunk(file, hunk);
                 model.view.focus = FocusArea::Review;
                 model.reveal_selected_target(input.threads);
                 status(
@@ -694,16 +1064,45 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
                     format!(
                         "hunk target: {}",
                         model
-                            .selected_target_label()
+                            .selected_target_label(input.threads)
                             .unwrap_or_else(|| "unavailable".into())
                     ),
                 );
             } else {
-                status(&mut result, "cannot move hunks: this diff has no hunks");
+                status(
+                    &mut result,
+                    if model.filter == ReviewFilter::AllChanges {
+                        "cannot move hunks: this diff has no hunks".into()
+                    } else {
+                        format!(
+                            "cannot move hunks: no targets in {}; press A for All changes",
+                            model.filter.label()
+                        )
+                    },
+                );
             }
         }
         Event::MoveFile(direction) => {
-            if model.session.move_file(direction) {
+            let files = model.visible_files(input.threads);
+            let current = files
+                .iter()
+                .position(|file| *file == model.session.cursor().selected_file());
+            if let Some(target) = (!files.is_empty()).then(|| {
+                current.map_or_else(
+                    || if direction < 0 { files.len() - 1 } else { 0 },
+                    |current| wrapped_index(current, files.len(), direction),
+                )
+            }) {
+                let file = files[target];
+                if let Some((_, hunk)) = model
+                    .visible_hunks(input.threads)
+                    .into_iter()
+                    .find(|(candidate, _)| *candidate == file)
+                {
+                    model.session.select_hunk(file, hunk);
+                } else {
+                    model.session.select_file(file);
+                }
                 model.view.focus = FocusArea::Review;
                 model.reveal_selected_target(input.threads);
                 status(
@@ -711,14 +1110,21 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
                     format!(
                         "file target: {}",
                         model
-                            .selected_file_label()
+                            .selected_file_label(input.threads)
                             .unwrap_or_else(|| "unavailable".into())
                     ),
                 );
             } else {
                 status(
                     &mut result,
-                    "cannot move files: this diff has no changed files",
+                    if model.filter == ReviewFilter::AllChanges {
+                        "cannot move files: this diff has no changed files".into()
+                    } else {
+                        format!(
+                            "cannot move files: no targets in {}; press A for All changes",
+                            model.filter.label()
+                        )
+                    },
                 );
             }
         }
@@ -735,8 +1141,18 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
             }
         }
         Event::BeginThread { always_new } => {
-            if model.selected_location().is_none() {
-                status(&mut result, "select a hunk before posting a thread");
+            if model.projected_location(input.threads).is_none() {
+                status(
+                    &mut result,
+                    if model.filter == ReviewFilter::AllChanges {
+                        "select a hunk before posting a thread".into()
+                    } else {
+                        format!(
+                            "cannot post: no target in {}; press A for All changes or F to cycle filters",
+                            model.filter.label()
+                        )
+                    },
+                );
             } else {
                 let reply_to = if !always_new && model.focus() == FocusArea::Threads {
                     model.current_thread_id(input.threads)
@@ -858,15 +1274,45 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
             );
         }
         Event::MoveAttention(direction) => {
-            let attention = input.threads.attention_ids();
+            let attention = attention_ids_in_git_order(model, input.threads);
             if attention.is_empty() {
                 status(&mut result, "no needs-attention threads");
             } else {
                 let current = model.current_thread_id(input.threads);
-                let index = current
+                let target = current
                     .and_then(|id| attention.iter().position(|candidate| *candidate == id))
-                    .unwrap_or(0);
-                let id = attention[wrapped_index(index, attention.len(), direction)];
+                    .map_or_else(
+                        || {
+                            if direction < 0 {
+                                attention.len() - 1
+                            } else {
+                                0
+                            }
+                        },
+                        |index| wrapped_index(index, attention.len(), direction),
+                    );
+                let wrapped = current
+                    .and_then(|id| attention.iter().position(|candidate| *candidate == id))
+                    .is_some_and(|index| {
+                        direction > 0 && target < index || direction < 0 && target > index
+                    });
+                let id = attention[target];
+                status(
+                    &mut result,
+                    if wrapped {
+                        format!(
+                            "attention target: #{id} ({}/{}, wrapped)",
+                            target + 1,
+                            attention.len()
+                        )
+                    } else {
+                        format!(
+                            "attention target: #{id} ({}/{})",
+                            target + 1,
+                            attention.len()
+                        )
+                    },
+                );
                 result.effects.push(Effect::ResolveThread { id });
             }
         }
@@ -988,9 +1434,12 @@ fn apply_outcome(model: &mut Model, threads: &Threads, outcome: Outcome, result:
                     })
                     .flatten();
                 model.session.replace_diff(diff);
+                let semantic_selection = model.semantic_selection(threads);
+                model.reconcile_projection(threads, semantic_selection);
                 let restored_thread_target =
                     previous_thread_target.is_some_and(|(location, id)| {
-                        if model.selected_location().as_ref() != Some(&location) {
+                        let resolved_location = model.resolve_current_location(&location);
+                        if model.selected_location() != resolved_location {
                             return false;
                         }
                         let Some(index) = model
@@ -1041,7 +1490,11 @@ fn apply_outcome(model: &mut Model, threads: &Threads, outcome: Outcome, result:
             result: outcome,
         } => match outcome {
             Ok(location) => match model.select_thread_location(id, &location, threads) {
-                Ok(()) => status(result, format!("thread #{id}")),
+                Ok(true) => status(
+                    result,
+                    format!("thread #{id}; filter reset to All changes to reveal target"),
+                ),
+                Ok(false) => status(result, format!("thread #{id}")),
                 Err(error) => status(result, error),
             },
             Err(error) => status(
@@ -1129,11 +1582,16 @@ fn refresh_search(model: &mut Model, threads: &Threads, result: &mut Update) {
         .selected
         .and_then(|index| search.matches.get(index))
         .cloned();
-    let message = search_position_status(&search, "search");
+    let mut message = search_position_status(&search, "search");
     let origin = search.origin.clone();
     model.search = Some(search);
     if let Some(target) = target {
-        model.reveal_search_target(&target, threads);
+        let filter_was_reset = model.reveal_search_target(&target, threads);
+        if filter_was_reset
+            || origin.filter != ReviewFilter::AllChanges && model.filter == ReviewFilter::AllChanges
+        {
+            message.push_str("; filter reset to All changes for full-diff search");
+        }
     } else {
         restore_search_origin(model, origin, threads);
     }
@@ -1166,7 +1624,7 @@ fn move_search(model: &mut Model, direction: i32, threads: &Threads, result: &mu
     let wrapped = direction > 0 && next < current || direction < 0 && next > current;
     search.selected = Some(next);
     let target = search.matches[next].clone();
-    let message = if wrapped {
+    let mut message = if wrapped {
         format!(
             "search “{}”: {}/{} (wrapped)",
             search.query,
@@ -1176,8 +1634,15 @@ fn move_search(model: &mut Model, direction: i32, threads: &Threads, result: &mu
     } else {
         search_position_status(&search, "search")
     };
+    let search_origin_filter = search.origin.filter;
     model.search = Some(search);
-    model.reveal_search_target(&target, threads);
+    let filter_was_reset = model.reveal_search_target(&target, threads);
+    if filter_was_reset
+        || search_origin_filter != ReviewFilter::AllChanges
+            && model.filter == ReviewFilter::AllChanges
+    {
+        message.push_str("; filter reset to All changes for full-diff search");
+    }
     status(result, message);
 }
 
@@ -1230,6 +1695,7 @@ fn diff_search_matches(diff: &LoadedDiff, query: &str) -> Vec<DiffSearchTarget> 
 }
 
 fn restore_search_origin(model: &mut Model, origin: SearchOrigin, threads: &Threads) {
+    model.filter = origin.filter;
     if let Some(file) = model
         .session
         .diff()
@@ -1257,6 +1723,81 @@ fn restore_search_origin(model: &mut Model, origin: SearchOrigin, threads: &Thre
     }
 }
 
+fn attention_ids_in_git_order(model: &Model, threads: &Threads) -> Vec<ThreadId> {
+    model
+        .session
+        .diff()
+        .document
+        .files
+        .iter()
+        .flat_map(|file| {
+            file.hunks.iter().flat_map(move |hunk| {
+                let location = HunkLocation::new(&file.path, &hunk.header);
+                model
+                    .threads_at_current(&location, threads)
+                    .into_iter()
+                    .filter(|thread| thread.needs_attention)
+                    .map(|thread| thread.id)
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect()
+}
+
+fn hunk_change_overlaps(anchor: HunkCoordinates, hunk: &DiffHunk) -> bool {
+    let Some(coordinates) = hunk.coordinates else {
+        return false;
+    };
+    let mut old_line = coordinates.old.start;
+    let mut new_line = coordinates.new.start;
+    let mut old_change = None;
+    let mut new_change = None;
+    for line in &hunk.lines {
+        match line.kind {
+            DiffLineKind::Removed => {
+                extend_range(&mut old_change, old_line);
+                old_line = old_line.saturating_add(1);
+            }
+            DiffLineKind::Added => {
+                extend_range(&mut new_change, new_line);
+                new_line = new_line.saturating_add(1);
+            }
+            DiffLineKind::Context => {
+                old_line = old_line.saturating_add(1);
+                new_line = new_line.saturating_add(1);
+            }
+            DiffLineKind::Meta => {}
+        }
+    }
+    old_change.is_some_and(|range| ranges_overlap(anchor.old, range))
+        || new_change.is_some_and(|range| ranges_overlap(anchor.new, range))
+}
+
+fn extend_range(range: &mut Option<HunkRange>, line: usize) {
+    match range {
+        Some(range) => {
+            let end = range.start.saturating_add(range.count);
+            range.count = end.max(line.saturating_add(1)).saturating_sub(range.start);
+        }
+        None => {
+            *range = Some(HunkRange {
+                start: line,
+                count: 1,
+            });
+        }
+    }
+}
+
+fn ranges_overlap(left: HunkRange, right: HunkRange) -> bool {
+    let left_end = left
+        .start
+        .saturating_add(left.count.max(1).saturating_sub(1));
+    let right_end = right
+        .start
+        .saturating_add(right.count.max(1).saturating_sub(1));
+    left.start <= right_end && right.start <= left_end
+}
+
 pub struct ViewInput<'a> {
     pub threads: &'a Threads,
 }
@@ -1268,35 +1809,65 @@ pub struct View {
 }
 
 pub fn view(model: &Model, input: ViewInput<'_>) -> View {
+    let visible_files = model.visible_files(input.threads);
     let file_rail = model.sidebar_visible.then(|| FileRail {
-        selected: (!model.session.diff().document.files.is_empty())
-            .then(|| model.session.cursor().selected_file()),
-        items: model
-            .session
-            .diff()
-            .document
-            .files
+        selected: visible_files
             .iter()
-            .map(|file| {
-                let threads = input.threads.in_file(&file.path);
-                let attention = if threads.iter().any(|thread| thread.needs_attention) {
+            .position(|file| *file == model.session.cursor().selected_file()),
+        items: visible_files
+            .iter()
+            .filter_map(|file_index| {
+                let file = model.session.diff().document.files.get(*file_index)?;
+                let file_threads = file
+                    .hunks
+                    .iter()
+                    .flat_map(|hunk| {
+                        model.visible_threads_at(
+                            &HunkLocation::new(&file.path, &hunk.header),
+                            input.threads,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let attention = if file_threads.iter().any(|thread| thread.needs_attention) {
                     FileAttention::NeedsAttention
-                } else if threads
+                } else if file_threads
                     .iter()
                     .any(|thread| matches!(thread.resolution, Resolution::Open))
                 {
                     FileAttention::Open
-                } else if threads.is_empty() {
+                } else if file_threads.is_empty() {
                     FileAttention::None
                 } else {
                     FileAttention::Resolved
                 };
-                FileItem {
+                let hunk_count = file
+                    .hunks
+                    .iter()
+                    .filter(|hunk| {
+                        model.hunk_matches_filter(
+                            &HunkLocation::new(&file.path, &hunk.header),
+                            input.threads,
+                        )
+                    })
+                    .count();
+                let thread_count = file
+                    .hunks
+                    .iter()
+                    .map(|hunk| {
+                        model
+                            .visible_threads_at(
+                                &HunkLocation::new(&file.path, &hunk.header),
+                                input.threads,
+                            )
+                            .len()
+                    })
+                    .sum();
+                Some(FileItem {
                     path: file.path.clone(),
-                    hunk_count: file.hunks.len(),
-                    thread_count: threads.len(),
+                    hunk_count,
+                    thread_count,
                     attention,
-                }
+                })
             })
             .collect(),
     });
@@ -1334,6 +1905,9 @@ pub fn view(model: &Model, input: ViewInput<'_>) -> View {
 }
 
 fn review_body(model: &Model, threads: &Threads) -> ReviewBody {
+    let source_is_empty = model.session.diff().document.files.is_empty();
+    let visible_hunks = model.visible_hunks(threads);
+    let filtered_is_empty = !source_is_empty && visible_hunks.is_empty();
     ReviewBody {
         scroll: 0,
         viewport: ReviewViewport {
@@ -1342,13 +1916,9 @@ fn review_body(model: &Model, threads: &Threads) -> ReviewBody {
             visible_rows: 0,
             sticky_context: None,
         },
-        empty_state: model
-            .session
-            .diff()
-            .document
-            .files
-            .is_empty()
-            .then(|| empty_diff_message(&model.request.target)),
+        empty_state: source_is_empty
+            .then(|| empty_diff_message(&model.request.target))
+            .or_else(|| filtered_is_empty.then(|| empty_filter_message(model.filter))),
         search_target: model.current_search_target().cloned(),
         files: model
             .session
@@ -1357,58 +1927,73 @@ fn review_body(model: &Model, threads: &Threads) -> ReviewBody {
             .files
             .iter()
             .enumerate()
-            .map(|(file_index, file)| ReviewFile {
-                path: file.path.clone(),
-                selected: file_index == model.session.cursor().selected_file(),
-                extension: file.extension().map(str::to_owned),
-                metadata: file.metadata.clone(),
-                hunks: file
+            .filter_map(|(file_index, file)| {
+                let hunks = file
                     .hunks
                     .iter()
                     .enumerate()
-                    .map(|(hunk_index, hunk)| {
+                    .filter_map(|(hunk_index, hunk)| {
                         let selected = file_index == model.session.cursor().selected_file()
                             && hunk_index == model.session.cursor().selected_hunk();
                         let location = HunkLocation::new(&file.path, &hunk.header);
-                        ReviewHunk {
-                            anchor: location.clone(),
-                            header: model.show_hunk_headers.then(|| hunk.header.clone()),
-                            coordinates: hunk.coordinates,
-                            selected,
-                            lines: hunk.lines.clone(),
-                            threads: threads
-                                .at(&location)
-                                .iter()
-                                .enumerate()
-                                .map(|(thread_index, thread)| ThreadCard {
-                                    id: thread.id,
-                                    state: thread_state(thread),
-                                    resolved: matches!(thread.resolution, Resolution::Resolved),
-                                    outdated: thread.outdated,
-                                    active: selected
-                                        && thread_index == model.session.cursor().selected_thread()
-                                        && model.focus() == FocusArea::Threads,
-                                    expanded: model.expanded_threads.contains(&thread.id),
-                                    message_count: thread.messages.len(),
-                                    closed_by: thread
-                                        .closed_by
-                                        .as_ref()
-                                        .map(|participant| participant.id.clone()),
-                                    latest: thread
-                                        .messages
-                                        .last()
-                                        .map(|message| {
-                                            format!("{}: {}", message.author.id, message.body)
-                                        })
-                                        .unwrap_or_default(),
-                                })
-                                .collect(),
-                        }
+                        model
+                            .hunk_matches_filter(&location, threads)
+                            .then(|| ReviewHunk {
+                                anchor: location.clone(),
+                                header: model.show_hunk_headers.then(|| hunk.header.clone()),
+                                coordinates: hunk.coordinates,
+                                selected,
+                                lines: hunk.lines.clone(),
+                                threads: model
+                                    .visible_threads_at(&location, threads)
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(thread_index, thread)| ThreadCard {
+                                        id: thread.id,
+                                        state: thread_state(thread),
+                                        resolved: matches!(thread.resolution, Resolution::Resolved),
+                                        outdated: thread.outdated,
+                                        active: selected
+                                            && thread_index
+                                                == model.session.cursor().selected_thread()
+                                            && model.focus() == FocusArea::Threads,
+                                        expanded: model.expanded_threads.contains(&thread.id),
+                                        message_count: thread.messages.len(),
+                                        closed_by: thread
+                                            .closed_by
+                                            .as_ref()
+                                            .map(|participant| participant.id.clone()),
+                                        latest: thread
+                                            .messages
+                                            .last()
+                                            .map(|message| {
+                                                format!("{}: {}", message.author.id, message.body)
+                                            })
+                                            .unwrap_or_default(),
+                                    })
+                                    .collect(),
+                            })
                     })
-                    .collect(),
+                    .collect::<Vec<_>>();
+                (!hunks.is_empty() || model.filter == ReviewFilter::AllChanges).then(|| {
+                    ReviewFile {
+                        path: file.path.clone(),
+                        selected: file_index == model.session.cursor().selected_file(),
+                        extension: file.extension().map(str::to_owned),
+                        metadata: file.metadata.clone(),
+                        hunks,
+                    }
+                })
             })
             .collect(),
     }
+}
+
+fn empty_filter_message(filter: ReviewFilter) -> String {
+    format!(
+        "No review targets match Filter: {}.\nThe Git diff is still loaded; this is a filtered view, not an empty changeset.\nPress A for All changes or F to cycle filters.",
+        filter.label()
+    )
 }
 
 fn empty_diff_message(target: &crate::diff::DiffTarget) -> String {

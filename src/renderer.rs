@@ -653,19 +653,23 @@ fn rollup_text(rollup: &RollupBody, available_width: u16, theme: SemanticTheme) 
 fn header_text(view: &View, size: ShellSize) -> String {
     match size {
         ShellSize::Wide => format!(
-            "revia  •  {} files  •  {} need you  •  {} open  •  {} resolved",
+            "revia  •  Filter: {}  •  {} files  •  {} need you  •  {} open  •  {} resolved",
+            view.header.active_filter,
             view.header.file_count,
             view.header.needs_attention,
             view.header.open,
             view.header.resolved
         ),
         ShellSize::Medium => format!(
-            "revia  •  {} files  •  {} need you  •  {} open",
-            view.header.file_count, view.header.needs_attention, view.header.open
+            "revia  •  Filter: {}  •  {} files  •  {} need you  •  {} open",
+            view.header.active_filter,
+            view.header.file_count,
+            view.header.needs_attention,
+            view.header.open
         ),
         ShellSize::Narrow => format!(
-            "revia • {} files • {} need you",
-            view.header.file_count, view.header.needs_attention
+            "revia • F:{} • {} files",
+            view.header.active_filter, view.header.file_count
         ),
     }
 }
@@ -995,6 +999,29 @@ mod tests {
     }
 
     #[test]
+    fn filtered_empty_state_names_the_filter_and_recovery_without_color_at_narrow_width() {
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::no_color(),
+            ..Renderer::default()
+        };
+        let mut model = model_with_diff(RESPONSIVE_DIFF);
+        crate::app::update(&mut model, review::Event::CycleFilter(1));
+
+        let buffer = render(&renderer, &mut model, 48, 20);
+        let rendered = rows(&buffer).join("\n");
+        assert!(rendered.contains("F:Needs attention"));
+        assert!(rendered.contains("No review targets match Filter:"));
+        assert!(rendered.contains("Git diff is still loaded"));
+        assert!(rendered.contains("Press A for All changes"));
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset)
+        );
+    }
+
+    #[test]
     fn wide_medium_narrow_and_minimum_shells_have_intentional_roles() {
         let renderer = Renderer::default();
         let mut model = model_with_diff(RESPONSIVE_DIFF);
@@ -1027,7 +1054,7 @@ mod tests {
         assert_eq!(medium_areas.contextual_keys.y, 19);
 
         let narrow = rows(&render(&renderer, &mut model, 64, 16));
-        assert_eq!(narrow[0].trim_end(), "revia • 2 files • 0 need you");
+        assert_eq!(narrow[0].trim_end(), "revia • F:All changes • 2 files");
         assert!(!narrow.iter().any(|row| row.contains(" Files ")));
         assert!(
             narrow

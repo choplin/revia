@@ -201,7 +201,7 @@ fn update_review(model: &mut Model, event: review::Event) -> Vec<Effect> {
 fn update_composer(model: &mut Model, event: composer::Event) -> Vec<Effect> {
     let input = composer::UpdateInput {
         target: model.review.request().target.clone(),
-        selected_location: model.review.selected_location(),
+        selected_location: model.review.projected_location(&model.global.threads),
         operation_pending: model.global.pending.is_some(),
     };
     let result = composer::update(&mut model.composer, event, input);
@@ -246,7 +246,7 @@ fn apply_review(model: &mut Model, result: review::Update) -> Vec<Effect> {
     for intent in result.intents {
         match intent {
             review::Intent::SetStatus(status) => model.global.status = Some(status),
-            review::Intent::ReplaceThreads(threads) => model.global.threads = threads,
+            review::Intent::ReplaceThreads(threads) => replace_threads(model, threads),
             review::Intent::OpenComposer { reply_to } => {
                 model.composer.begin(reply_to);
                 model.active_mode = ActiveMode::Composer;
@@ -301,7 +301,7 @@ fn apply_composer(model: &mut Model, result: composer::Update) -> Vec<Effect> {
         match intent {
             composer::Intent::Close => model.active_mode = ActiveMode::Review,
             composer::Intent::SetStatus(status) => model.global.status = Some(status),
-            composer::Intent::ReplaceThreads(threads) => model.global.threads = threads,
+            composer::Intent::ReplaceThreads(threads) => replace_threads(model, threads),
         }
     }
     result
@@ -347,9 +347,15 @@ fn apply_rollup(model: &mut Model, result: rollup::Update) -> Vec<Effect> {
                     .review
                     .select_thread_location(id, &location, &model.global.threads)
                 {
-                    Ok(()) => {
+                    Ok(filter_was_reset) => {
                         model.active_mode = ActiveMode::Review;
-                        model.global.status = Some(format!("thread target: #{id}"));
+                        model.global.status = Some(if filter_was_reset {
+                            format!(
+                                "thread target: #{id}; filter reset to All changes to reveal target"
+                            )
+                        } else {
+                            format!("thread target: #{id}")
+                        });
                     }
                     Err(error) => model.global.status = Some(error),
                 }
@@ -374,6 +380,13 @@ fn apply_rollup(model: &mut Model, result: rollup::Update) -> Vec<Effect> {
         .collect()
 }
 
+fn replace_threads(model: &mut Model, threads: ThreadState) {
+    model
+        .review
+        .reconcile_replaced_threads(&model.global.threads, &threads);
+    model.global.threads = threads;
+}
+
 pub fn view(model: &Model) -> semantic::View {
     let (file_rail, body, overlay, layout) = match model.active_mode {
         ActiveMode::Review => {
@@ -387,7 +400,10 @@ pub fn view(model: &Model) -> semantic::View {
                 review.body,
                 Some(composer::view(
                     &model.composer,
-                    model.review.selected_target_label().as_deref(),
+                    model
+                        .review
+                        .selected_target_label(&model.global.threads)
+                        .as_deref(),
                 )),
                 review.layout,
             )
@@ -413,7 +429,7 @@ pub fn view(model: &Model) -> semantic::View {
         }
     };
     let selected_thread = model.review.selected_thread_id(&model.global.threads);
-    let review_target = model.review.selected_target_label();
+    let review_target = model.review.selected_target_label(&model.global.threads);
     let (context, target, selected_thread_available) = match model.active_mode {
         ActiveMode::Composer => (
             semantic::SurfaceContext::Composer,
@@ -487,6 +503,7 @@ pub fn view(model: &Model) -> semantic::View {
         &model.global,
         global::ViewInput {
             file_count: model.review.session().diff().document.files.len(),
+            active_filter: model.review.filter().label(),
             context,
             target,
             selected_thread_available,

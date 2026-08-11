@@ -199,7 +199,7 @@ pub struct HunkCoordinates {
 }
 
 impl HunkCoordinates {
-    fn parse(header: &str) -> Option<Self> {
+    pub(crate) fn parse(header: &str) -> Option<Self> {
         let mut fields = header.strip_prefix("@@ ")?.split_whitespace();
         Some(Self {
             old: HunkRange::parse(fields.next()?, '-')?,

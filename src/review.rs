@@ -122,6 +122,7 @@ impl ReviewSession {
         self.cursor.selected_thread = 0;
     }
 
+    #[cfg(test)]
     pub fn move_file(&mut self, direction: i32) -> bool {
         let count = self.diff.document.files.len();
         if count == 0 {
@@ -137,6 +138,7 @@ impl ReviewSession {
         self.cursor.selected_thread = 0;
     }
 
+    #[cfg(test)]
     pub fn move_hunk(&mut self, direction: i32) -> bool {
         let locations = self.hunk_indices();
         if locations.is_empty() {
@@ -170,6 +172,7 @@ impl ReviewSession {
         self.cursor.selected_thread = thread;
     }
 
+    #[cfg(test)]
     fn hunk_indices(&self) -> Vec<(usize, usize)> {
         self.diff
             .document
@@ -183,6 +186,7 @@ impl ReviewSession {
     }
 }
 
+#[cfg(test)]
 fn wrapped_index(current: usize, length: usize, direction: i32) -> usize {
     ((current as i32 + direction).rem_euclid(length as i32)) as usize
 }

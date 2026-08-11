@@ -108,6 +108,44 @@ the old and new sides when two matches share one split-layout row.
   or the same viewport anchor clamped to valid rows after relayout. A successful
   diff reload explicitly clears search because its semantic identities belong
   to the old snapshot; a failed reload leaves search intact.
+- The header always names one active review-state filter, including at narrow
+  widths, so a reduced stream cannot be mistaken for missing Git changes. `F`
+  cycles `All changes`, `Needs attention`, `Open threads`, and `Threaded hunks`;
+  `A` returns directly to `All changes`. The filtered views are semantic
+  projections over the loaded diff and persisted thread lifecycle state:
+  attention/open views include only matching threads and their containing
+  hunks, while threaded-hunks includes every thread on each hunk that has one.
+  Files, hunks, and threads retain Git diff order within every view.
+- A filter with no targets says which filter is active, states that the Git diff
+  is still loaded, and gives both recovery keys. Changing a filter keeps the
+  closest valid file/hunk/thread identity and reveals it; if a resolve, reopen,
+  or flag change removes the selected target, reconciliation happens against
+  the replacement persisted state before the next view is built. The raw cursor
+  remains available only for later reconciliation: an empty projection exposes
+  no footer target and rejects thread composition until a visible target exists.
+- Filters survive resize, split/stack, wrapping, header/rail visibility,
+  context adjustment, successful or failed reload, and composer/help/rollup
+  entry. They are session-local and reset to `All changes` on restart; there is
+  no saved preference.
+  Full-diff search deliberately does not combine with a filter: the first match
+  resets to `All changes` with feedback, cancel restores the invocation filter,
+  and choosing `F` or `A` while results are retained clears the search.
+- A context reload can change Git's textual hunk header without changing the
+  reviewed change. Thread projection therefore resolves an immutable anchor by
+  exact path/header first, then by overlap between the anchor's parsed old/new
+  ranges and each current hunk's changed-line span in the same path. If a
+  context change merges or splits hunks and several candidates overlap, the
+  smallest combined old/new hunk start-line distance wins; a tie picks the first
+  candidate in Git order. This shared resolver supplies filters,
+  inline cards, attention traversal, and rollup landing without changing the
+  persisted anchor or thread JSON shape. A non-overlapping anchor remains
+  unavailable rather than attaching to an unrelated nearby change.
+- `{` and `}` traverse needs-attention threads in Git file/hunk/thread order,
+  not lifecycle-priority or creation order. The first jump from a non-attention
+  target chooses the first/last item by direction; traversal wraps at both ends.
+  A rollup or attention jump that targets a thread hidden by the current filter
+  explicitly resets to `All changes`, then lands on and reveals the exact
+  file, hunk, and thread in the first review frame.
 
 ## Hunk-compatible keyboard contract
 
@@ -125,6 +163,7 @@ review cursor rather than a second scrolling model.
 | `,` / `.` | Jump to previous / next changed file. |
 | `/` | Start incremental file-path and diff-content search. While entering, `Enter` keeps the search and `Esc` cancels it. |
 | `n` / `N` | Move to the next / previous retained search match, wrapping at either end. |
+| `F` / `A` | Cycle review-state filters / return directly to `All changes`. Changing a retained-search view clears search. |
 | `1` / `2` / `0` | Force split / stack / responsive layout. |
 | `s` | Enable or disable the file rail. Below 72 columns an enabled rail remains hidden and reports why. |
 | `r` | Reload the current Git diff with the selected context setting. |
@@ -212,8 +251,8 @@ are intentionally session-local and do not survive restarting revia.
 Included: Git working-tree, staged, commit, and range diffs; multi-file hunk
 reading; syntax-highlighted patch lines; inline persistent review threads;
 open/resolved/outdated/needs-attention state; deterministic review rollup;
-keyboard-only traversal; case-insensitive plain-text diff search; and runtime
-context adjustment.
+keyboard-only traversal; review-state filters; case-insensitive plain-text diff
+search; and runtime context adjustment.
 
 Excluded deliberately: staging or patch editing, line-level Git mutations,
 remote pull-request providers, prose/LLM summaries, non-Git VCS support,
@@ -229,11 +268,11 @@ and leave Git's patch plus immutable anchors as the source of truth.
 | Keep the current file/hunk selection as the sole navigation model | File, hunk, thread, and attention jumps can all resolve to the same canonical anchor and visible location. | Separate sidebar and diff selections can drift and make the current target ambiguous. |
 | Preserve the existing anchor and JSON thread store | They already provide immutable Git revision provenance and restart persistence. | Display row coordinates are not stable review identities. |
 | Keep search identity semantic and snapshot-local | File paths plus hunk/line locations preserve Git order and can be re-resolved after relayout; clearing on reload prevents stale navigation. | Terminal cell or physical row matches break when width, wrapping, or diff content changes. |
+| Project filters from semantic review state | The loaded Git diff, immutable anchors, and persisted thread format remain unchanged while navigation can reconcile stable targets before rendering. | Filtering rendered cells would make row coordinates into state and invalidate selection after relayout or lifecycle changes. |
+| Use Git order for attention traversal | Review order stays predictable across file boundaries and independent of thread creation or lifecycle-priority rollup order. | Reusing rollup priority order makes next/previous attention depend on unrelated lifecycle grouping. |
 
 ## Discussion points
 
-- Should a future version add a compact filter for files with attention/open
-  threads, once large real-world changesets establish the needed vocabulary?
 - Does thread author identity need configured display names before multi-user
   storage is introduced, or is the current explicit participant id adequate?
 - When an anchored hunk is absent from the currently selected diff target,
