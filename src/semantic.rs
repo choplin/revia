@@ -197,9 +197,16 @@ pub struct ComposerOverlay {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelpOverlay {
+    pub lines: Vec<String>,
+    pub scroll: usize,
+    pub position_hint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Overlay {
     Composer(ComposerOverlay),
-    Help { text: String },
+    Help(HelpOverlay),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

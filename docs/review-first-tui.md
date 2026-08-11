@@ -5,16 +5,30 @@
 The screen is a review surface, not a patch viewer with extra commands.
 
 ```text
-┌ revia · 4 files · 1 needs attention · 2 open · 3 resolved ───────────────┐
-│ Files / review state       │ Review stream                              │
-│ ! src/thread.rs        2   │ src/thread.rs                              │
-│ · src/anchor.rs        1   │ @@ -…                                     │
-│ ✓ src/diff.rs          1   │ - old line                                │
-│                           │ + new line                                │
-│                           │ ┌ OPEN · human · thread #7 ──────────────┐ │
-│                           │ │ Please preserve …                       │ │
-│                           │ └─────────────────────────────────────────┘ │
-└ context: review stream · status: … · target: src/thread.rs hunk 2/4 ──────┘
+revia  •  Filter: All changes  •  4 files  •  1 need you  •  2 open  •  3 resolved
+┌ Files ◆ CURRENT FILE ──────┐╔ Review stream ◆ THREAD TARGET ═════════════════════════════════════════════════════════╗
+│› ! src/thread.rs 2h/1t     │║▣ 1/4 src/thread.rs • hunk 2/4                                                          ║
+│  • src/anchor.rs 1h/1t     │║▶ @@ -18,3 +18,4 @@                                                                     ║
+│  ✓ src/diff.rs   1h/1t     │║┃  18 -old line                                                                         ║
+│                            │║┃  18 +new line                                                                         ║
+│                            │║  ╰─ ▶ ACTIVE · #007 ! NEEDS ATTENTION · • OPEN · 1 message                             ║
+│                            │║  │ human: Please preserve the stable anchor.                                           ║
+│                            │║  └─ c reply · x resolve · a attention · o outdated                                     ║
+│                            │║                                                                                        ║
+│                            │║                                                                                        ║
+│                            │║                                                                                        ║
+│                            │║                                                                                        ║
+│                            │║                                                                                        ║
+│                            │║                                                                                        ║
+│                            │║                                                                                        ║
+│                            │║                                                                                        ║
+│                            │║                                                                                        ║
+│                            │║                                                                                        ║
+│                            │║                                                                                        ║
+│                            │║                                                                                        ║
+└────────────────────────────┘╚════════════════════════════════════════════════════════════════════════════════════════╝
+◆ Context: Inline threads • Target: src/thread.rs • hunk 2/4 • thread #7
+Keys: q exit · Tab stream · x resolve · ? help · t/T thread · c reply · C new · a/o flags · e fold
 ```
 
 ## Adaptive shell contract

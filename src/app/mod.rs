@@ -8,7 +8,7 @@ use crate::{
     input::{BindingResolution, PhysicalInput},
     mode::{composer, help, review, rollup},
     semantic,
-    thread::ThreadState,
+    thread::{Resolution, ThreadState},
 };
 
 pub use crate::mode::ActiveMode;
@@ -232,6 +232,7 @@ fn apply_global(model: &mut Model, result: global::Update) -> Vec<Effect> {
                     .review
                     .set_viewport(rows, columns, &model.global.threads);
                 model.composer.set_viewport(rows, columns);
+                model.help.set_viewport(rows, columns);
             }
         }
     }
@@ -499,6 +500,15 @@ pub fn view(model: &Model) -> semantic::View {
             ),
         },
     };
+    let selected_thread_resolved = selected_thread.is_some_and(|id| {
+        model
+            .global
+            .threads
+            .threads()
+            .iter()
+            .find(|thread| thread.id == id)
+            .is_some_and(|thread| matches!(thread.resolution, Resolution::Resolved))
+    });
     let global = global::view(
         &model.global,
         global::ViewInput {
@@ -507,6 +517,7 @@ pub fn view(model: &Model) -> semantic::View {
             context,
             target,
             selected_thread_available,
+            selected_thread_resolved,
             width: model.review.viewport_columns(),
         },
     );

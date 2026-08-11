@@ -573,20 +573,40 @@ impl Renderer {
                     }
                 }
             }
-            Overlay::Help { text } => {
+            Overlay::Help(help) => {
                 let area = centered_rect(86, 20, frame.area());
                 frame.render_widget(Clear, area);
                 frame.render_widget(
-                    Paragraph::new(text.as_str())
-                        .wrap(Wrap { trim: false })
-                        .block(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .border_type(BorderType::Double)
-                                .border_style(self.semantic_theme.style(Tone::FocusSelection))
-                                .title("Keyboard help — Esc/? to close"),
-                        ),
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Double)
+                        .border_style(self.semantic_theme.style(Tone::FocusSelection))
+                        .title("Keyboard help — Esc/? to close"),
                     area,
+                );
+                let inner = Rect::new(
+                    area.x.saturating_add(1),
+                    area.y.saturating_add(1),
+                    area.width.saturating_sub(2),
+                    area.height.saturating_sub(2),
+                );
+                let [content, hint] =
+                    Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+                frame.render_widget(
+                    Paragraph::new(Text::from(
+                        help.lines
+                            .iter()
+                            .cloned()
+                            .map(Line::raw)
+                            .collect::<Vec<_>>(),
+                    ))
+                    .scroll((u16::try_from(help.scroll).unwrap_or(u16::MAX), 0)),
+                    content,
+                );
+                frame.render_widget(
+                    Paragraph::new(truncate_end(&help.position_hint, usize::from(hint.width)))
+                        .style(self.semantic_theme.style(Tone::MutedResolved)),
+                    hint,
                 );
             }
         }
@@ -727,7 +747,8 @@ mod tests {
         anchor::{Anchor, HunkLocation},
         app::Model,
         diff::{DiffDocument, DiffRequest, DiffTarget, LoadedDiff},
-        mode::review,
+        mode::{help, review},
+        semantic::Body,
         thread::{Participant, ParticipantKind, ThreadState},
         ui::LayoutMode,
     };
@@ -1019,6 +1040,43 @@ mod tests {
                 .iter()
                 .all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset)
         );
+
+        let minimum = render(&renderer, &mut model, 48, 8);
+        let minimum_rows = rows(&minimum).join("\n");
+        assert!(minimum_rows.contains("No review targets match Filter:"));
+        assert!(minimum_rows.contains("Git diff is still loaded"));
+        assert!(minimum_rows.contains("Press A for All changes"));
+        assert!((1..6).all(|y| minimum[(47, y)].symbol() != "█"));
+
+        let semantic = crate::app::view(&model);
+        let Body::Review(review) = semantic.body else {
+            panic!("review body")
+        };
+        assert_eq!(review.viewport.total_rows, 3);
+        assert_eq!(review.viewport.visible_rows, 3);
+        assert_eq!(review.viewport.sticky_context, None);
+    }
+
+    #[test]
+    fn help_scroll_reaches_the_exit_section_at_supported_viewports() {
+        let renderer = Renderer::default();
+        for (width, height) in [(120, 24), (48, 20), (48, 8)] {
+            let mut model = model_with_diff(RESPONSIVE_DIFF);
+            crate::app::update(&mut model, crate::app::global::Event::OpenHelp);
+
+            let top = rows(&render(&renderer, &mut model, width, height)).join("\n");
+            assert!(top.contains("Keyboard help — Esc/? to close"), "{top}");
+            assert!(top.contains("Navigation"), "{top}");
+            assert!(top.contains("rows "), "{top}");
+
+            crate::app::update(&mut model, help::Event::JumpToEdge { end: true });
+            let bottom = rows(&render(&renderer, &mut model, width, height)).join("\n");
+            assert!(
+                bottom.contains("Esc/? closes"),
+                "{width}x{height}: {bottom}"
+            );
+            assert!(bottom.contains("rows "), "{width}x{height}: {bottom}");
+        }
     }
 
     #[test]
@@ -1486,12 +1544,9 @@ mod tests {
         );
         let review_rows = rows(&render(&renderer, &mut review, 48, 20));
         assert!(review_rows[18].contains("hunk 1/1"), "{}", review_rows[18]);
-        assert!(
-            review_rows[19].contains("j/k stream"),
-            "{}",
-            review_rows[19]
-        );
-        assert!(review_rows[19].contains(",/. file"), "{}", review_rows[19]);
+        assert!(review_rows[19].contains("q exit"), "{}", review_rows[19]);
+        assert!(review_rows[19].contains("c new"), "{}", review_rows[19]);
+        assert!(review_rows[19].contains("? help"), "{}", review_rows[19]);
         crate::app::update(&mut review, review::Event::ToggleSidebar);
         crate::app::update(&mut review, review::Event::ToggleSidebar);
         let review_rows = rows(&render(&renderer, &mut review, 48, 20));
@@ -1562,7 +1617,7 @@ mod tests {
             "{}",
             thread_rows[19]
         );
-        assert!(thread_rows[19].contains("x/R"), "{}", thread_rows[19]);
+        assert!(thread_rows[19].contains("x resolve"), "{}", thread_rows[19]);
     }
 
     #[test]
@@ -1573,7 +1628,7 @@ mod tests {
         let rendered = rows(&render(&renderer, &mut model, 120, 24)).join("\n");
 
         assert!(rendered.contains("Thread rollup ◆ ROLLUP FOCUS"));
-        assert!(rendered.contains("No thread targets • v/Esc return"));
+        assert!(rendered.contains("Keys: v/Esc return · no targets"));
         assert!(!rendered.contains("j/k select • Enter jump"));
     }
 

@@ -76,6 +76,10 @@ impl ReviewRowMap {
         self.total_rows
     }
 
+    pub(crate) fn has_sticky_context(&self) -> bool {
+        !self.files.is_empty()
+    }
+
     pub(crate) fn anchor_at(&self, row: usize) -> ViewportAnchor {
         for file in &self.files {
             if row < file.start || row >= file.end {

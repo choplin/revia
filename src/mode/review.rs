@@ -518,8 +518,8 @@ impl Model {
         ))
     }
 
-    fn visible_rows(&self) -> usize {
-        let sticky_rows = usize::from(!self.session.diff().document.files.is_empty());
+    fn visible_rows_for(&self, rows: &ReviewRowMap) -> usize {
+        let sticky_rows = usize::from(rows.has_sticky_context());
         usize::from(self.viewport_rows)
             .saturating_sub(sticky_rows)
             .max(1)
@@ -540,35 +540,34 @@ impl Model {
 
     fn viewport_anchor(&self, threads: &Threads) -> ViewportAnchor {
         let rows = self.row_map(threads);
-        let top = self
-            .view
-            .resolved_scroll(rows.total_rows(), self.visible_rows());
+        let visible_rows = self.visible_rows_for(&rows);
+        let top = self.view.resolved_scroll(rows.total_rows(), visible_rows);
         rows.anchor_at(top)
     }
 
     fn restore_viewport(&mut self, anchor: ViewportAnchor, threads: &Threads) {
         let rows = self.row_map(threads);
+        let visible_rows = self.visible_rows_for(&rows);
         let row = rows.row_for_anchor(&anchor);
         self.view.set_scroll(row);
-        self.view.clamp(rows.total_rows(), self.visible_rows());
+        self.view.clamp(rows.total_rows(), visible_rows);
     }
 
     fn reveal_selected_target(&mut self, threads: &Threads) {
         let rows = self.row_map(threads);
+        let visible_rows = self.visible_rows_for(&rows);
         if let Some(row) = rows.selected_target_row() {
-            self.view.reveal(row, self.visible_rows());
-            self.view.clamp(rows.total_rows(), self.visible_rows());
+            self.view.reveal(row, visible_rows);
+            self.view.clamp(rows.total_rows(), visible_rows);
         }
     }
 
     fn selected_target_is_visible(&self, threads: &Threads) -> bool {
         let rows = self.row_map(threads);
-        let top = self
-            .view
-            .resolved_scroll(rows.total_rows(), self.visible_rows());
-        rows.selected_target_row().is_some_and(|selected| {
-            selected >= top && selected < top.saturating_add(self.visible_rows())
-        })
+        let visible_rows = self.visible_rows_for(&rows);
+        let top = self.view.resolved_scroll(rows.total_rows(), visible_rows);
+        rows.selected_target_row()
+            .is_some_and(|selected| selected >= top && selected < top.saturating_add(visible_rows))
     }
 
     fn change_geometry(&mut self, threads: &Threads, change: impl FnOnce(&mut Self)) {
@@ -589,7 +588,9 @@ impl Model {
             self.reveal_selected_target(threads);
             if preserve_end_relative {
                 let rows = self.row_map(threads);
-                let max_scroll = rows.total_rows().saturating_sub(self.visible_rows());
+                let max_scroll = rows
+                    .total_rows()
+                    .saturating_sub(self.visible_rows_for(&rows));
                 self.view.scroll_from_end = Some(max_scroll.saturating_sub(self.view.scroll));
             }
         }
@@ -656,9 +657,10 @@ impl Model {
         }
         self.view.focus = FocusArea::Review;
         let rows = self.row_map(threads);
+        let visible_rows = self.visible_rows_for(&rows);
         if let Some(row) = rows.row_for_search_target(target) {
-            self.view.reveal(row, self.visible_rows());
-            self.view.clamp(rows.total_rows(), self.visible_rows());
+            self.view.reveal(row, visible_rows);
+            self.view.clamp(rows.total_rows(), visible_rows);
         }
         filter_was_reset
     }
@@ -920,9 +922,8 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
         }
         Event::BeginSearch => {
             let rows = model.row_map(input.threads);
-            let scroll = model
-                .view
-                .resolved_scroll(rows.total_rows(), model.visible_rows());
+            let visible_rows = model.visible_rows_for(&rows);
+            let scroll = model.view.resolved_scroll(rows.total_rows(), visible_rows);
             model.search = Some(SearchState {
                 query: String::new(),
                 matches: Vec::new(),
@@ -993,23 +994,26 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
         Event::ScrollRows(delta) => {
             model.view.scroll_by(delta);
             let rows = model.row_map(input.threads);
-            model.view.clamp(rows.total_rows(), model.visible_rows());
+            let visible_rows = model.visible_rows_for(&rows);
+            model.view.clamp(rows.total_rows(), visible_rows);
             status(&mut result, scroll_status(&model.view));
         }
         Event::ScrollViewport(direction) => {
-            let viewport = model.visible_rows().min(i16::MAX as usize) as i16;
-            model.view.scroll_by(direction.saturating_mul(viewport));
             let rows = model.row_map(input.threads);
-            model.view.clamp(rows.total_rows(), model.visible_rows());
+            let visible_rows = model.visible_rows_for(&rows);
+            let viewport = visible_rows.min(i16::MAX as usize) as i16;
+            model.view.scroll_by(direction.saturating_mul(viewport));
+            model.view.clamp(rows.total_rows(), visible_rows);
             status(&mut result, scroll_status(&model.view));
         }
         Event::ScrollHalfViewport(direction) => {
-            let half_viewport = (model.visible_rows() / 2).max(1).min(i16::MAX as usize) as i16;
+            let rows = model.row_map(input.threads);
+            let visible_rows = model.visible_rows_for(&rows);
+            let half_viewport = (visible_rows / 2).max(1).min(i16::MAX as usize) as i16;
             model
                 .view
                 .scroll_by(direction.saturating_mul(half_viewport));
-            let rows = model.row_map(input.threads);
-            model.view.clamp(rows.total_rows(), model.visible_rows());
+            model.view.clamp(rows.total_rows(), visible_rows);
             status(&mut result, scroll_status(&model.view));
         }
         Event::JumpToStreamEdge { end } => {
@@ -1717,7 +1721,8 @@ fn restore_search_origin(model: &mut Model, origin: SearchOrigin, threads: &Thre
         model.view.scroll = origin.scroll;
         model.view.scroll_from_end = origin.scroll_from_end;
         let rows = model.row_map(threads);
-        model.view.clamp(rows.total_rows(), model.visible_rows());
+        let visible_rows = model.visible_rows_for(&rows);
+        model.view.clamp(rows.total_rows(), visible_rows);
     } else {
         model.restore_viewport(origin.viewport_anchor, threads);
     }
@@ -1882,14 +1887,13 @@ pub fn view(model: &Model, input: ViewInput<'_>) -> View {
             wrap_lines: model.wrap_lines,
         },
     );
-    let scroll = model
-        .view
-        .resolved_scroll(rows.total_rows(), model.visible_rows());
+    let visible_rows = model.visible_rows_for(&rows);
+    let scroll = model.view.resolved_scroll(rows.total_rows(), visible_rows);
     review.scroll = scroll;
     review.viewport = ReviewViewport {
         presentation_width,
         total_rows: rows.total_rows(),
-        visible_rows: model.visible_rows(),
+        visible_rows,
         sticky_context: rows.sticky_context(scroll),
     };
     let body = Body::Review(review);

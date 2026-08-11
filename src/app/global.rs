@@ -124,6 +124,7 @@ pub struct ViewInput {
     pub context: SurfaceContext,
     pub target: Option<String>,
     pub selected_thread_available: bool,
+    pub selected_thread_resolved: bool,
     pub width: u16,
 }
 
@@ -162,8 +163,12 @@ pub fn view(model: &Model, input: ViewInput) -> View {
                 ),
             },
             contextual_keys: ContextualKeys {
-                text: context_keys(input.context, input.selected_thread_available, input.width)
-                    .into(),
+                text: context_keys(
+                    input.context,
+                    input.selected_thread_available,
+                    input.selected_thread_resolved,
+                    input.width,
+                ),
             },
         },
     }
@@ -263,50 +268,72 @@ fn compact_context(
 fn context_keys(
     context: SurfaceContext,
     selected_thread_available: bool,
+    selected_thread_resolved: bool,
     width: u16,
-) -> &'static str {
-    if width < 72 {
-        return match context {
-            SurfaceContext::Review if selected_thread_available => {
-                "j/k stream · [/] hunk · ,/. file · / search"
-            }
-            SurfaceContext::Review => "j/k stream · [/] hunk · ,/. file · / search",
-            SurfaceContext::Threads if selected_thread_available => {
-                "Tab stream · t/T · c/C · x/R · a/o · e resolved"
-            }
-            SurfaceContext::Threads => "Tab stream · c new · ? help",
-            SurfaceContext::SearchInput => "type query · Enter keep · Esc cancel",
-            SurfaceContext::SearchResults => "n/N matches · / new · Esc cancel",
-            SurfaceContext::Rollup if selected_thread_available => {
-                "j/k select · Enter jump · v/Esc return"
-            }
-            SurfaceContext::Rollup => "no targets · v/Esc return",
-            SurfaceContext::Composer => "Ctrl-S post · Enter newline · Esc cancel",
-            SurfaceContext::Help => "Esc/? close",
-        };
-    }
-    match context {
-        SurfaceContext::Review if selected_thread_available => {
-            "j/k stream • [/] hunk • ,/. file • F filter • A all • / search • t/T thread"
-        }
-        SurfaceContext::Review => {
-            "j/k stream • [/] hunk • ,/. file • F filter • A all • / search • c new thread"
-        }
-        SurfaceContext::Threads if selected_thread_available => {
-            "t/T thread • c reply • C new • x resolve • R reopen • a/o flags • e resolved fold • Tab stream • ? help"
-        }
-        SurfaceContext::Threads => "c new thread • Tab stream • ? help",
-        SurfaceContext::SearchInput => "type query • Backspace delete • Enter keep • Esc cancel",
+) -> String {
+    let (required, optional): (&[&str], &[&str]) = match context {
+        SurfaceContext::Review if selected_thread_available => (
+            &["q exit", "t/T thread", "? help"],
+            &[
+                "j/k stream",
+                "[/] hunk",
+                ",/. file",
+                "F filter",
+                "A all",
+                "/ search",
+            ],
+        ),
+        SurfaceContext::Review => (
+            &["q exit", "c new", "? help"],
+            &[
+                "j/k stream",
+                "[/] hunk",
+                ",/. file",
+                "F filter",
+                "A all",
+                "/ search",
+            ],
+        ),
+        SurfaceContext::Threads if selected_thread_resolved => (
+            &["q exit", "Tab", "R reopen", "e fold", "? help"],
+            &["t/T thread", "c reply", "C new", "a/o flags"],
+        ),
+        SurfaceContext::Threads if selected_thread_available => (
+            &["q exit", "Tab stream", "x resolve", "? help"],
+            &["t/T thread", "c reply", "C new", "a/o flags", "e fold"],
+        ),
+        SurfaceContext::Threads => (&["q exit", "Tab stream", "c new", "? help"], &[]),
+        SurfaceContext::SearchInput => (
+            &["Esc cancel", "Enter keep"],
+            &["type query", "Backspace delete"],
+        ),
         SurfaceContext::SearchResults => {
-            "n/N next/previous (wrap) • / new search • ? help • Esc cancel"
+            (&["Esc cancel", "n/N matches", "? help"], &["/ new search"])
         }
         SurfaceContext::Rollup if selected_thread_available => {
-            "j/k select • Enter jump • v/Esc return"
+            (&["v/Esc return", "Enter jump"], &["j/k select"])
         }
-        SurfaceContext::Rollup => "no thread targets • v/Esc return",
-        SurfaceContext::Composer => "Ctrl-S post • Enter newline • Esc cancel",
-        SurfaceContext::Help => "Esc/? close help",
+        SurfaceContext::Rollup => (&["v/Esc return"], &["no targets"]),
+        SurfaceContext::Composer => (&["Esc cancel", "Ctrl-S post"], &["Enter newline"]),
+        SurfaceContext::Help => (&["Esc/? close"], &["j/k rows", "f/b pages", "g/G edges"]),
+    };
+    fit_key_groups(required, optional, width)
+}
+
+fn fit_key_groups(required: &[&str], optional: &[&str], width: u16) -> String {
+    const PREFIX: &str = "Keys: ";
+    const SEPARATOR: &str = " · ";
+    let budget = usize::from(width).saturating_sub(UnicodeWidthStr::width(PREFIX));
+    let mut result = String::new();
+    for group in required.iter().chain(optional) {
+        let separator = if result.is_empty() { "" } else { SEPARATOR };
+        let added_width = UnicodeWidthStr::width(separator) + UnicodeWidthStr::width(*group);
+        if UnicodeWidthStr::width(result.as_str()).saturating_add(added_width) <= budget {
+            result.push_str(separator);
+            result.push_str(group);
+        }
     }
+    result
 }
 
 fn pending_status(kind: PendingEffectKind) -> &'static str {
@@ -314,5 +341,59 @@ fn pending_status(kind: PendingEffectKind) -> &'static str {
         PendingEffectKind::ReloadDiff => "reloading diff…",
         PendingEffectKind::ChangeThreads => "updating thread…",
         PendingEffectKind::ResolveThread => "resolving thread…",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolved_thread_keys_preserve_critical_actions_at_exact_widths() {
+        let at_48 = context_keys(SurfaceContext::Threads, true, true, 48);
+        let at_72 = context_keys(SurfaceContext::Threads, true, true, 72);
+        let at_119 = context_keys(SurfaceContext::Threads, true, true, 119);
+
+        assert_eq!(at_48, "q exit · Tab · R reopen · e fold · ? help");
+        assert_eq!(
+            at_72,
+            "q exit · Tab · R reopen · e fold · ? help · t/T thread · c reply"
+        );
+        assert_eq!(
+            at_119,
+            "q exit · Tab · R reopen · e fold · ? help · t/T thread · c reply · C new · a/o flags"
+        );
+        for (width, keys) in [(48, at_48), (72, at_72), (119, at_119)] {
+            assert!(keys.contains("Tab"));
+            assert!(keys.contains("R reopen"));
+            assert!(keys.contains("e fold"));
+            assert!(keys.contains("? help"));
+            assert!(UnicodeWidthStr::width(format!("Keys: {keys}").as_str()) <= width);
+        }
+    }
+
+    #[test]
+    fn every_footer_context_fits_the_display_cell_budget() {
+        let contexts = [
+            SurfaceContext::Review,
+            SurfaceContext::Threads,
+            SurfaceContext::SearchInput,
+            SurfaceContext::SearchResults,
+            SurfaceContext::Rollup,
+            SurfaceContext::Composer,
+            SurfaceContext::Help,
+        ];
+        for width in [48, 72, 119] {
+            for context in contexts {
+                for selected in [false, true] {
+                    let keys = context_keys(context, selected, selected, width);
+                    assert!(
+                        UnicodeWidthStr::width(format!("Keys: {keys}").as_str())
+                            <= usize::from(width),
+                        "{context:?} at {width}: {keys}"
+                    );
+                }
+            }
+        }
     }
 }

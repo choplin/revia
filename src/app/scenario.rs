@@ -571,9 +571,10 @@ fn help_marks_invocation_commands_and_returns_to_search_location() {
 
     scenario.when_input(input(Key::Char('?')));
     let view = super::view(&scenario.model);
-    let Some(Overlay::Help { text }) = view.overlay else {
+    let Some(Overlay::Help(help)) = view.overlay else {
         panic!("help overlay is visible");
     };
+    let text = help.lines.join("\n");
     assert!(text.contains("commands valid from search results"));
     assert!(text.contains("◆ n/N next/previous match (wrap)"));
     assert!(text.contains("Navigation"));
@@ -593,9 +594,10 @@ fn help_marks_invocation_commands_and_returns_to_search_location() {
 fn help_emphasizes_thread_commands_only_for_a_thread_target() {
     let mut scenario = Scenario::given(RAW, threads());
     scenario.when_input(input(Key::Char('?')));
-    let Some(Overlay::Help { text }) = super::view(&scenario.model).overlay else {
+    let Some(Overlay::Help(help)) = super::view(&scenario.model).overlay else {
         panic!("help overlay is visible");
     };
+    let text = help.lines.join("\n");
     assert!(text.contains("commands valid from review stream"));
     assert!(text.contains("· x/R resolve/reopen"));
     scenario.when_input(input(Key::Esc));
@@ -604,9 +606,10 @@ fn help_emphasizes_thread_commands_only_for_a_thread_target() {
     let footer = super::view(&scenario.model).footer.contextual_keys.text;
     assert!(footer.contains("x resolve"));
     scenario.when_input(input(Key::Char('?')));
-    let Some(Overlay::Help { text }) = super::view(&scenario.model).overlay else {
+    let Some(Overlay::Help(help)) = super::view(&scenario.model).overlay else {
         panic!("help overlay is visible");
     };
+    let text = help.lines.join("\n");
     assert!(text.contains("commands valid from inline thread"));
     assert!(text.contains("◆ x/R resolve/reopen"));
     assert!(text.contains("◆ a/o flags"));
@@ -1425,7 +1428,7 @@ fn lifecycle_cards_fold_deterministically_and_actions_follow_the_visible_target(
 fn contextual_keys_follow_mode_and_visible_thread_availability() {
     let mut empty = Scenario::given(RAW, ThreadState::default());
     let view = super::view(&empty.model);
-    assert!(view.footer.contextual_keys.text.contains("c new thread"));
+    assert!(view.footer.contextual_keys.text.contains("c new"));
     assert!(!view.footer.contextual_keys.text.contains("x resolve"));
     empty.when_input(input(Key::Tab));
     assert_eq!(empty.model.review.focus(), FocusArea::Review);
@@ -1438,21 +1441,16 @@ fn contextual_keys_follow_mode_and_visible_thread_availability() {
     let view = super::view(&empty.model);
     assert_eq!(
         view.footer.contextual_keys.text,
-        "Ctrl-S post • Enter newline • Esc cancel"
+        "Esc cancel · Ctrl-S post · Enter newline"
     );
     empty.when_input(input(Key::Esc));
     empty.when_input(input(Key::Char('?')));
     let view = super::view(&empty.model);
-    assert_eq!(view.footer.contextual_keys.text, "Esc/? close help");
+    assert!(view.footer.contextual_keys.text.starts_with("Esc/? close"));
     empty.when_input(input(Key::Esc));
     empty.when_input(input(Key::Char('v')));
     let view = super::view(&empty.model);
-    assert!(
-        view.footer
-            .contextual_keys
-            .text
-            .contains("no thread targets")
-    );
+    assert!(view.footer.contextual_keys.text.contains("no targets"));
     assert!(
         view.footer
             .current_context
@@ -2482,6 +2480,6 @@ fn narrow_footer_and_rail_feedback_remain_truthful() {
     scenario.when_input(input(Key::Char('t')));
     let view = super::view(&scenario.model);
     assert!(view.footer.current_context.text.contains("thread #0"));
-    assert!(view.footer.contextual_keys.text.starts_with("Tab stream"));
-    assert!(view.footer.contextual_keys.text.contains("x/R"));
+    assert!(view.footer.contextual_keys.text.contains("Tab stream"));
+    assert!(view.footer.contextual_keys.text.contains("x resolve"));
 }
