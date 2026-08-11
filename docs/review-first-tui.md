@@ -17,6 +17,37 @@ The screen is a review surface, not a patch viewer with extra commands.
 └ focus: review · Tab focus · [/] hunk · t thread · } attention · c reply ┘
 ```
 
+## Adaptive shell contract
+
+The shell assigns fixed roles to one header line, an optional file-navigation
+rail, the review body, one current-context line, and one contextual-key line.
+The context and key lines always occupy their own rows, so status updates and
+focus changes do not move or resize the review body.
+
+- At 120 columns and wider, the complete header is shown and the rail uses
+  roughly one quarter of the screen, clamped to 28–36 columns.
+- From 72 through 119 columns, secondary header counts are reduced and the rail
+  uses roughly one third of the screen, clamped to 22–28 columns.
+- From the supported minimum of 48 columns through 71 columns, the rail is
+  hidden and the review body receives the full width. If file focus is active,
+  the review border explicitly says that the focused rail is hidden.
+- Below 48 columns or 8 rows, the stable too-small explanation replaces the
+  shell. Empty diffs continue to show the selected target and a recovery action.
+- Paths are truncated from the leading side with an ellipsis so the filename
+  and nearest parent context survive. Truncation and padding use terminal column
+  width rather than Unicode scalar count, including for wide characters.
+
+The visual system has five small semantic roles: added change, removed change,
+focus/selection, attention, and muted/resolved. It uses terminal palette colors
+without painting a presumed black or white base background. Syntax highlighting
+may add non-semantic foreground detail through the terminal's ANSI palette, but
+workflow meaning never depends on it or on a fixed dark-theme RGB value. Every
+semantic state also has a non-color carrier: `+`/`-` change markers,
+`!`/`•`/`✓` lifecycle markers and labels, `›`/`▶` selection markers, and a
+double border plus `◆ FOCUSED` label for focus. With `NO_COLOR` set, semantic
+and syntax colors are omitted while those markers, labels, border shapes,
+boldness, dimming, and reverse emphasis remain.
+
 - The left rail is navigation only. File jumps use `,` / `.` and reveal the
   selected file's first hunk; the rail never reduces the main pane to one-file
   mode.

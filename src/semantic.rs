@@ -110,7 +110,37 @@ pub struct RollupItem {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Footer {
+    pub current_context: CurrentContext,
+    pub contextual_keys: ContextualKeys,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentContext {
     pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextualKeys {
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceContext {
+    Files,
+    Review,
+    Threads,
+    Rollup,
+    Composer,
+    Help,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    ChangeAdded,
+    ChangeRemoved,
+    FocusSelection,
+    Attention,
+    MutedResolved,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

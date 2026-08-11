@@ -343,12 +343,6 @@ fn apply_rollup(model: &mut Model, result: rollup::Update) -> Vec<Effect> {
 }
 
 pub fn view(model: &Model) -> semantic::View {
-    let global = global::view(
-        &model.global,
-        global::ViewInput {
-            file_count: model.review.session().diff().document.files.len(),
-        },
-    );
     let (file_rail, body, overlay, layout) = match model.active_mode {
         ActiveMode::Review => {
             let review = review_view(model);
@@ -384,6 +378,23 @@ pub fn view(model: &Model) -> semantic::View {
             (review.file_rail, body, None, review.layout)
         }
     };
+    let context = match model.active_mode {
+        ActiveMode::Composer => semantic::SurfaceContext::Composer,
+        ActiveMode::Help => semantic::SurfaceContext::Help,
+        ActiveMode::Rollup => semantic::SurfaceContext::Rollup,
+        ActiveMode::Review => match layout.focus {
+            crate::ui::FocusArea::Files => semantic::SurfaceContext::Files,
+            crate::ui::FocusArea::Review => semantic::SurfaceContext::Review,
+            crate::ui::FocusArea::Threads => semantic::SurfaceContext::Threads,
+        },
+    };
+    let global = global::view(
+        &model.global,
+        global::ViewInput {
+            file_count: model.review.session().diff().document.files.len(),
+            context,
+        },
+    );
     semantic::View {
         header: global.header,
         file_rail,

@@ -10,7 +10,12 @@ use ratatui::{
 };
 use syntect::{easy::HighlightLines, highlighting::Style as SyntectStyle, parsing::SyntaxSet};
 
-use crate::diff::{DiffLine, DiffLineKind};
+use crate::{
+    diff::{DiffLine, DiffLineKind},
+    renderer::SemanticTheme,
+    semantic::Tone,
+    ui::fit_width,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SplitRow {
@@ -60,16 +65,17 @@ pub(crate) fn split_hunk_lines(
     lines: &[DiffLine],
     available_width: u16,
     selected: bool,
+    theme: SemanticTheme,
 ) -> Vec<Line<'static>> {
     let column_width = usize::from(available_width.saturating_sub(5) / 2).max(12);
     split_rows(lines)
         .into_iter()
         .map(|row| {
-            let old = split_cell(row.old.as_ref(), '-', column_width, selected);
-            let new = split_cell(row.new.as_ref(), '+', column_width, selected);
+            let old = split_cell(row.old.as_ref(), '-', column_width, selected, theme);
+            let new = split_cell(row.new.as_ref(), '+', column_width, selected, theme);
             Line::from(vec![
                 old,
-                Span::styled(" │ ", selected_style(selected)),
+                Span::styled(" │ ", selected_style(selected, theme)),
                 new,
             ])
         })
@@ -80,6 +86,8 @@ pub(crate) fn highlight_line(
     line: &DiffLine,
     highlighter: &mut HighlightLines<'_>,
     syntax_set: &SyntaxSet,
+    selected: bool,
+    theme: SemanticTheme,
 ) -> Line<'static> {
     let marker = match line.kind {
         DiffLineKind::Added => "+",
@@ -87,21 +95,23 @@ pub(crate) fn highlight_line(
         DiffLineKind::Context => " ",
         DiffLineKind::Meta => "\\",
     };
-    let background = match line.kind {
-        DiffLineKind::Added => Some(Color::Rgb(24, 54, 35)),
-        DiffLineKind::Removed => Some(Color::Rgb(65, 29, 34)),
-        DiffLineKind::Context | DiffLineKind::Meta => None,
+    let base = if selected {
+        theme.selection().patch(theme.style(line_tone(line.kind)))
+    } else {
+        theme.style(line_tone(line.kind))
     };
-    let base = background.map_or_else(Style::default, |background| Style::default().bg(background));
-    let mut spans = vec![Span::styled(marker, base.fg(marker_color(line.kind)))];
+    let mut spans = vec![Span::styled(marker, base)];
 
-    match highlighter.highlight_line(&line.text, syntax_set) {
-        Ok(ranges) => {
+    match (
+        theme.colors_enabled(),
+        highlighter.highlight_line(&line.text, syntax_set),
+    ) {
+        (true, Ok(ranges)) => {
             spans.extend(ranges.into_iter().map(|(style, text)| {
                 Span::styled(text.to_owned(), merge_syntect_style(base, style))
             }))
         }
-        Err(_) => spans.push(Span::styled(line.text.clone(), base)),
+        _ => spans.push(Span::styled(line.text.clone(), base)),
     }
     Line::from(spans)
 }
@@ -111,8 +121,9 @@ fn split_cell(
     marker: char,
     width: usize,
     selected: bool,
+    theme: SemanticTheme,
 ) -> Span<'static> {
-    let (prefix, text, color) = match line {
+    let (prefix, text, tone) = match line {
         Some(line) => {
             let prefix = match line.kind {
                 DiffLineKind::Added => '+',
@@ -120,50 +131,60 @@ fn split_cell(
                 DiffLineKind::Context => ' ',
                 DiffLineKind::Meta => '\\',
             };
-            (prefix, line.text.as_str(), marker_color(line.kind))
+            (prefix, line.text.as_str(), line_tone(line.kind))
         }
-        None => (' ', "", Color::DarkGray),
+        None => (' ', "", Tone::MutedResolved),
     };
-    let clipped = if text.chars().count() > width.saturating_sub(2) {
-        format!(
-            "{}…",
-            text.chars()
-                .take(width.saturating_sub(3))
-                .collect::<String>()
-        )
-    } else {
-        text.to_owned()
-    };
+    let fitted = fit_width(text, width.saturating_sub(2));
     Span::styled(
-        format!(
-            "{prefix}{marker} {:width$}",
-            clipped,
-            width = width.saturating_sub(2)
-        ),
-        selected_style(selected).fg(color),
+        format!("{prefix}{marker} {fitted}"),
+        selected_style(selected, theme).patch(theme.style(tone)),
     )
 }
 
-fn selected_style(selected: bool) -> Style {
+fn selected_style(selected: bool, theme: SemanticTheme) -> Style {
     if selected {
-        Style::default().bg(Color::Rgb(42, 52, 74))
+        theme.selection()
     } else {
         Style::default()
     }
 }
 
-fn marker_color(kind: DiffLineKind) -> Color {
+fn line_tone(kind: DiffLineKind) -> Tone {
     match kind {
-        DiffLineKind::Added => Color::Green,
-        DiffLineKind::Removed => Color::Red,
-        DiffLineKind::Context => Color::DarkGray,
-        DiffLineKind::Meta => Color::Yellow,
+        DiffLineKind::Added => Tone::ChangeAdded,
+        DiffLineKind::Removed => Tone::ChangeRemoved,
+        DiffLineKind::Context => Tone::MutedResolved,
+        DiffLineKind::Meta => Tone::Attention,
     }
 }
 
 fn merge_syntect_style(base: Style, source: SyntectStyle) -> Style {
     let foreground = source.foreground;
-    base.fg(Color::Rgb(foreground.r, foreground.g, foreground.b))
+    let maximum = foreground.r.max(foreground.g).max(foreground.b);
+    let minimum = foreground.r.min(foreground.g).min(foreground.b);
+    let color = if maximum.saturating_sub(minimum) < 24 {
+        Color::Gray
+    } else if foreground.r == maximum {
+        if foreground.g > maximum / 2 {
+            Color::Yellow
+        } else if foreground.b > maximum / 2 {
+            Color::Magenta
+        } else {
+            Color::Red
+        }
+    } else if foreground.g == maximum {
+        if foreground.b > maximum / 2 {
+            Color::Cyan
+        } else {
+            Color::Green
+        }
+    } else if foreground.r > maximum / 2 {
+        Color::Magenta
+    } else {
+        Color::Blue
+    };
+    base.fg(color)
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 use crate::{
     input::{BindingResolution, Key, PhysicalInput},
-    semantic::{Footer, Header},
+    semantic::{ContextualKeys, CurrentContext, Footer, Header, SurfaceContext},
     thread::{Resolution, ThreadState},
 };
 
@@ -88,6 +88,7 @@ pub fn update(model: &mut Model, event: Event) -> Update {
 
 pub struct ViewInput {
     pub file_count: usize,
+    pub context: SurfaceContext,
 }
 
 pub struct View {
@@ -114,10 +115,42 @@ pub fn view(model: &Model, input: ViewInput) -> View {
             resolved,
         },
         footer: Footer {
-            text: model.status.clone().unwrap_or_else(|| {
-                "j/k scroll • f/b page • d/u half • g/G edge • [/] hunk • ,/. file • 1/2/0 layout • s rail • ? help".into()
-            }),
+            current_context: CurrentContext {
+                text: model.status.as_ref().map_or_else(
+                    || context_label(input.context).into(),
+                    |status| format!("{} • Status: {status}", context_label(input.context)),
+                ),
+            },
+            contextual_keys: ContextualKeys {
+                text: context_keys(input.context).into(),
+            },
         },
+    }
+}
+
+fn context_label(context: SurfaceContext) -> &'static str {
+    match context {
+        SurfaceContext::Files => "Context: Files navigation",
+        SurfaceContext::Review => "Context: Review stream",
+        SurfaceContext::Threads => "Context: Inline threads",
+        SurfaceContext::Rollup => "Context: Thread rollup",
+        SurfaceContext::Composer => "Context: Thread composer",
+        SurfaceContext::Help => "Context: Keyboard help",
+    }
+}
+
+fn context_keys(context: SurfaceContext) -> &'static str {
+    match context {
+        SurfaceContext::Files => ",/. file • [/] hunk • Tab next region • s rail • ? help",
+        SurfaceContext::Review => {
+            "j/k scroll • f/b page • [/] hunk • ,/. file • Tab next region • ? help"
+        }
+        SurfaceContext::Threads => {
+            "t select • c reply • x resolve • a attention • Tab next region • ? help"
+        }
+        SurfaceContext::Rollup => "j/k select • Enter jump • v/Esc return • ? help",
+        SurfaceContext::Composer => "Enter post • Esc cancel",
+        SurfaceContext::Help => "Esc close help",
     }
 }
 
