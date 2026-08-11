@@ -24,7 +24,6 @@ pub struct Header {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileRail {
-    pub focused: bool,
     pub selected: Option<usize>,
     pub items: Vec<FileItem>,
 }
@@ -53,8 +52,8 @@ pub enum Body {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewBody {
-    pub focused: bool,
     pub scroll: u16,
+    pub scroll_from_end: Option<u16>,
     pub empty_state: Option<String>,
     pub files: Vec<ReviewFile>,
 }
@@ -127,7 +126,6 @@ pub struct ContextualKeys {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceContext {
-    Files,
     Review,
     Threads,
     Rollup,

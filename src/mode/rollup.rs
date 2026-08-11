@@ -15,6 +15,16 @@ impl Model {
     pub fn selected(&self) -> usize {
         self.selected
     }
+
+    pub fn selected_thread_id(&self, threads: &ThreadState) -> Option<ThreadId> {
+        threads.ordered_ids().get(self.selected).copied()
+    }
+
+    pub fn prepare(&mut self, threads: &ThreadState) {
+        self.selected = self
+            .selected
+            .min(threads.ordered_ids().len().saturating_sub(1));
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +50,7 @@ pub enum Outcome {
 
 pub struct UpdateInput<'a> {
     pub threads: &'a ThreadState,
+    pub operation_pending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +70,12 @@ pub struct Update {
 }
 
 pub fn bindings(input: PhysicalInput) -> BindingResolution<Event> {
+    if input.phase == crate::input::KeyPhase::Release
+        || input.phase == crate::input::KeyPhase::Repeat
+            && matches!(input.key, Key::Char('v') | Key::Esc | Key::Enter)
+    {
+        return BindingResolution::Consume;
+    }
     match input.key {
         Key::Char('v') | Key::Esc => BindingResolution::Override(Event::Close),
         Key::Char('j') | Key::Down => BindingResolution::Override(Event::Move(1)),
@@ -71,17 +88,41 @@ pub fn bindings(input: PhysicalInput) -> BindingResolution<Event> {
 pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update {
     let mut result = Update::default();
     match event {
-        Event::Close => result.intents.push(Intent::Close),
+        Event::Close => {
+            result
+                .intents
+                .push(Intent::SetStatus("closed thread rollup".into()));
+            result.intents.push(Intent::Close);
+        }
         Event::Move(delta) => {
-            let count = input.threads.ordered_ids().len();
+            let ids = input.threads.ordered_ids();
+            let count = ids.len();
             if count > 0 {
                 model.selected = wrapped_index(model.selected, count, delta);
+                let id = ids[model.selected];
+                result
+                    .intents
+                    .push(Intent::SetStatus(format!("rollup target: thread #{id}")));
+            } else {
+                result.intents.push(Intent::SetStatus(
+                    "cannot move: rollup has no threads".into(),
+                ));
             }
         }
         Event::OpenSelected => {
+            if input.operation_pending {
+                result.intents.push(Intent::SetStatus(
+                    "cannot jump while another operation is pending".into(),
+                ));
+                return result;
+            }
             let ids = input.threads.ordered_ids();
             if let Some(id) = ids.get(model.selected).copied() {
                 result.effects.push(Effect::ResolveThread { id });
+            } else {
+                result.intents.push(Intent::SetStatus(
+                    "cannot jump: rollup has no threads".into(),
+                ));
             }
         }
         Event::EffectCompleted(Outcome::ThreadResolved {
@@ -99,7 +140,6 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
 
 pub struct ViewInput<'a> {
     pub threads: &'a ThreadState,
-    pub scroll: u16,
 }
 
 pub fn view(model: &Model, input: ViewInput<'_>) -> Body {
@@ -118,7 +158,7 @@ pub fn view(model: &Model, input: ViewInput<'_>) -> Body {
         .count();
     Body::Rollup(RollupBody {
         summary: format!("{need} need you / {open} open / {resolved} resolved"),
-        scroll: input.scroll,
+        scroll: model.selected.try_into().unwrap_or(u16::MAX),
         items: input
             .threads
             .ordered_ids()

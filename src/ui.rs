@@ -10,7 +10,6 @@ use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusArea {
-    Files,
     Review,
     Threads,
 }
@@ -18,18 +17,13 @@ pub enum FocusArea {
 impl FocusArea {
     pub fn next(self) -> Self {
         match self {
-            Self::Files => Self::Review,
             Self::Review => Self::Threads,
-            Self::Threads => Self::Files,
+            Self::Threads => Self::Review,
         }
     }
 
     pub fn previous(self) -> Self {
-        match self {
-            Self::Files => Self::Threads,
-            Self::Review => Self::Files,
-            Self::Threads => Self::Review,
-        }
+        self.next()
     }
 }
 
@@ -79,6 +73,7 @@ impl ShellSize {
 pub struct ViewState {
     pub focus: FocusArea,
     pub scroll: u16,
+    pub scroll_from_end: Option<u16>,
     pub layout: LayoutMode,
 }
 
@@ -87,6 +82,7 @@ impl Default for ViewState {
         Self {
             focus: FocusArea::Review,
             scroll: 0,
+            scroll_from_end: None,
             layout: LayoutMode::Auto,
         }
     }
@@ -94,10 +90,28 @@ impl Default for ViewState {
 
 impl ViewState {
     pub fn scroll_by(&mut self, delta: i16) {
+        if let Some(offset) = &mut self.scroll_from_end {
+            if delta < 0 {
+                *offset = offset.saturating_add(delta.unsigned_abs());
+            } else {
+                *offset = offset.saturating_sub(delta as u16);
+            }
+            return;
+        }
         self.scroll = self.scroll.saturating_add_signed(delta);
     }
 
+    pub fn set_scroll(&mut self, row: u16) {
+        self.scroll = row;
+        self.scroll_from_end = None;
+    }
+
+    pub fn jump_to_end(&mut self) {
+        self.scroll_from_end = Some(0);
+    }
+
     pub fn reveal(&mut self, row: u16, viewport_height: u16) {
+        self.scroll_from_end = None;
         let bottom = self
             .scroll
             .saturating_add(viewport_height.saturating_sub(1));
@@ -202,8 +216,8 @@ mod tests {
 
     #[test]
     fn focus_and_layout_have_explicit_cycles() {
-        assert_eq!(FocusArea::Files.previous(), FocusArea::Threads);
-        assert_eq!(FocusArea::Threads.next(), FocusArea::Files);
+        assert_eq!(FocusArea::Review.previous(), FocusArea::Threads);
+        assert_eq!(FocusArea::Threads.next(), FocusArea::Review);
         assert_eq!(LayoutMode::Auto.resolved(120), LayoutMode::Split);
         assert_eq!(LayoutMode::Auto.resolved(80), LayoutMode::Stack);
         assert_eq!(LayoutMode::Auto.resolved(87), LayoutMode::Stack);
@@ -222,6 +236,20 @@ mod tests {
         assert_eq!(view.scroll, 13);
         view.reveal(2, 8);
         assert_eq!(view.scroll, 2);
+    }
+
+    #[test]
+    fn end_relative_scrolling_moves_without_an_unbounded_offset() {
+        let mut view = ViewState::default();
+        view.jump_to_end();
+        assert_eq!(view.scroll_from_end, Some(0));
+        view.scroll_by(-1);
+        assert_eq!(view.scroll_from_end, Some(1));
+        view.scroll_by(1);
+        assert_eq!(view.scroll_from_end, Some(0));
+        view.set_scroll(3);
+        assert_eq!(view.scroll_from_end, None);
+        assert_eq!(view.scroll, 3);
     }
 
     #[test]

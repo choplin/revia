@@ -14,7 +14,7 @@ The screen is a review surface, not a patch viewer with extra commands.
 │                           │ ┌ OPEN · human · thread #7 ──────────────┐ │
 │                           │ │ Please preserve …                       │ │
 │                           │ └─────────────────────────────────────────┘ │
-└ focus: review · Tab focus · [/] hunk · t thread · } attention · c reply ┘
+└ context: review stream · status: … · target: src/thread.rs hunk 2/4 ──────┘
 ```
 
 ## Adaptive shell contract
@@ -29,8 +29,7 @@ focus changes do not move or resize the review body.
 - From 72 through 119 columns, secondary header counts are reduced and the rail
   uses roughly one third of the screen, clamped to 22–28 columns.
 - From the supported minimum of 48 columns through 71 columns, the rail is
-  hidden and the review body receives the full width. If file focus is active,
-  the review border explicitly says that the focused rail is hidden.
+  hidden and the review body receives the full width.
 - Below 48 columns or 8 rows, the stable too-small explanation replaces the
   shell. Empty diffs continue to show the selected target and a recovery action.
 - Paths are truncated from the leading side with an ellipsis so the filename
@@ -44,9 +43,9 @@ may add non-semantic foreground detail through the terminal's ANSI palette, but
 workflow meaning never depends on it or on a fixed dark-theme RGB value. Every
 semantic state also has a non-color carrier: `+`/`-` change markers,
 `!`/`•`/`✓` lifecycle markers and labels, `›`/`▶` selection markers, and a
-double border plus `◆ FOCUSED` label for focus. With `NO_COLOR` set, semantic
-and syntax colors are omitted while those markers, labels, border shapes,
-boldness, dimming, and reverse emphasis remain.
+double border plus an explicit `◆ STREAM FOCUS` or `◆ THREAD TARGET` label.
+With `NO_COLOR` set, semantic and syntax colors are omitted while those
+markers, labels, border shapes, boldness, dimming, and reverse emphasis remain.
 
 - The left rail is navigation only. File jumps use `,` / `.` and reveal the
   selected file's first hunk; the rail never reduces the main pane to one-file
@@ -54,11 +53,14 @@ boldness, dimming, and reverse emphasis remain.
 - The main pane is a single stream in Git diff order. File headers, hunk
   headers, changed lines, and the threads anchored to each hunk are rendered
   in that order.
-- `Tab` cycles the visible focus indicator between files, review, and threads,
-  but `j`/`k` and arrows always scroll the review stream as they do in Hunk.
-  `[`/`]` traverse hunks across file boundaries, `,` / `.` traverse files,
-  `t` selects the current hunk's thread list, and `}`/`{` jump to the
-  next/previous needs-attention thread.
+- The review cursor is the only navigation cursor. The rail follows its current
+  file and never claims a separate focus or scrolling target. `j`/`k` and
+  arrows always scroll the review stream as they do in Hunk. `[`/`]` traverse
+  hunks across file boundaries, `,` / `.` traverse files, `t`/`T` select and
+  cycle the current hunk's inline threads, and `}`/`{` jump to the next/previous
+  needs-attention thread. `Tab` switches only between the stream and an
+  available inline-thread target; when the hunk has no thread, it explains why
+  the target cannot change.
 - The diff is side-by-side by default on wide terminals and stacked on narrow
   terminals. Each source row has stable old/new line-number gutters derived
   from its parsed Git hunk range. Split mode allocates the two sides evenly
@@ -75,8 +77,8 @@ boldness, dimming, and reverse emphasis remain.
 ## Hunk-compatible keyboard contract
 
 The review surface follows Hunk's command model. Global navigation always acts
-on the review stream, regardless of which rail is visibly focused; file and
-hunk selection are direct jumps rather than a second scrolling model.
+on the review stream. File and hunk selection are direct jumps on the same
+review cursor rather than a second scrolling model.
 
 | Keys | Behavior |
 | --- | --- |
@@ -87,19 +89,57 @@ hunk selection are direct jumps rather than a second scrolling model.
 | `[` / `]` | Jump to previous / next hunk. |
 | `,` / `.` | Jump to previous / next changed file. |
 | `1` / `2` / `0` | Force split / stack / responsive layout. |
-| `s` | Show or hide the file rail. |
+| `s` | Enable or disable the file rail. Below 72 columns an enabled rail remains hidden and reports why. |
 | `r` | Reload the current Git diff with the selected context setting. |
 | `m` | Show or hide hunk headers. |
 | `w` | Toggle line wrapping in stack layout. |
-| `Tab` | Cycle the visible focus affordance; it never changes what scrolling means. |
+| `=` / `-` | Increase / decrease diff context and reload. Context cannot go below zero. |
+| `Tab` / Shift-Tab | Switch between the review stream and an available selected inline thread. |
 | `?` | Show this keyboard reference. |
+| `q` | Quit from review. In the composer it is text; help and rollup consume it. |
+| `Esc` | Close the topmost composer, help, or rollup; from review, quit. |
 
 The only deliberate revia extensions are review actions because Hunk does not
-have persistent local review threads: `c` creates/replies through the inline
-composer, `t` selects an inline thread, `x` resolves, `R` reopens, `a` toggles
-needs-attention, and `{` / `}` jump among needs-attention threads. These are
-scoped to the selected inline thread and never replace the global Hunk
-navigation commands above.
+have persistent local review threads: `c` replies when a thread is targeted and
+otherwise creates a thread, `C` always creates one, `t` / `T` select or cycle
+next/previous inline threads, `x` resolves, `R` reopens, `a` toggles
+needs-attention, `o` toggles outdated, `v` opens the rollup, and `{` / `}` jump
+among needs-attention threads. Mutating thread actions are available only while
+the inline thread is visibly targeted; otherwise the footer explains how to
+select one.
+
+From stream focus, the first `t` or `T` makes the cursor's current inline thread
+the visible target. Once a thread is targeted, `t` advances and `T` moves back;
+both wrap within the current hunk. File and hunk jumps return focus to the stream
+and reset the dependent thread target.
+
+## Mode and feedback contract
+
+The two fixed footer rows separate the current target from its available keys.
+The context row names the active mode, canonical file/hunk/thread target, and
+the latest result. The key row changes among review stream, inline thread,
+composer, keyboard help, and thread rollup. Thread mutation hints appear only
+when an inline thread is actually available and selected.
+
+| Mode | Navigation and exit |
+| --- | --- |
+| Review stream | Hunk-compatible stream keys plus dedicated file, hunk, thread, and attention jumps; `Esc` quits. |
+| Inline thread | `t` / `T` cycles the visible target, thread verbs act on it, and `Tab` returns to the stream. |
+| Composer | `Enter` posts and `Esc` cancels the draft before any quit behavior. |
+| Keyboard help | `Esc` or `?` closes help before any quit behavior. |
+| Thread rollup | `j` / `k` selects, `Enter` jumps, and `v` or `Esc` returns before any quit behavior. |
+
+Every handled view or mutation action updates the result text. Asynchronous
+actions first report that they are pending, then report success or the concrete
+failure. Empty diffs, hunks without threads, an empty rollup, zero context, and
+thread verbs without a visible thread target are explanatory outcomes rather
+than silent no-ops.
+
+At 48–71 columns, the footer uses compact, grapheme-safe target and key labels
+so the active target and the mode's primary actions remain visible. Navigation
+keys may repeat; modal open/close, submit, and quit keys act on the initial key
+press only. Each external operation has an identity, so a duplicate or delayed
+result cannot clear or overwrite a newer pending operation.
 
 ## V1 boundary
 

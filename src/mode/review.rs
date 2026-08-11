@@ -23,6 +23,7 @@ pub struct Model {
     show_hunk_headers: bool,
     wrap_lines: bool,
     viewport_rows: u16,
+    viewport_columns: u16,
 }
 
 impl Model {
@@ -35,6 +36,7 @@ impl Model {
             show_hunk_headers: true,
             wrap_lines: false,
             viewport_rows: 20,
+            viewport_columns: 120,
         }
     }
 
@@ -54,8 +56,13 @@ impl Model {
         self.view.scroll
     }
 
-    pub fn set_viewport_rows(&mut self, rows: u16) {
+    pub fn set_viewport(&mut self, rows: u16, columns: u16) {
         self.viewport_rows = rows.max(1);
+        self.viewport_columns = columns;
+    }
+
+    pub fn viewport_columns(&self) -> u16 {
+        self.viewport_columns
     }
 
     pub fn selected_location(&self) -> Option<HunkLocation> {
@@ -95,7 +102,7 @@ impl Model {
                 .unwrap_or(0),
         );
         self.view.focus = FocusArea::Threads;
-        self.view.scroll = self.hunk_start_line(threads);
+        self.view.set_scroll(self.hunk_start_line(threads));
         Ok(())
     }
 
@@ -111,6 +118,34 @@ impl Model {
             .get(self.session.cursor().selected_thread())
             .or_else(|| selected.last())
             .map(|thread| thread.id)
+    }
+
+    pub fn selected_thread_id(&self, threads: &Threads) -> Option<ThreadId> {
+        self.current_thread_id(threads)
+    }
+
+    pub fn selected_target_label(&self) -> Option<String> {
+        let cursor = self.session.cursor();
+        let file = self.session.file()?;
+        file.hunks.get(cursor.selected_hunk())?;
+        Some(format!(
+            "{} • hunk {}/{}",
+            file.path,
+            cursor.selected_hunk() + 1,
+            file.hunks.len()
+        ))
+    }
+
+    fn selected_file_label(&self) -> Option<String> {
+        let cursor = self.session.cursor();
+        let files = &self.session.diff().document.files;
+        let file = files.get(cursor.selected_file())?;
+        Some(format!(
+            "file {}/{}: {}",
+            cursor.selected_file() + 1,
+            files.len(),
+            file.path
+        ))
     }
 
     fn hunk_start_line(&self, threads: &Threads) -> u16 {
@@ -139,12 +174,11 @@ pub enum Event {
     ScrollViewport(i16),
     ScrollHalfViewport(i16),
     JumpToStreamEdge { end: bool },
-    FocusReview,
     MoveHunk(i32),
     MoveFile(i32),
     AdjustContext(i32),
     BeginThread { always_new: bool },
-    SelectThread,
+    MoveThread(i32),
     CloseThread,
     ReopenThread,
     ToggleAttention,
@@ -157,6 +191,22 @@ pub enum Event {
     ToggleHunkHeaders,
     ToggleWrap,
     EffectCompleted(Outcome),
+}
+
+impl Event {
+    fn blocked_while_operation_pending(&self) -> bool {
+        matches!(
+            self,
+            Self::AdjustContext(_)
+                | Self::BeginThread { .. }
+                | Self::CloseThread
+                | Self::ReopenThread
+                | Self::ToggleAttention
+                | Self::ToggleOutdated
+                | Self::MoveAttention(_)
+                | Self::ReloadDiff
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,6 +244,7 @@ pub enum Outcome {
 
 pub struct UpdateInput<'a> {
     pub threads: &'a Threads,
+    pub operation_pending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,6 +262,39 @@ pub struct Update {
 }
 
 pub fn bindings(input: PhysicalInput) -> BindingResolution<Event> {
+    if input.phase == crate::input::KeyPhase::Release {
+        return BindingResolution::Consume;
+    }
+    if input.phase == crate::input::KeyPhase::Repeat
+        && !matches!(
+            input.key,
+            Key::Char('j')
+                | Key::Down
+                | Key::Char('k')
+                | Key::Up
+                | Key::Char('f')
+                | Key::PageDown
+                | Key::Char('b')
+                | Key::PageUp
+                | Key::Char(' ')
+                | Key::Char('d')
+                | Key::Char('u')
+                | Key::Char('g')
+                | Key::Char('G')
+                | Key::Home
+                | Key::End
+                | Key::Char(']')
+                | Key::Char('[')
+                | Key::Char('.')
+                | Key::Char(',')
+                | Key::Char('t')
+                | Key::Char('T')
+                | Key::Char('}')
+                | Key::Char('{')
+        )
+    {
+        return BindingResolution::Consume;
+    }
     match input.key {
         Key::Char('q') | Key::Esc | Key::Char('?') => BindingResolution::Delegate,
         Key::Tab => BindingResolution::Handle(Event::CycleFocus),
@@ -229,7 +313,6 @@ pub fn bindings(input: PhysicalInput) -> BindingResolution<Event> {
         Key::Char('G') | Key::End => {
             BindingResolution::Handle(Event::JumpToStreamEdge { end: true })
         }
-        Key::Enter => BindingResolution::Handle(Event::FocusReview),
         Key::Char(']') => BindingResolution::Handle(Event::MoveHunk(1)),
         Key::Char('[') => BindingResolution::Handle(Event::MoveHunk(-1)),
         Key::Char('.') => BindingResolution::Handle(Event::MoveFile(1)),
@@ -238,7 +321,8 @@ pub fn bindings(input: PhysicalInput) -> BindingResolution<Event> {
         Key::Char('-') => BindingResolution::Handle(Event::AdjustContext(-1)),
         Key::Char('c') => BindingResolution::Handle(Event::BeginThread { always_new: false }),
         Key::Char('C') => BindingResolution::Handle(Event::BeginThread { always_new: true }),
-        Key::Char('t') => BindingResolution::Handle(Event::SelectThread),
+        Key::Char('t') => BindingResolution::Handle(Event::MoveThread(1)),
+        Key::Char('T') => BindingResolution::Handle(Event::MoveThread(-1)),
         Key::Char('x') => BindingResolution::Handle(Event::CloseThread),
         Key::Char('R') => BindingResolution::Handle(Event::ReopenThread),
         Key::Char('a') => BindingResolution::Handle(Event::ToggleAttention),
@@ -259,44 +343,85 @@ pub fn bindings(input: PhysicalInput) -> BindingResolution<Event> {
 
 pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update {
     let mut result = Update::default();
+    if input.operation_pending && event.blocked_while_operation_pending() {
+        status(
+            &mut result,
+            "cannot start another action while an operation is pending",
+        );
+        return result;
+    }
     match event {
         Event::CycleFocus => {
-            model.view.focus = model.view.focus.next();
-            if model.view.focus == FocusArea::Threads
-                && model.selected_threads(input.threads).is_empty()
-            {
-                model.view.focus = FocusArea::Files;
-                status(
-                    &mut result,
-                    "this hunk has no threads; focus moved to files",
-                );
-            }
+            move_focus(model, input.threads, &mut result, false);
         }
-        Event::PreviousFocus => model.view.focus = model.view.focus.previous(),
-        Event::ScrollRows(delta) => model.view.scroll_by(delta),
-        Event::ScrollViewport(direction) => model
-            .view
-            .scroll_by(direction.saturating_mul(model.viewport_rows as i16)),
-        Event::ScrollHalfViewport(direction) => model
-            .view
-            .scroll_by(direction.saturating_mul((model.viewport_rows / 2).max(1) as i16)),
+        Event::PreviousFocus => move_focus(model, input.threads, &mut result, true),
+        Event::ScrollRows(delta) => {
+            model.view.scroll_by(delta);
+            status(&mut result, scroll_status(&model.view));
+        }
+        Event::ScrollViewport(direction) => {
+            model
+                .view
+                .scroll_by(direction.saturating_mul(model.viewport_rows as i16));
+            status(&mut result, scroll_status(&model.view));
+        }
+        Event::ScrollHalfViewport(direction) => {
+            model
+                .view
+                .scroll_by(direction.saturating_mul((model.viewport_rows / 2).max(1) as i16));
+            status(&mut result, scroll_status(&model.view));
+        }
         Event::JumpToStreamEdge { end } => {
-            model.view.scroll = if end { u16::MAX } else { 0 };
+            if end {
+                model.view.jump_to_end();
+            } else {
+                model.view.set_scroll(0);
+            }
+            status(
+                &mut result,
+                if end {
+                    "review stream end"
+                } else {
+                    "review stream start"
+                },
+            );
         }
-        Event::FocusReview if model.view.focus == FocusArea::Files => {
-            model.view.focus = FocusArea::Review;
-            model.view.scroll = model.hunk_start_line(input.threads);
-        }
-        Event::FocusReview => {}
         Event::MoveHunk(direction) => {
             if model.session.move_hunk(direction) {
+                model.view.focus = FocusArea::Review;
                 let row = model.hunk_start_line(input.threads);
                 model.view.reveal(row, model.viewport_rows);
+                status(
+                    &mut result,
+                    format!(
+                        "hunk target: {}",
+                        model
+                            .selected_target_label()
+                            .unwrap_or_else(|| "unavailable".into())
+                    ),
+                );
+            } else {
+                status(&mut result, "cannot move hunks: this diff has no hunks");
             }
         }
         Event::MoveFile(direction) => {
             if model.session.move_file(direction) {
-                model.view.scroll = model.hunk_start_line(input.threads);
+                model.view.focus = FocusArea::Review;
+                model.view.set_scroll(model.hunk_start_line(input.threads));
+                status(
+                    &mut result,
+                    format!(
+                        "file target: {}",
+                        model
+                            .selected_file_label()
+                            .unwrap_or_else(|| "unavailable".into())
+                    ),
+                );
+            } else {
+                status(
+                    &mut result,
+                    "cannot move files: this diff has no changed files",
+                );
             }
         }
         Event::AdjustContext(delta) => {
@@ -307,6 +432,8 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
                     request: model.request.clone(),
                     purpose: ReloadPurpose::ContextChanged,
                 });
+            } else {
+                status(&mut result, "context already has 0 lines");
             }
         }
         Event::BeginThread { always_new } => {
@@ -318,17 +445,40 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
                 } else {
                     None
                 };
+                status(
+                    &mut result,
+                    reply_to.map_or_else(
+                        || "composing a new thread".into(),
+                        |id| format!("replying to thread #{id}"),
+                    ),
+                );
                 result.intents.push(Intent::OpenComposer { reply_to });
             }
         }
-        Event::SelectThread => {
+        Event::MoveThread(direction) => {
             let count = model.selected_threads(input.threads).len();
             if count == 0 {
-                status(&mut result, "this hunk has no threads");
+                status(
+                    &mut result,
+                    "cannot select a thread: this hunk has no threads",
+                );
             } else {
-                let selected = wrapped_index(model.session.cursor().selected_thread(), count, 0);
+                let delta = if model.view.focus == FocusArea::Threads {
+                    direction
+                } else {
+                    0
+                };
+                let selected =
+                    wrapped_index(model.session.cursor().selected_thread(), count, delta);
                 model.session.select_thread(selected);
                 model.view.focus = FocusArea::Threads;
+                let id = model
+                    .current_thread_id(input.threads)
+                    .expect("thread count is non-zero");
+                status(
+                    &mut result,
+                    format!("thread target: #{id} ({}/{count})", selected + 1),
+                );
             }
         }
         Event::CloseThread => {
@@ -392,20 +542,95 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
                 result.effects.push(Effect::ResolveThread { id });
             }
         }
-        Event::ShowRollup => result.intents.push(Intent::OpenRollup),
-        Event::SetLayout(layout) => model.view.layout = layout,
-        Event::ToggleSidebar => model.sidebar_visible = !model.sidebar_visible,
+        Event::ShowRollup => {
+            status(&mut result, "opened thread rollup");
+            result.intents.push(Intent::OpenRollup);
+        }
+        Event::SetLayout(layout) => {
+            model.view.layout = layout;
+            status(&mut result, format!("layout: {}", layout_label(layout)));
+        }
+        Event::ToggleSidebar => {
+            model.sidebar_visible = !model.sidebar_visible;
+            let message = if !model.sidebar_visible {
+                "file rail hidden"
+            } else if model.viewport_columns < 72 {
+                "file rail enabled; hidden below 72 columns"
+            } else {
+                "file rail shown"
+            };
+            status(&mut result, message);
+        }
         Event::ReloadDiff => result.effects.push(Effect::ReloadDiff {
             request: model.request.clone(),
             purpose: ReloadPurpose::Manual,
         }),
-        Event::ToggleHunkHeaders => model.show_hunk_headers = !model.show_hunk_headers,
-        Event::ToggleWrap => model.wrap_lines = !model.wrap_lines,
+        Event::ToggleHunkHeaders => {
+            model.show_hunk_headers = !model.show_hunk_headers;
+            status(
+                &mut result,
+                if model.show_hunk_headers {
+                    "hunk headers shown"
+                } else {
+                    "hunk headers hidden"
+                },
+            );
+        }
+        Event::ToggleWrap => {
+            model.wrap_lines = !model.wrap_lines;
+            status(
+                &mut result,
+                if model.wrap_lines {
+                    "line wrapping enabled"
+                } else {
+                    "line wrapping disabled"
+                },
+            );
+        }
         Event::EffectCompleted(outcome) => {
             apply_outcome(model, input.threads, outcome, &mut result)
         }
     }
     result
+}
+
+fn move_focus(model: &mut Model, threads: &Threads, result: &mut Update, previous: bool) {
+    let next = if previous {
+        model.view.focus.previous()
+    } else {
+        model.view.focus.next()
+    };
+    if next == FocusArea::Threads && model.selected_threads(threads).is_empty() {
+        status(result, "cannot focus threads: this hunk has no threads");
+        return;
+    }
+    model.view.focus = next;
+    match next {
+        FocusArea::Review => status(result, "review stream focused"),
+        FocusArea::Threads => {
+            let id = model
+                .current_thread_id(threads)
+                .expect("thread focus requires a selected thread");
+            status(result, format!("thread target: #{id}"));
+        }
+    }
+}
+
+fn scroll_status(view: &ViewState) -> String {
+    match view.scroll_from_end {
+        Some(0) => "review stream end".into(),
+        Some(1) => "review stream 1 row before end".into(),
+        Some(offset) => format!("review stream {offset} rows before end"),
+        None => format!("review stream row {}", view.scroll + 1),
+    }
+}
+
+fn layout_label(layout: LayoutMode) -> &'static str {
+    match layout {
+        LayoutMode::Auto => "responsive",
+        LayoutMode::Split => "split",
+        LayoutMode::Stack => "stack",
+    }
 }
 
 fn apply_outcome(model: &mut Model, threads: &Threads, outcome: Outcome, result: &mut Update) {
@@ -415,7 +640,33 @@ fn apply_outcome(model: &mut Model, threads: &Threads, outcome: Outcome, result:
             result: outcome,
         } => match outcome {
             Ok(diff) => {
+                let previous_thread_target = (model.focus() == FocusArea::Threads)
+                    .then(|| {
+                        Some((
+                            model.selected_location()?,
+                            model.current_thread_id(threads)?,
+                        ))
+                    })
+                    .flatten();
                 model.session.replace_diff(diff);
+                let restored_thread_target =
+                    previous_thread_target.is_some_and(|(location, id)| {
+                        if model.selected_location().as_ref() != Some(&location) {
+                            return false;
+                        }
+                        let Some(index) = model
+                            .selected_threads(threads)
+                            .iter()
+                            .position(|thread| thread.id == id)
+                        else {
+                            return false;
+                        };
+                        model.session.select_thread(index);
+                        true
+                    });
+                if model.focus() == FocusArea::Threads && !restored_thread_target {
+                    model.view.focus = FocusArea::Review;
+                }
                 let message = match purpose {
                     ReloadPurpose::ContextChanged => {
                         format!("context: {} lines", model.request.context_lines)
@@ -450,6 +701,13 @@ fn apply_outcome(model: &mut Model, threads: &Threads, outcome: Outcome, result:
 }
 
 fn current_thread(model: &Model, threads: &Threads, result: &mut Update) -> Option<ThreadId> {
+    if model.focus() != FocusArea::Threads {
+        status(
+            result,
+            "could not update thread: select a thread with t first",
+        );
+        return None;
+    }
     let id = model.current_thread_id(threads);
     if id.is_none() {
         status(result, "could not update thread: no thread on this hunk");
@@ -464,6 +722,13 @@ fn thread_effect(
     error_prefix: &str,
     operation: impl FnOnce(ThreadId) -> ThreadOperation,
 ) {
+    if model.focus() != FocusArea::Threads {
+        status(
+            result,
+            format!("{error_prefix}: select a thread with t first"),
+        );
+        return;
+    }
     let Some(id) = model.current_thread_id(threads) else {
         status(result, format!("{error_prefix}: no thread on this hunk"));
         return;
@@ -498,7 +763,6 @@ pub struct View {
 
 pub fn view(model: &Model, input: ViewInput<'_>) -> View {
     let file_rail = model.sidebar_visible.then(|| FileRail {
-        focused: model.focus() == FocusArea::Files,
         selected: (!model.session.diff().document.files.is_empty())
             .then(|| model.session.cursor().selected_file()),
         items: model
@@ -531,8 +795,8 @@ pub fn view(model: &Model, input: ViewInput<'_>) -> View {
             .collect(),
     });
     let body = Body::Review(ReviewBody {
-        focused: model.focus() == FocusArea::Review,
         scroll: model.scroll(),
+        scroll_from_end: model.view.scroll_from_end,
         empty_state: model
             .session
             .diff()

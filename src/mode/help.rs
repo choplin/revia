@@ -17,6 +17,7 @@ pub enum Effect {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intent {
     Close,
+    SetStatus(&'static str),
 }
 
 #[derive(Debug, Default)]
@@ -26,6 +27,9 @@ pub struct Update {
 }
 
 pub fn bindings(input: PhysicalInput) -> BindingResolution<Event> {
+    if input.phase != crate::input::KeyPhase::Press {
+        return BindingResolution::Consume;
+    }
     match input.key {
         Key::Esc | Key::Char('?') => BindingResolution::Override(Event::Close),
         _ => BindingResolution::Consume,
@@ -35,7 +39,12 @@ pub fn bindings(input: PhysicalInput) -> BindingResolution<Event> {
 pub fn update(_: &mut Model, event: Event) -> Update {
     let mut result = Update::default();
     match event {
-        Event::Close => result.intents.push(Intent::Close),
+        Event::Close => {
+            result
+                .intents
+                .push(Intent::SetStatus("closed keyboard help"));
+            result.intents.push(Intent::Close);
+        }
     }
     result
 }
@@ -46,4 +55,4 @@ pub fn view(_: &Model) -> Overlay {
     }
 }
 
-const HUNK_KEYBOARD_HELP: &str = "Hunk-compatible navigation\n\n  j/k  ↑/↓      scroll one row\n  f/Space, b    page down/up\n  d/u            half page\n  g/G Home/End   start/end\n  [/]            previous/next hunk\n  ,/.            previous/next file\n  1/2/0          split/stack/auto\n  s              toggle file rail\n  r              reload diff\n  m / w          hunk headers / wrapping\n\nrevia review extensions: c compose, t select thread, x resolve, R reopen, a attention, {/} attention jump.";
+const HUNK_KEYBOARD_HELP: &str = "Hunk-compatible review stream\n\n  j/k, ↑/↓ rows      f/Space, b pages\n  d/u half page      g/G, Home/End edges\n  [/] hunk           ,/. file\n  1/2/0 layout       s file rail\n  =/- context        r reload\n  m headers          w wrapping\n\nrevia review extensions\n\n  t/T thread         {/} attention\n  c/C compose        x/R resolve/reopen\n  a/o flags          v rollup\n  Tab stream/thread  ? close help\n  q quit review      Esc close/quit";

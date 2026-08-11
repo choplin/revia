@@ -27,6 +27,10 @@ impl Model {
     pub fn input(&self) -> &str {
         &self.input
     }
+
+    pub fn reply_to(&self) -> Option<ThreadId> {
+        self.reply_to
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +58,7 @@ pub enum Outcome {
 pub struct UpdateInput {
     pub target: DiffTarget,
     pub selected_location: Option<HunkLocation>,
+    pub operation_pending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +75,12 @@ pub struct Update {
 }
 
 pub fn bindings(input: PhysicalInput) -> BindingResolution<Event> {
+    if input.phase == crate::input::KeyPhase::Release
+        || input.phase == crate::input::KeyPhase::Repeat
+            && matches!(input.key, Key::Esc | Key::Enter)
+    {
+        return BindingResolution::Consume;
+    }
     match input.key {
         Key::Esc => BindingResolution::Override(Event::Cancel),
         Key::Enter => BindingResolution::Handle(Event::Submit),
@@ -84,9 +95,17 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput) -> Update {
     match event {
         Event::Cancel => {
             model.reset();
+            status(&mut result, "cancelled thread draft");
             result.intents.push(Intent::Close);
         }
         Event::Submit => {
+            if input.operation_pending {
+                status(
+                    &mut result,
+                    "cannot post while another operation is pending",
+                );
+                return result;
+            }
             let body = model.input.clone();
             let reply_to = model.reply_to;
             model.reset();

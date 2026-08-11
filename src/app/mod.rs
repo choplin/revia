@@ -98,7 +98,14 @@ impl Event for rollup::Event {
 
 impl Event for EffectResult {
     fn dispatch(self, model: &mut Model) -> Vec<Effect> {
-        model.global.clear_pending();
+        let kind = self.outcome.pending_kind();
+        if !model
+            .global
+            .finish_pending(self.operation_id, self.owner, kind)
+        {
+            model.global.status = Some("ignored stale operation result".into());
+            return Vec::new();
+        }
         dispatch_effect_result(model, self)
     }
 }
@@ -183,6 +190,7 @@ fn update_review(model: &mut Model, event: review::Event) -> Vec<Effect> {
         event,
         review::UpdateInput {
             threads: &model.global.threads,
+            operation_pending: model.global.pending.is_some(),
         },
     );
     apply_review(model, result)
@@ -192,6 +200,7 @@ fn update_composer(model: &mut Model, event: composer::Event) -> Vec<Effect> {
     let input = composer::UpdateInput {
         target: model.review.request().target.clone(),
         selected_location: model.review.selected_location(),
+        operation_pending: model.global.pending.is_some(),
     };
     let result = composer::update(&mut model.composer, event, input);
     apply_composer(model, result)
@@ -203,6 +212,7 @@ fn update_rollup(model: &mut Model, event: rollup::Event) -> Vec<Effect> {
         event,
         rollup::UpdateInput {
             threads: &model.global.threads,
+            operation_pending: model.global.pending.is_some(),
         },
     );
     apply_rollup(model, result)
@@ -212,7 +222,9 @@ fn apply_global(model: &mut Model, result: global::Update) -> Vec<Effect> {
     for intent in result.intents {
         match intent {
             global::Intent::OpenHelp => model.active_mode = ActiveMode::Help,
-            global::Intent::ResizeViewport(rows) => model.review.set_viewport_rows(rows),
+            global::Intent::ResizeViewport { rows, columns } => {
+                model.review.set_viewport(rows, columns);
+            }
         }
     }
     result
@@ -231,7 +243,10 @@ fn apply_review(model: &mut Model, result: review::Update) -> Vec<Effect> {
                 model.composer.begin(reply_to);
                 model.active_mode = ActiveMode::Composer;
             }
-            review::Intent::OpenRollup => model.active_mode = ActiveMode::Rollup,
+            review::Intent::OpenRollup => {
+                model.rollup.prepare(&model.global.threads);
+                model.active_mode = ActiveMode::Rollup;
+            }
         }
     }
     result
@@ -239,27 +254,32 @@ fn apply_review(model: &mut Model, result: review::Update) -> Vec<Effect> {
         .into_iter()
         .map(|effect| match effect {
             review::Effect::ReloadDiff { request, purpose } => {
-                model.global.set_pending(global::PendingEffect::ReloadDiff);
+                let operation_id = model
+                    .global
+                    .set_pending(ActiveMode::Review, effect::PendingEffectKind::ReloadDiff);
                 Effect::ReloadDiff {
+                    operation_id,
                     owner: ActiveMode::Review,
                     request,
                     purpose,
                 }
             }
             review::Effect::ChangeThreads(operation) => {
-                model
+                let operation_id = model
                     .global
-                    .set_pending(global::PendingEffect::ChangeThreads);
+                    .set_pending(ActiveMode::Review, effect::PendingEffectKind::ChangeThreads);
                 Effect::ChangeThreads {
+                    operation_id,
                     owner: ActiveMode::Review,
                     operation,
                 }
             }
             review::Effect::ResolveThread { id } => {
-                model
+                let operation_id = model
                     .global
-                    .set_pending(global::PendingEffect::ResolveThread);
+                    .set_pending(ActiveMode::Review, effect::PendingEffectKind::ResolveThread);
                 Effect::ResolveThread {
+                    operation_id,
                     owner: ActiveMode::Review,
                     id,
                 }
@@ -280,11 +300,13 @@ fn apply_composer(model: &mut Model, result: composer::Update) -> Vec<Effect> {
         .effects
         .into_iter()
         .map(|effect| {
-            model
-                .global
-                .set_pending(global::PendingEffect::ChangeThreads);
+            let operation_id = model.global.set_pending(
+                ActiveMode::Composer,
+                effect::PendingEffectKind::ChangeThreads,
+            );
             match effect {
                 composer::Effect::ChangeThreads(operation) => Effect::ChangeThreads {
+                    operation_id,
                     owner: ActiveMode::Composer,
                     operation,
                 },
@@ -297,6 +319,7 @@ fn apply_help(model: &mut Model, result: help::Update) -> Vec<Effect> {
     for intent in result.intents {
         match intent {
             help::Intent::Close => model.active_mode = ActiveMode::Review,
+            help::Intent::SetStatus(status) => model.global.status = Some(status.into()),
         }
     }
     result
@@ -318,7 +341,7 @@ fn apply_rollup(model: &mut Model, result: rollup::Update) -> Vec<Effect> {
                 {
                     Ok(()) => {
                         model.active_mode = ActiveMode::Review;
-                        model.global.status = Some(format!("thread #{id}"));
+                        model.global.status = Some(format!("thread target: #{id}"));
                     }
                     Err(error) => model.global.status = Some(error),
                 }
@@ -329,11 +352,12 @@ fn apply_rollup(model: &mut Model, result: rollup::Update) -> Vec<Effect> {
         .effects
         .into_iter()
         .map(|effect| {
-            model
+            let operation_id = model
                 .global
-                .set_pending(global::PendingEffect::ResolveThread);
+                .set_pending(ActiveMode::Rollup, effect::PendingEffectKind::ResolveThread);
             match effect {
                 rollup::Effect::ResolveThread { id } => Effect::ResolveThread {
+                    operation_id,
                     owner: ActiveMode::Rollup,
                     id,
                 },
@@ -372,27 +396,64 @@ pub fn view(model: &Model) -> semantic::View {
                 &model.rollup,
                 rollup::ViewInput {
                     threads: &model.global.threads,
-                    scroll: model.review.scroll(),
                 },
             );
             (review.file_rail, body, None, review.layout)
         }
     };
-    let context = match model.active_mode {
-        ActiveMode::Composer => semantic::SurfaceContext::Composer,
-        ActiveMode::Help => semantic::SurfaceContext::Help,
-        ActiveMode::Rollup => semantic::SurfaceContext::Rollup,
-        ActiveMode::Review => match layout.focus {
-            crate::ui::FocusArea::Files => semantic::SurfaceContext::Files,
-            crate::ui::FocusArea::Review => semantic::SurfaceContext::Review,
-            crate::ui::FocusArea::Threads => semantic::SurfaceContext::Threads,
-        },
+    let selected_thread = model.review.selected_thread_id(&model.global.threads);
+    let review_target = model.review.selected_target_label();
+    let (context, target, selected_thread_available) = match model.active_mode {
+        ActiveMode::Composer => (
+            semantic::SurfaceContext::Composer,
+            model.composer.reply_to().map_or_else(
+                || {
+                    review_target
+                        .as_ref()
+                        .map(|target| format!("new thread at {target}"))
+                },
+                |id| Some(format!("reply to thread #{id}")),
+            ),
+            model.composer.reply_to().is_some(),
+        ),
+        ActiveMode::Help => (
+            semantic::SurfaceContext::Help,
+            Some("keyboard reference".into()),
+            false,
+        ),
+        ActiveMode::Rollup => {
+            let id = model.rollup.selected_thread_id(&model.global.threads);
+            (
+                semantic::SurfaceContext::Rollup,
+                Some(id.map_or_else(|| "no threads".into(), |id| format!("thread #{id}"))),
+                id.is_some(),
+            )
+        }
+        ActiveMode::Review => (
+            match layout.focus {
+                crate::ui::FocusArea::Review => semantic::SurfaceContext::Review,
+                crate::ui::FocusArea::Threads => semantic::SurfaceContext::Threads,
+            },
+            match layout.focus {
+                crate::ui::FocusArea::Threads => selected_thread.map(|id| {
+                    format!(
+                        "{} • thread #{id}",
+                        review_target.as_deref().unwrap_or("unknown hunk")
+                    )
+                }),
+                crate::ui::FocusArea::Review => review_target,
+            },
+            selected_thread.is_some(),
+        ),
     };
     let global = global::view(
         &model.global,
         global::ViewInput {
             file_count: model.review.session().diff().document.files.len(),
             context,
+            target,
+            selected_thread_available,
+            width: model.review.viewport_columns(),
         },
     );
     semantic::View {

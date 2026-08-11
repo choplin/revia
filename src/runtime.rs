@@ -30,10 +30,12 @@ impl Runtime {
     pub fn perform(&self, effect: Effect, current_threads: &ThreadState) -> EffectResult {
         match effect {
             Effect::ReloadDiff {
+                operation_id,
                 owner,
                 request,
                 purpose,
             } => EffectResult {
+                operation_id,
                 owner,
                 outcome: Outcome::DiffReloaded {
                     purpose,
@@ -41,13 +43,23 @@ impl Runtime {
                         .map_err(|error| error.to_string()),
                 },
             },
-            Effect::ChangeThreads { owner, operation } => EffectResult {
+            Effect::ChangeThreads {
+                operation_id,
+                owner,
+                operation,
+            } => EffectResult {
+                operation_id,
                 owner,
                 outcome: Outcome::ThreadsChanged {
                     result: self.change_threads(current_threads, operation),
                 },
             },
-            Effect::ResolveThread { owner, id } => EffectResult {
+            Effect::ResolveThread {
+                operation_id,
+                owner,
+                id,
+            } => EffectResult {
+                operation_id,
                 owner,
                 outcome: Outcome::ThreadResolved {
                     id,

@@ -192,8 +192,8 @@ impl Renderer {
             state.select(rail.selected);
             let block = region_block(
                 "Files",
-                rail.focused,
-                rail.focused.then_some("FOCUSED"),
+                false,
+                rail.selected.map(|_| "CURRENT FILE"),
                 self.semantic_theme,
             );
             frame.render_stateful_widget(
@@ -206,29 +206,42 @@ impl Renderer {
         }
 
         let body_inner_width = areas.review_body.width.saturating_sub(2);
-        let (body, scroll) = match &view.body {
+        let (body, requested_scroll, scroll_from_end) = match &view.body {
             Body::Review(review) => (
                 self.review_text(review, body_inner_width, view),
                 review.scroll,
+                review.scroll_from_end,
             ),
             Body::Rollup(rollup) => (
                 rollup_text(rollup, body_inner_width, self.semantic_theme),
                 rollup.scroll,
+                None,
             ),
         };
-        let body_is_focused =
-            view.layout.focus != FocusArea::Files || areas.navigation_rail.is_none();
-        let body_focus_label = match view.layout.focus {
-            FocusArea::Files if areas.navigation_rail.is_none() => {
-                Some("FILES FOCUS · rail hidden")
-            }
-            FocusArea::Threads => Some("THREAD FOCUS"),
-            FocusArea::Review => Some("FOCUSED"),
-            FocusArea::Files => None,
+        let viewport_height = usize::from(areas.review_body.height.saturating_sub(2));
+        let max_scroll = body
+            .height()
+            .saturating_sub(viewport_height)
+            .min(usize::from(u16::MAX));
+        let max_scroll = max_scroll as u16;
+        let scroll = scroll_from_end.map_or_else(
+            || requested_scroll.min(max_scroll),
+            |offset| max_scroll.saturating_sub(offset),
+        );
+        let body_is_focused = view.overlay.is_none();
+        let body_title = match &view.body {
+            Body::Review(_) => "Review stream",
+            Body::Rollup(_) => "Thread rollup",
+        };
+        let body_focus_label = match (&view.body, view.layout.focus, body_is_focused) {
+            (_, _, false) => None,
+            (Body::Rollup(_), _, true) => Some("ROLLUP FOCUS"),
+            (Body::Review(_), FocusArea::Threads, true) => Some("THREAD TARGET"),
+            (Body::Review(_), FocusArea::Review, true) => Some("STREAM FOCUS"),
         };
         let paragraph = Paragraph::new(body)
             .block(region_block(
-                "Review stream",
+                body_title,
                 body_is_focused,
                 body_focus_label,
                 self.semantic_theme,
@@ -344,7 +357,11 @@ impl Renderer {
                     ));
                     lines.push(Line::styled(format!("  │ {}", thread.latest), style));
                     lines.push(Line::styled(
-                        "  └ c reply · x resolve · r reopen · a attention",
+                        if thread.active {
+                            "  └ c reply · x resolve · R reopen · a attention"
+                        } else {
+                            "  └ select with t/T to use thread actions"
+                        },
                         style,
                     ));
                 }
@@ -386,7 +403,7 @@ impl Renderer {
                 );
             }
             Overlay::Help { text } => {
-                let area = centered_rect(86, 18, frame.area());
+                let area = centered_rect(86, 20, frame.area());
                 frame.render_widget(Clear, area);
                 frame.render_widget(
                     Paragraph::new(*text).wrap(Wrap { trim: false }).block(
@@ -394,7 +411,7 @@ impl Renderer {
                             .borders(Borders::ALL)
                             .border_type(BorderType::Double)
                             .border_style(self.semantic_theme.style(Tone::FocusSelection))
-                            .title("Keyboard help — Esc to close"),
+                            .title("Keyboard help — Esc/? to close"),
                     ),
                     area,
                 );
@@ -442,7 +459,11 @@ fn rollup_text(rollup: &RollupBody, available_width: u16, theme: SemanticTheme) 
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled(
-        "j/k select • Enter jump • v/Esc return",
+        if rollup.items.is_empty() {
+            "No thread targets • v/Esc return"
+        } else {
+            "j/k select • Enter jump • v/Esc return"
+        },
         theme.style(Tone::MutedResolved),
     ));
     Text::from(lines)
@@ -712,7 +733,7 @@ mod tests {
         assert!(wide.iter().any(|row| row.contains("Files")));
         assert!(
             wide.iter()
-                .any(|row| row.contains("Review stream ◆ FOCUSED"))
+                .any(|row| row.contains("Review stream ◆ STREAM FOCUS"))
         );
         assert!(wide[22].contains("Context: Review stream"));
         assert!(wide[23].starts_with("Keys:"));
@@ -794,7 +815,7 @@ mod tests {
 
         assert!(rendered.contains("›"));
         assert!(rendered.contains("▶"));
-        assert!(rendered.contains("◆ FOCUSED"));
+        assert!(rendered.contains("◆ STREAM FOCUS"));
         assert!(rendered.contains("1 -old_navigation"));
         assert!(rendered.contains("1 +new_navigation"));
         assert!(
@@ -1028,5 +1049,154 @@ mod tests {
         assert!(after[18].contains("Context: Review stream"));
         assert!(after[18].contains("Status: reloading diff…"));
         assert_eq!(before[19], after[19]);
+    }
+
+    #[test]
+    fn modal_overlay_is_the_only_region_that_claims_focus() {
+        let renderer = Renderer::default();
+
+        let mut composer = model_with_diff(RESPONSIVE_DIFF);
+        crate::app::update(
+            &mut composer,
+            review::Event::BeginThread { always_new: true },
+        );
+        let rendered = rows(&render(&renderer, &composer, 120, 24)).join("\n");
+        assert!(rendered.contains("New thread — Enter post · Esc cancel"));
+        assert!(!rendered.contains("STREAM FOCUS"));
+        assert!(!rendered.contains("THREAD TARGET"));
+
+        let mut help = model_with_diff(RESPONSIVE_DIFF);
+        crate::app::update(&mut help, crate::app::global::Event::OpenHelp);
+        let rendered = rows(&render(&renderer, &help, 120, 24)).join("\n");
+        assert!(rendered.contains("Keyboard help — Esc/? to close"));
+        assert!(!rendered.contains("STREAM FOCUS"));
+        assert!(!rendered.contains("THREAD TARGET"));
+    }
+
+    #[test]
+    fn narrow_footer_keeps_target_and_mode_actions_visible() {
+        let renderer = Renderer::default();
+        let mut review = model_with_diff(RESPONSIVE_DIFF);
+        crate::app::update(
+            &mut review,
+            crate::app::global::Event::ViewportResized {
+                rows: 16,
+                columns: 48,
+            },
+        );
+        let review_rows = rows(&render(&renderer, &review, 48, 20));
+        assert!(review_rows[18].contains("hunk 1/1"), "{}", review_rows[18]);
+        assert!(
+            review_rows[19].contains("j/k stream"),
+            "{}",
+            review_rows[19]
+        );
+        assert!(review_rows[19].contains(",/. file"), "{}", review_rows[19]);
+        crate::app::update(&mut review, review::Event::ToggleSidebar);
+        crate::app::update(&mut review, review::Event::ToggleSidebar);
+        let review_rows = rows(&render(&renderer, &review, 48, 20));
+        assert!(
+            review_rows[18].contains("rail hidden"),
+            "{}",
+            review_rows[18]
+        );
+        crate::app::update(
+            &mut review,
+            crate::app::global::Event::ViewportResized {
+                rows: 16,
+                columns: 64,
+            },
+        );
+        crate::app::update(&mut review, review::Event::MoveFile(1));
+        crate::app::update(&mut review, review::Event::ToggleSidebar);
+        crate::app::update(&mut review, review::Event::ToggleSidebar);
+        let wide_target_rows = rows(&render(&renderer, &review, 64, 20));
+        assert!(
+            wide_target_rows[18].contains("rail hidden"),
+            "{}",
+            wide_target_rows[18]
+        );
+        assert!(
+            wide_target_rows[18].contains("hunk 1/1"),
+            "{}",
+            wide_target_rows[18]
+        );
+
+        let mut threads = ThreadState::default();
+        let human = Participant {
+            id: "human".into(),
+            kind: ParticipantKind::Human,
+        };
+        threads.post(
+            Anchor::new(
+                "deadbeef",
+                HunkLocation::new("src/components/review/navigation.rs", "@@ -1 +1 @@"),
+            ),
+            human,
+            "thread".into(),
+            1,
+        );
+        let mut thread = Model::new(
+            DiffRequest {
+                target: DiffTarget::WorkingTree,
+                context_lines: 3,
+            },
+            LoadedDiff {
+                text: RESPONSIVE_DIFF.into(),
+                document: DiffDocument::parse(RESPONSIVE_DIFF),
+            },
+            threads,
+        );
+        crate::app::update(
+            &mut thread,
+            crate::app::global::Event::ViewportResized {
+                rows: 16,
+                columns: 64,
+            },
+        );
+        crate::app::update(&mut thread, review::Event::MoveThread(1));
+        let thread_rows = rows(&render(&renderer, &thread, 64, 20));
+        assert!(thread_rows[18].contains("thread #0"), "{}", thread_rows[18]);
+        assert!(
+            thread_rows[19].contains("Tab stream"),
+            "{}",
+            thread_rows[19]
+        );
+        assert!(thread_rows[19].contains("x/R"), "{}", thread_rows[19]);
+    }
+
+    #[test]
+    fn empty_rollup_uses_its_own_title_and_available_keys() {
+        let renderer = Renderer::default();
+        let mut model = model_with_diff(RESPONSIVE_DIFF);
+        crate::app::update(&mut model, review::Event::ShowRollup);
+        let rendered = rows(&render(&renderer, &model, 120, 24)).join("\n");
+
+        assert!(rendered.contains("Thread rollup ◆ ROLLUP FOCUS"));
+        assert!(rendered.contains("No thread targets • v/Esc return"));
+        assert!(!rendered.contains("j/k select • Enter jump"));
+    }
+
+    #[test]
+    fn stream_end_jump_renders_the_end_of_the_diff() {
+        let renderer = Renderer::default();
+        let mut model = model_with_diff(RESPONSIVE_DIFF);
+        crate::app::update(&mut model, review::Event::ToggleSidebar);
+        crate::app::update(
+            &mut model,
+            crate::app::global::Event::ViewportResized {
+                rows: 10,
+                columns: 80,
+            },
+        );
+        crate::app::update(&mut model, review::Event::JumpToStreamEdge { end: true });
+
+        let at_end = rows(&render(&renderer, &model, 80, 14)).join("\n");
+        assert!(at_end.contains("new_wide"), "{at_end}");
+
+        crate::app::update(&mut model, review::Event::ScrollRows(-1));
+        let before_end = rows(&render(&renderer, &model, 80, 14)).join("\n");
+        assert_ne!(at_end, before_end);
+        assert!(before_end.contains("1 row before end"), "{before_end}");
     }
 }

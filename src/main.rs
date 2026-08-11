@@ -73,9 +73,13 @@ fn run_app(
 ) -> Result<()> {
     let renderer = Renderer::default();
     let mut last_scroll_at: Option<Instant> = None;
+    let size = terminal.size()?;
     let effects = app::update(
         model,
-        app::global::Event::ViewportResized(terminal.size()?.height.saturating_sub(4)),
+        app::global::Event::ViewportResized {
+            rows: size.height.saturating_sub(4),
+            columns: size.width,
+        },
     );
     dispatch_effects(model, runtime, effects);
     while model.is_running() {
@@ -110,10 +114,13 @@ fn run_app(
                 let (_, effects) = app::handle_input(model, input);
                 dispatch_effects(model, runtime, effects);
             }
-            CrosstermEvent::Resize(_, height) => {
+            CrosstermEvent::Resize(width, height) => {
                 let effects = app::update(
                     model,
-                    app::global::Event::ViewportResized(height.saturating_sub(4)),
+                    app::global::Event::ViewportResized {
+                        rows: height.saturating_sub(4),
+                        columns: width,
+                    },
                 );
                 dispatch_effects(model, runtime, effects);
             }
