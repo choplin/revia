@@ -5,10 +5,9 @@
 //! attached to the parsed hunk; display rows are deliberately ephemeral.
 
 use ratatui::{
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
 };
-use syntect::{easy::HighlightLines, highlighting::Style as SyntectStyle, parsing::SyntaxSet};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -17,10 +16,17 @@ use crate::{
     diff::{DiffLine, DiffLineKind, HunkCoordinates},
     renderer::SemanticTheme,
     semantic::{
-        DiffSearchTarget, LayoutPolicy, ReviewBody, StickyReviewContext, ThreadCard, ThreadState,
-        Tone,
+        DiffSearchTarget, LayoutPolicy, ReviewBody, ReviewWindowSection, StickyReviewContext, Tone,
     },
-    ui::{LayoutMode, fit_width, truncate_end},
+    symbols,
+    syntax::{HunkSyntax, SyntaxLine, TokenStyle},
+    ui::{LayoutMode, fit_width},
+};
+
+#[cfg(test)]
+use crate::{
+    semantic::{ThreadCard, ThreadState},
+    ui::truncate_end,
 };
 
 const TAB_WIDTH: usize = 4;
@@ -74,6 +80,45 @@ enum ViewportSection {
 impl ReviewRowMap {
     pub(crate) fn total_rows(&self) -> usize {
         self.total_rows
+    }
+
+    pub(crate) fn hunk_at(&self, row: usize) -> Option<&HunkLocation> {
+        let file = self
+            .files
+            .iter()
+            .find(|file| row >= file.start && row < file.end)
+            .or_else(|| self.files.last())?;
+        file.hunks
+            .iter()
+            .find(|hunk| row >= hunk.start && row < hunk.end)
+            .or_else(|| file.hunks.iter().find(|hunk| hunk.start >= row))
+            .or_else(|| file.hunks.last())
+            .map(|hunk| &hunk.anchor)
+    }
+
+    pub(crate) fn window_sections(&self, start: usize, end: usize) -> Vec<ReviewWindowSection> {
+        let overlaps =
+            |section_start: usize, section_end: usize| section_start < end && section_end > start;
+        let mut sections = Vec::new();
+        for file in &self.files {
+            let header_end = file.hunks.first().map_or(file.end, |hunk| hunk.start);
+            if overlaps(file.start, header_end) {
+                sections.push(ReviewWindowSection::FileHeader {
+                    file_index: file.index,
+                    start: file.start,
+                    end: header_end,
+                });
+            }
+            sections.extend(file.hunks.iter().filter_map(|hunk| {
+                overlaps(hunk.start, hunk.end).then_some(ReviewWindowSection::Hunk {
+                    file_index: file.index,
+                    hunk_index: hunk.index,
+                    start: hunk.start,
+                    end: hunk.end,
+                })
+            }));
+        }
+        sections
     }
 
     pub(crate) fn has_sticky_context(&self) -> bool {
@@ -161,6 +206,14 @@ impl ReviewRowMap {
             })
     }
 
+    pub(crate) fn selected_hunk_range(&self) -> Option<std::ops::Range<usize>> {
+        self.files
+            .iter()
+            .flat_map(|file| &file.hunks)
+            .find(|hunk| hunk.selected)
+            .map(|hunk| hunk.start..hunk.end)
+    }
+
     pub(crate) fn row_for_search_target(&self, target: &DiffSearchTarget) -> Option<usize> {
         match target {
             DiffSearchTarget::FilePath { path } => self
@@ -221,7 +274,13 @@ pub(crate) fn review_row_map(
     let mut files = Vec::with_capacity(review.files.len());
     for (file_index, file) in review.files.iter().enumerate() {
         let file_start = cursor;
-        cursor = cursor.saturating_add(2 + file.metadata.len());
+        cursor = cursor.saturating_add(
+            2 + file
+                .metadata
+                .iter()
+                .filter(|line| show_file_metadata(line))
+                .count(),
+        );
         let number_width = line_number_width(
             file.hunks
                 .iter()
@@ -230,30 +289,24 @@ pub(crate) fn review_row_map(
         let mut hunks = Vec::with_capacity(file.hunks.len());
         for (hunk_index, hunk) in file.hunks.iter().enumerate() {
             let start = cursor;
-            cursor = cursor.saturating_add(usize::from(hunk.header.is_some()));
+            let hunk_content_width = available_width.saturating_sub(2);
+            cursor = cursor.saturating_add(1);
             let (diff_rows, line_rows) = hunk_line_rows(
                 &hunk.lines,
                 hunk.coordinates,
                 cursor,
-                available_width,
+                hunk_content_width,
                 number_width,
                 layout,
             );
             cursor = cursor.saturating_add(diff_rows);
-            let mut active_thread_row = None;
-            for (thread_index, thread) in hunk.threads.iter().enumerate() {
-                if thread.active {
-                    active_thread_row = Some(cursor);
-                }
-                cursor = cursor.saturating_add(
-                    thread_card_rows(
-                        thread,
-                        available_width,
-                        thread_index + 1 == hunk.threads.len(),
-                    )
-                    .len(),
-                );
-            }
+            let active_thread_row = hunk
+                .threads
+                .iter()
+                .any(|thread| thread.active)
+                .then_some(cursor);
+            cursor = cursor.saturating_add(usize::from(!hunk.threads.is_empty()));
+            cursor = cursor.saturating_add(1);
             hunks.push(HunkRows {
                 anchor: hunk.anchor.clone(),
                 header: hunk.header.clone(),
@@ -280,10 +333,15 @@ pub(crate) fn review_row_map(
     }
 }
 
+pub(crate) fn show_file_metadata(line: &str) -> bool {
+    !line.starts_with("diff --git ") && !line.starts_with("--- ") && !line.starts_with("+++ ")
+}
+
 /// Produces the complete, width-bounded physical rows for one inline thread card.
 ///
 /// Keeping this transform shared by row mapping and rendering makes card height
 /// changes safe for viewport anchoring and selected-target navigation.
+#[cfg(test)]
 pub(crate) fn thread_card_rows(
     thread: &ThreadCard,
     available_width: u16,
@@ -292,12 +350,12 @@ pub(crate) fn thread_card_rows(
     let width = usize::from(available_width);
     let narrow = width < 72;
     let state = match (thread.state, thread.resolved, narrow) {
-        (ThreadState::NeedsAttention, true, true) => "! ATTENTION · ✓ RESOLVED",
-        (ThreadState::NeedsAttention, false, true) => "! ATTENTION · • OPEN",
-        (ThreadState::NeedsAttention, true, false) => "! NEEDS ATTENTION · ✓ RESOLVED",
-        (ThreadState::NeedsAttention, false, false) => "! NEEDS ATTENTION · • OPEN",
-        (ThreadState::Open, _, _) => "• OPEN",
-        (ThreadState::Resolved, _, _) => "✓ RESOLVED",
+        (ThreadState::NeedsAttention, true, true) => " ATTENTION ·  RESOLVED",
+        (ThreadState::NeedsAttention, false, true) => " ATTENTION ·  OPEN",
+        (ThreadState::NeedsAttention, true, false) => " NEEDS ATTENTION ·  RESOLVED",
+        (ThreadState::NeedsAttention, false, false) => " NEEDS ATTENTION ·  OPEN",
+        (ThreadState::Open, _, _) => " OPEN",
+        (ThreadState::Resolved, _, _) => " RESOLVED",
     };
     let active = if thread.active { "▶ ACTIVE · " } else { "" };
     let outdated = if thread.outdated {
@@ -408,6 +466,7 @@ pub(crate) fn thread_card_rows(
     rows
 }
 
+#[cfg(test)]
 fn wrap_thread_message(value: &str, width: usize, max_rows: usize) -> Vec<String> {
     const PREFIX: &str = "  │ ";
     let prefix_width = UnicodeWidthStr::width(PREFIX);
@@ -450,7 +509,7 @@ fn wrap_thread_message(value: &str, width: usize, max_rows: usize) -> Vec<String
 
 fn hunk_line_rows(
     lines: &[DiffLine],
-    coordinates: Option<HunkCoordinates>,
+    _coordinates: Option<HunkCoordinates>,
     start: usize,
     available_width: u16,
     number_width: usize,
@@ -458,8 +517,6 @@ fn hunk_line_rows(
 ) -> (usize, Vec<usize>) {
     match layout.diff_layout.resolved(available_width) {
         LayoutMode::Split => {
-            let numbered = numbered_lines(lines, coordinates);
-            let rows = split_rows(&numbered);
             let mut line_rows = vec![start; lines.len()];
             let mut line_index = 0;
             let mut row_index = 0;
@@ -495,11 +552,11 @@ fn hunk_line_rows(
                     row_index += 1;
                 }
             }
-            (rows.len(), line_rows)
+            (row_index, line_rows)
         }
         LayoutMode::Stack | LayoutMode::Auto => {
             let content_width = usize::from(available_width)
-                .saturating_sub(number_width.saturating_mul(2).saturating_add(7));
+                .saturating_sub(number_width.saturating_mul(2).saturating_add(8));
             let mut cursor = start;
             let line_rows = lines
                 .iter()
@@ -511,7 +568,7 @@ fn hunk_line_rows(
                     {
                         1
                     } else {
-                        wrapped_row_count(&expand_tabs(&line.text), content_width)
+                        wrapped_row_count(&line.text, content_width)
                     };
                     cursor = cursor.saturating_add(height);
                     row
@@ -522,34 +579,38 @@ fn hunk_line_rows(
     }
 }
 
-pub(crate) fn search_line_row(
-    lines: &[DiffLine],
-    coordinates: Option<HunkCoordinates>,
-    line_index: usize,
-    available_width: u16,
-    number_width: usize,
-    layout: LayoutPolicy,
-) -> Option<usize> {
-    hunk_line_rows(lines, coordinates, 0, available_width, number_width, layout)
-        .1
-        .get(line_index)
-        .copied()
-}
-
 fn wrapped_row_count(value: &str, width: usize) -> usize {
-    chunk_graphemes(
-        value
-            .graphemes(true)
-            .map(|grapheme| (grapheme.to_owned(), None))
-            .collect(),
-        width,
-        true,
-    )
-    .len()
+    if value.is_empty() || width == 0 {
+        return 1;
+    }
+    let mut rows = 1usize;
+    let mut row_width = 0usize;
+    let mut source_column = 0usize;
+    for grapheme in value.graphemes(true) {
+        let cell_width = if grapheme == "\t" {
+            TAB_WIDTH - source_column % TAB_WIDTH
+        } else {
+            UnicodeWidthStr::width(grapheme)
+        };
+        source_column = source_column.saturating_add(cell_width);
+        let parts = if grapheme == "\t" { cell_width } else { 1 };
+        let part_width = if grapheme == "\t" { 1 } else { cell_width };
+        for _ in 0..parts {
+            if row_width > 0 && row_width.saturating_add(part_width) > width {
+                rows = rows.saturating_add(1);
+                row_width = 0;
+            }
+            if part_width <= width {
+                row_width = row_width.saturating_add(part_width);
+            }
+        }
+    }
+    rows
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NumberedLine {
+    source_index: usize,
     pub(crate) line: DiffLine,
     pub(crate) old_number: Option<usize>,
     pub(crate) new_number: Option<usize>,
@@ -571,7 +632,8 @@ pub(crate) fn numbered_lines(
 
     lines
         .iter()
-        .map(|line| {
+        .enumerate()
+        .map(|(source_index, line)| {
             let (displayed_old, displayed_new) = match line.kind {
                 DiffLineKind::Added => (None, new_number),
                 DiffLineKind::Removed => (old_number, None),
@@ -585,6 +647,7 @@ pub(crate) fn numbered_lines(
                 new_number = new_number.map(|number| number.saturating_add(1));
             }
             NumberedLine {
+                source_index,
                 line: line.clone(),
                 old_number: displayed_old,
                 new_number: displayed_new,
@@ -650,23 +713,26 @@ pub(crate) fn line_number_width<'a>(
         .unwrap_or(1)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn split_hunk_lines(
     lines: &[DiffLine],
     coordinates: Option<HunkCoordinates>,
     available_width: u16,
     number_width: usize,
     selected: bool,
+    search: Option<(usize, &str)>,
+    syntax: &HunkSyntax,
     theme: SemanticTheme,
 ) -> Vec<Line<'static>> {
     let available_width = usize::from(available_width);
-    let selection_width = 2;
+    let state_width = 3;
     let columns_width = available_width
-        .saturating_sub(selection_width)
+        .saturating_sub(state_width)
         .saturating_sub(UnicodeWidthStr::width(SPLIT_SEPARATOR));
     let old_width = columns_width / 2;
     let new_width = columns_width.saturating_sub(old_width);
     let numbered = numbered_lines(lines, coordinates);
-
+    let evidence = hunk_evidence(lines, search);
     split_rows(&numbered)
         .into_iter()
         .map(|row| {
@@ -682,7 +748,10 @@ pub(crate) fn split_hunk_lines(
                 Side::Old,
                 old_width,
                 number_width,
-                selected,
+                row.old
+                    .as_ref()
+                    .and_then(|line| evidence.get(line.source_index)),
+                syntax.old(row.old.as_ref().map_or(0, |line| line.source_index)),
                 theme,
             );
             let new = split_cell(
@@ -690,15 +759,24 @@ pub(crate) fn split_hunk_lines(
                 Side::New,
                 new_width,
                 number_width,
-                selected,
+                row.new
+                    .as_ref()
+                    .and_then(|line| evidence.get(line.source_index)),
+                syntax.new_side(row.new.as_ref().map_or(0, |line| line.source_index)),
                 theme,
             );
-            let mut spans = vec![selection_span(selected, theme)];
+            let old_evidence = row
+                .old
+                .as_ref()
+                .and_then(|line| evidence.get(line.source_index));
+            let new_evidence = row
+                .new
+                .as_ref()
+                .and_then(|line| evidence.get(line.source_index));
+            let combined_evidence = merge_evidence(old_evidence, new_evidence);
+            let mut spans = vec![state_gutter(selected, combined_evidence.as_ref(), theme)];
             spans.extend(old);
-            spans.push(Span::styled(
-                SPLIT_SEPARATOR,
-                selected_style(selected, theme),
-            ));
+            spans.push(Span::styled(SPLIT_SEPARATOR, Style::default()));
             spans.extend(new);
             Line::from(spans)
         })
@@ -713,16 +791,16 @@ pub(crate) fn stack_hunk_lines(
     number_width: usize,
     wrap: bool,
     selected: bool,
-    highlighter: &mut HighlightLines<'_>,
-    syntax_set: &SyntaxSet,
+    search: Option<(usize, &str)>,
+    syntax: &HunkSyntax,
     theme: SemanticTheme,
 ) -> Vec<Line<'static>> {
     let available_width = usize::from(available_width);
-    let prefix_width = number_width.saturating_mul(2).saturating_add(7);
+    let prefix_width = number_width.saturating_mul(2).saturating_add(8);
     let content_width = available_width.saturating_sub(prefix_width);
     let mut rendered = Vec::new();
-
-    for line in numbered_lines(lines, coordinates) {
+    let evidence = hunk_evidence(lines, search);
+    for (line_index, line) in numbered_lines(lines, coordinates).into_iter().enumerate() {
         if line.line.kind == DiffLineKind::Meta {
             rendered.push(metadata_row(
                 &line.line.text,
@@ -732,16 +810,37 @@ pub(crate) fn stack_hunk_lines(
             ));
             continue;
         }
-        let base = selected_style(selected, theme).patch(theme.style(line_tone(line.line.kind)));
-        let content_rows = highlighted_content_rows(
-            &line.line.text,
-            content_width,
-            wrap,
-            base,
-            theme.colors_enabled() && !selected && line.line.kind == DiffLineKind::Context,
-            highlighter,
-            syntax_set,
-        );
+        let base = theme.diff_row_style(line_tone(line.line.kind));
+        let content_rows = match line.line.kind {
+            DiffLineKind::Removed => highlighted_content_rows(
+                &line.line.text,
+                content_width,
+                wrap,
+                base,
+                evidence.get(line_index),
+                syntax.old(line.source_index),
+                theme,
+            ),
+            DiffLineKind::Added => highlighted_content_rows(
+                &line.line.text,
+                content_width,
+                wrap,
+                base,
+                evidence.get(line_index),
+                syntax.new_side(line.source_index),
+                theme,
+            ),
+            DiffLineKind::Context => highlighted_content_rows(
+                &line.line.text,
+                content_width,
+                wrap,
+                base,
+                evidence.get(line_index),
+                syntax.old(line.source_index),
+                theme,
+            ),
+            DiffLineKind::Meta => unreachable!("metadata rows return above"),
+        };
         for (index, content) in content_rows.into_iter().enumerate() {
             let first = index == 0;
             let old_number = first.then_some(line.old_number).flatten();
@@ -751,7 +850,7 @@ pub(crate) fn stack_hunk_lines(
             } else {
                 '↪'
             };
-            let mut spans = vec![selection_span(selected, theme)];
+            let mut spans = vec![state_gutter(selected, evidence.get(line_index), theme)];
             spans.push(Span::styled(
                 format!(
                     "{:>width$} {:>width$} │ {marker}",
@@ -774,39 +873,46 @@ enum Side {
     New,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn split_cell(
     line: Option<&NumberedLine>,
     side: Side,
     width: usize,
     number_width: usize,
-    selected: bool,
+    evidence: Option<&LineEvidence>,
+    syntax: Option<&SyntaxLine>,
     theme: SemanticTheme,
 ) -> Vec<Span<'static>> {
     let Some(line) = line else {
-        return vec![Span::styled(
-            " ".repeat(width),
-            selected_style(selected, theme),
-        )];
+        return vec![Span::styled(" ".repeat(width), Style::default())];
     };
     let number = match side {
         Side::Old => line.old_number,
         Side::New => line.new_number,
     };
-    let base = selected_style(selected, theme).patch(theme.style(line_tone(line.line.kind)));
+    let base = theme.diff_row_style(line_tone(line.line.kind));
     let prefix = format!(
         "{:>number_width$} {}",
         format_number(number),
         change_marker(line.line.kind),
     );
     let prefix_width = UnicodeWidthStr::width(prefix.as_str()).min(width);
-    let content = expand_tabs(&line.line.text);
-    vec![
-        Span::styled(fit_width(&prefix, prefix_width), base),
-        Span::styled(
-            fit_width(&content, width.saturating_sub(prefix_width)),
+    let mut spans = vec![Span::styled(fit_width(&prefix, prefix_width), base)];
+    spans.extend(
+        highlighted_content_rows(
+            &line.line.text,
+            width.saturating_sub(prefix_width),
+            false,
             base,
-        ),
-    ]
+            evidence,
+            syntax,
+            theme,
+        )
+        .into_iter()
+        .next()
+        .unwrap_or_default(),
+    );
+    spans
 }
 
 fn metadata_row(
@@ -815,10 +921,10 @@ fn metadata_row(
     selected: bool,
     theme: SemanticTheme,
 ) -> Line<'static> {
-    let style = selected_style(selected, theme).patch(theme.style(Tone::Attention));
-    let mut spans = vec![selection_span(selected, theme)];
+    let style = theme.style(Tone::Attention);
+    let mut spans = vec![state_gutter(selected, None, theme)];
     spans.push(Span::styled(
-        fit_width(text, available_width.saturating_sub(2)),
+        fit_width(text, available_width.saturating_sub(3)),
         style,
     ));
     Line::from(spans)
@@ -830,50 +936,61 @@ fn highlighted_content_rows(
     width: usize,
     wrap: bool,
     base: Style,
-    allow_syntax: bool,
-    highlighter: &mut HighlightLines<'_>,
-    syntax_set: &SyntaxSet,
+    evidence: Option<&LineEvidence>,
+    syntax: Option<&SyntaxLine>,
+    theme: SemanticTheme,
 ) -> Vec<Vec<Span<'static>>> {
     if width == 0 {
-        if highlighter.highlight_line(text, syntax_set).is_err() {
-            // Syntax highlighting is optional presentation; the diff row and
-            // highlighter state remain safe to render with semantic styling.
-        }
         return vec![Vec::new()];
     }
     let expanded = expand_tabs(text);
-    let ranges = highlighter.highlight_line(&expanded, syntax_set).ok();
-    let mut graphemes = Vec::new();
-    if let Some(ranges) = ranges.filter(|ranges| !ranges.is_empty()) {
-        let mut range_index = 0;
-        let mut range_end = ranges.first().map_or(0, |(_, text)| text.len());
-        for (byte_index, grapheme) in expanded.grapheme_indices(true) {
-            while byte_index >= range_end && range_index + 1 < ranges.len() {
-                range_index += 1;
-                range_end = range_end.saturating_add(ranges[range_index].1.len());
-            }
-            graphemes.push((grapheme.to_owned(), Some(ranges[range_index].0)));
-        }
-    } else {
-        graphemes.extend(
-            expanded
-                .graphemes(true)
-                .map(|grapheme| (grapheme.to_owned(), None)),
-        );
-    }
+    let mut range_index = 0usize;
+    let graphemes = expanded
+        .grapheme_indices(true)
+        .map(|(byte_index, grapheme)| {
+            let style = syntax.and_then(|ranges| {
+                while range_index < ranges.len() && byte_index >= ranges[range_index].bytes.end {
+                    range_index += 1;
+                }
+                ranges
+                    .get(range_index)
+                    .filter(|range| range.bytes.contains(&byte_index))
+                    .map(|range| range.style)
+            });
+            (grapheme.to_owned(), style)
+        })
+        .collect();
 
     let chunks = chunk_graphemes(graphemes, width, wrap);
+    let mut grapheme_offset: usize = 0;
     chunks
         .into_iter()
         .map(|chunk| {
+            let chunk_start = grapheme_offset;
+            grapheme_offset = grapheme_offset.saturating_add(chunk.len());
             let mut spans = chunk
                 .into_iter()
-                .map(|(grapheme, syntax_style)| {
-                    let style = if allow_syntax {
-                        syntax_style.map_or(base, |source| merge_syntect_style(base, source))
-                    } else {
-                        base
-                    };
+                .enumerate()
+                .map(|(index, (grapheme, syntax_style))| {
+                    let index = chunk_start.saturating_add(index);
+                    let mut style =
+                        syntax_style.map_or(base, |source| merge_syntax_style(base, source, theme));
+                    if evidence.is_some_and(|line| line.intraline.contains(&index)) {
+                        // Preserve the syntax foreground and quiet row
+                        // background. A bright span background can make token
+                        // colors unreadable; underline and the pair gutter
+                        // carry the local change evidence instead.
+                        style = style.add_modifier(Modifier::UNDERLINED);
+                    }
+                    if evidence.is_some_and(|line| line.search.contains(&index)) {
+                        style = style
+                            .bg(if theme.colors_enabled() {
+                                Color::Blue
+                            } else {
+                                Color::Reset
+                            })
+                            .add_modifier(Modifier::REVERSED);
+                    }
                     Span::styled(grapheme, style)
                 })
                 .collect::<Vec<_>>();
@@ -888,10 +1005,10 @@ fn highlighted_content_rows(
 }
 
 fn chunk_graphemes(
-    graphemes: Vec<(String, Option<SyntectStyle>)>,
+    graphemes: Vec<(String, Option<TokenStyle>)>,
     width: usize,
     wrap: bool,
-) -> Vec<Vec<(String, Option<SyntectStyle>)>> {
+) -> Vec<Vec<(String, Option<TokenStyle>)>> {
     if graphemes.is_empty() {
         return vec![Vec::new()];
     }
@@ -953,18 +1070,128 @@ fn expand_tabs(value: &str) -> String {
     expanded
 }
 
-fn selection_span(selected: bool, theme: SemanticTheme) -> Span<'static> {
-    Span::styled(
-        if selected { "┃ " } else { "  " },
-        selected_style(selected, theme),
+#[derive(Debug, Clone, Default)]
+struct LineEvidence {
+    intraline: std::ops::Range<usize>,
+    search: std::ops::Range<usize>,
+    paired: bool,
+    current_search: bool,
+}
+
+fn hunk_evidence(lines: &[DiffLine], search: Option<(usize, &str)>) -> Vec<LineEvidence> {
+    let mut evidence = vec![LineEvidence::default(); lines.len()];
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index].kind != DiffLineKind::Removed {
+            index += 1;
+            continue;
+        }
+        let removed_start = index;
+        while index < lines.len() && lines[index].kind == DiffLineKind::Removed {
+            index += 1;
+        }
+        let added_start = index;
+        while index < lines.len() && lines[index].kind == DiffLineKind::Added {
+            index += 1;
+        }
+        for offset in 0..(added_start - removed_start).min(index - added_start) {
+            let old_index = removed_start + offset;
+            let new_index = added_start + offset;
+            let (old_range, new_range) = replacement_ranges(
+                &expand_tabs(&lines[old_index].text),
+                &expand_tabs(&lines[new_index].text),
+            );
+            evidence[old_index].paired = true;
+            evidence[new_index].paired = true;
+            evidence[old_index].intraline = old_range;
+            evidence[new_index].intraline = new_range;
+        }
+    }
+    if let Some((line_index, query)) = search
+        && !query.is_empty()
+        && let Some(line) = lines.get(line_index)
+    {
+        let text = expand_tabs(&line.text);
+        evidence[line_index].search = search_range(&text, query);
+        evidence[line_index].current_search = true;
+    }
+    evidence
+}
+
+fn replacement_ranges(old: &str, new: &str) -> (std::ops::Range<usize>, std::ops::Range<usize>) {
+    let old = old.graphemes(true).collect::<Vec<_>>();
+    let new = new.graphemes(true).collect::<Vec<_>>();
+    let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let old_suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let suffix = old_suffix
+        .min(old.len().saturating_sub(prefix))
+        .min(new.len().saturating_sub(prefix));
+    (
+        prefix..old.len().saturating_sub(suffix),
+        prefix..new.len().saturating_sub(suffix),
     )
 }
 
-fn selected_style(selected: bool, theme: SemanticTheme) -> Style {
-    if selected {
-        theme.selection()
+fn search_range(text: &str, query: &str) -> std::ops::Range<usize> {
+    let mut lowered = String::new();
+    let mut offsets = Vec::new();
+    for grapheme in text.graphemes(true) {
+        offsets.push(lowered.len());
+        lowered.push_str(&grapheme.to_lowercase());
+    }
+    let query = query.to_lowercase();
+    let Some(start) = lowered.find(&query) else {
+        return 0..0;
+    };
+    let end = start.saturating_add(query.len());
+    let first = offsets
+        .partition_point(|offset| *offset <= start)
+        .saturating_sub(1);
+    let last = offsets
+        .iter()
+        .position(|offset| *offset >= end)
+        .unwrap_or(offsets.len());
+    first..last
+}
+
+fn state_gutter(
+    selected: bool,
+    evidence: Option<&LineEvidence>,
+    theme: SemanticTheme,
+) -> Span<'static> {
+    let member = if selected { "┃" } else { " " };
+    let search = if evidence.is_some_and(|line| line.current_search) {
+        symbols::SEARCH_CHAR
     } else {
-        Style::default()
+        ' '
+    };
+    Span::styled(
+        format!("{member}{search} "),
+        if selected {
+            theme.style(Tone::FocusSelection)
+        } else {
+            Style::default()
+        },
+    )
+}
+
+fn merge_evidence<'a>(
+    old: Option<&'a LineEvidence>,
+    new: Option<&'a LineEvidence>,
+) -> Option<LineEvidence> {
+    match (old, new) {
+        (None, None) => None,
+        (Some(line), None) | (None, Some(line)) => Some(line.clone()),
+        (Some(old), Some(new)) => Some(LineEvidence {
+            paired: old.paired || new.paired,
+            current_search: old.current_search || new.current_search,
+            ..LineEvidence::default()
+        }),
     }
 }
 
@@ -994,45 +1221,35 @@ fn decimal_width(number: usize) -> usize {
     number.to_string().len()
 }
 
-fn merge_syntect_style(base: Style, source: SyntectStyle) -> Style {
-    let foreground = source.foreground;
-    let maximum = foreground.r.max(foreground.g).max(foreground.b);
-    let minimum = foreground.r.min(foreground.g).min(foreground.b);
-    let color = if maximum.saturating_sub(minimum) < 24 {
-        Color::Gray
-    } else if foreground.r == maximum {
-        if foreground.g > maximum / 2 {
-            Color::Yellow
-        } else if foreground.b > maximum / 2 {
-            Color::Magenta
-        } else {
-            Color::Red
-        }
-    } else if foreground.g == maximum {
-        if foreground.b > maximum / 2 {
-            Color::Cyan
-        } else {
-            Color::Green
-        }
-    } else if foreground.r > maximum / 2 {
-        Color::Magenta
+fn merge_syntax_style(base: Style, source: TokenStyle, theme: SemanticTheme) -> Style {
+    let (red, green, blue) = source.foreground;
+    let mut style = if theme.colors_enabled() {
+        base.fg(Color::Rgb(red, green, blue))
     } else {
-        Color::Blue
+        base
     };
-    base.fg(color)
+    if source.bold {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if source.italic {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    style
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        chunk_graphemes, expand_tabs, line_number_width, numbered_lines, split_hunk_lines,
-        split_rows, thread_card_rows,
+        chunk_graphemes, expand_tabs, line_number_width, numbered_lines, search_range,
+        split_hunk_lines, split_rows, stack_hunk_lines, thread_card_rows,
     };
     use crate::anchor::{Anchor, HunkLocation};
     use crate::diff::{DiffLine, DiffLineKind, HunkCoordinates, HunkRange};
     use crate::renderer::SemanticTheme;
     use crate::semantic::{ThreadCard, ThreadState as SemanticThreadState};
+    use crate::syntax::{HunkSyntax, SyntaxHighlighter};
     use crate::thread::{Participant, ParticipantKind, ThreadState};
+    use ratatui::style::{Color, Modifier};
     use unicode_segmentation::UnicodeSegmentation;
     use unicode_width::UnicodeWidthStr;
 
@@ -1041,6 +1258,10 @@ mod tests {
             kind,
             text: text.into(),
         }
+    }
+
+    fn hunk_syntax(lines: &[DiffLine], extension: &str) -> HunkSyntax {
+        SyntaxHighlighter::default().highlight_hunk(Some(extension), lines)
     }
 
     #[test]
@@ -1247,6 +1468,7 @@ mod tests {
             line(DiffLineKind::Added, "second"),
             line(DiffLineKind::Meta, "\\ No newline at end of file"),
         ];
+        let syntax = hunk_syntax(&added, "txt");
         let rendered = split_hunk_lines(
             &added,
             Some(HunkCoordinates {
@@ -1256,7 +1478,9 @@ mod tests {
             48,
             2,
             false,
-            SemanticTheme::no_color(),
+            None,
+            &syntax,
+            SemanticTheme::from_no_color(None),
         )
         .into_iter()
         .map(|line| {
@@ -1274,6 +1498,7 @@ mod tests {
         assert_eq!(UnicodeWidthStr::width(rendered[2].as_str()), 48);
 
         let removed = [line(DiffLineKind::Removed, "gone")];
+        let syntax = hunk_syntax(&removed, "txt");
         let rendered = split_hunk_lines(
             &removed,
             Some(HunkCoordinates {
@@ -1289,7 +1514,9 @@ mod tests {
             48,
             2,
             false,
-            SemanticTheme::no_color(),
+            None,
+            &syntax,
+            SemanticTheme::from_no_color(None),
         );
         let text = rendered[0]
             .spans
@@ -1298,5 +1525,320 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("12 -gone"));
         assert!(!text.contains("20"));
+    }
+
+    #[test]
+    fn split_and_stack_compose_syntax_pair_search_and_selected_hunk_evidence() {
+        let lines = [
+            line(DiffLineKind::Context, "let stable = 1;"),
+            line(DiffLineKind::Removed, "let timeout = 30;"),
+            line(DiffLineKind::Added, "let timeout = 60;"),
+        ];
+        let coordinates = Some(HunkCoordinates {
+            old: HunkRange {
+                start: 10,
+                count: 2,
+            },
+            new: HunkRange {
+                start: 10,
+                count: 2,
+            },
+        });
+        let syntax = hunk_syntax(&lines, "rs");
+        let split = split_hunk_lines(
+            &lines,
+            coordinates,
+            100,
+            2,
+            true,
+            Some((2, "60")),
+            &syntax,
+            SemanticTheme::from_no_color(None),
+        );
+        let split_text = split
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(split_text.iter().any(|row| row.contains("┃ ")));
+        let changed = split
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content.as_ref() == "6")
+            .expect("replacement token is rendered");
+        assert!(changed.style.add_modifier.contains(Modifier::UNDERLINED));
+        assert!(changed.style.add_modifier.contains(Modifier::REVERSED));
+
+        let stack = stack_hunk_lines(
+            &lines,
+            coordinates,
+            80,
+            2,
+            false,
+            false,
+            Some((2, "60")),
+            &syntax,
+            SemanticTheme::from_no_color(None),
+        );
+        let stack_text = stack
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(stack_text.iter().any(|row| row.starts_with("   ")));
+        let changed = stack
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content.as_ref() == "6")
+            .expect("replacement token is rendered");
+        assert!(changed.style.add_modifier.contains(Modifier::UNDERLINED));
+        assert!(changed.style.add_modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn search_ranges_follow_case_insensitive_matches_without_splitting_graphemes() {
+        assert_eq!(search_range("INSERTED", "inserted"), 0..8);
+        assert_eq!(search_range("x画INSERTED", "inserted"), 2..10);
+        assert_eq!(search_range("e\u{301}INSERTED", "inserted"), 1..9);
+        assert_eq!(search_range("aB", "b"), 1..2);
+    }
+
+    #[test]
+    fn split_uses_independent_syntax_state_for_old_and_new_sides() {
+        let changed = [
+            line(DiffLineKind::Removed, "/* old side remains open"),
+            line(DiffLineKind::Added, "let replacement = 1;"),
+        ];
+        let clean = [line(DiffLineKind::Added, "let replacement = 1;")];
+        let semantic_theme = SemanticTheme::from_no_color(None);
+        let changed_syntax = hunk_syntax(&changed, "rs");
+        let clean_syntax = hunk_syntax(&clean, "rs");
+        let changed_rows = split_hunk_lines(
+            &changed,
+            None,
+            100,
+            1,
+            false,
+            None,
+            &changed_syntax,
+            semantic_theme,
+        );
+        let clean_rows = split_hunk_lines(
+            &clean,
+            None,
+            100,
+            1,
+            false,
+            None,
+            &clean_syntax,
+            semantic_theme,
+        );
+        let changed_style = changed_rows
+            .iter()
+            .find(|row| row.spans.iter().any(|span| span.content.as_ref() == "r"))
+            .and_then(|row| {
+                row.spans
+                    .iter()
+                    .skip_while(|span| span.content.as_ref() != " │ ")
+                    .find(|span| span.content.as_ref() == "l")
+            })
+            .map(|span| span.style)
+            .expect("new-side keyword is rendered");
+        let clean_style = clean_rows
+            .iter()
+            .flat_map(|row| &row.spans)
+            .find(|span| span.content.as_ref() == "l")
+            .map(|span| span.style)
+            .expect("clean keyword is rendered");
+        assert_eq!(changed_style.fg, clean_style.fg);
+
+        let changed_stack = stack_hunk_lines(
+            &changed,
+            None,
+            100,
+            1,
+            false,
+            false,
+            None,
+            &changed_syntax,
+            semantic_theme,
+        );
+        let clean_stack = stack_hunk_lines(
+            &clean,
+            None,
+            100,
+            1,
+            false,
+            false,
+            None,
+            &clean_syntax,
+            semantic_theme,
+        );
+        let changed_style = changed_stack
+            .get(1)
+            .and_then(|row| row.spans.iter().find(|span| span.content.as_ref() == "l"))
+            .map(|span| span.style)
+            .expect("new-side stack syntax is rendered");
+        let clean_style = clean_stack
+            .first()
+            .and_then(|row| row.spans.iter().find(|span| span.content.as_ref() == "l"))
+            .map(|span| span.style)
+            .expect("clean stack syntax is rendered");
+        assert_eq!(changed_style.fg, clean_style.fg);
+    }
+
+    #[test]
+    fn layouts_compose_selection_syntax_search_and_intraline_evidence() {
+        let lines = [
+            line(DiffLineKind::Context, "let stable = 1;"),
+            line(DiffLineKind::Removed, "let timeout = 30;"),
+            line(DiffLineKind::Added, "let timeout = 60;"),
+        ];
+        let coordinates = Some(HunkCoordinates {
+            old: HunkRange {
+                start: 10,
+                count: 2,
+            },
+            new: HunkRange {
+                start: 10,
+                count: 2,
+            },
+        });
+        let syntax = hunk_syntax(&lines, "rs");
+
+        for (layout, selected) in [
+            ("split", false),
+            ("split", true),
+            ("stack", false),
+            ("stack", true),
+        ] {
+            let rendered = if layout == "split" {
+                split_hunk_lines(
+                    &lines,
+                    coordinates,
+                    100,
+                    2,
+                    selected,
+                    Some((2, "60")),
+                    &syntax,
+                    SemanticTheme::from_no_color(None),
+                )
+            } else {
+                stack_hunk_lines(
+                    &lines,
+                    coordinates,
+                    100,
+                    2,
+                    false,
+                    selected,
+                    Some((2, "60")),
+                    &syntax,
+                    SemanticTheme::from_no_color(None),
+                )
+            };
+            let expected_member = if selected { '┃' } else { ' ' };
+            let replacement = rendered
+                .iter()
+                .find(|row| {
+                    row.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                        .contains("60")
+                })
+                .expect("replacement row is rendered");
+            let gutter = replacement.spans.first().expect("state gutter");
+            assert!(gutter.content.starts_with(expected_member));
+            assert!(gutter.content.contains(crate::symbols::SEARCH_CHAR));
+            assert!(!gutter.content.contains('≈'));
+            let changed = replacement
+                .spans
+                .iter()
+                .find(|span| span.content.as_ref() == "6")
+                .expect("changed grapheme is rendered");
+            assert!(changed.style.add_modifier.contains(Modifier::UNDERLINED));
+            assert_ne!(changed.style.bg, Some(Color::Yellow));
+            for source_grapheme in ["l", "1", ";"] {
+                assert!(
+                    rendered.iter().flat_map(|row| &row.spans).any(|span| {
+                        span.content.as_ref() == source_grapheme && span.style.fg.is_some()
+                    }),
+                    "{layout}, selected={selected}: syntax foreground missing for {source_grapheme:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_color_and_narrow_split_keep_non_color_change_and_search_evidence() {
+        let lines = [
+            line(DiffLineKind::Removed, "let timeout = 30;"),
+            line(DiffLineKind::Added, "let timeout = 60;"),
+        ];
+        let syntax = hunk_syntax(&lines, "rs");
+        for layout in ["split", "stack"] {
+            let rendered = if layout == "split" {
+                split_hunk_lines(
+                    &lines,
+                    None,
+                    48,
+                    2,
+                    true,
+                    Some((1, "60")),
+                    &syntax,
+                    SemanticTheme::no_color(),
+                )
+            } else {
+                stack_hunk_lines(
+                    &lines,
+                    None,
+                    48,
+                    2,
+                    false,
+                    true,
+                    Some((1, "60")),
+                    &syntax,
+                    SemanticTheme::no_color(),
+                )
+            };
+            let changed = rendered
+                .iter()
+                .flat_map(|row| &row.spans)
+                .find(|span| span.content.as_ref() == "6")
+                .expect("searched changed grapheme is rendered");
+            assert!(changed.style.add_modifier.contains(Modifier::UNDERLINED));
+            assert!(changed.style.add_modifier.contains(Modifier::REVERSED));
+            let replacement = rendered
+                .iter()
+                .find(|row| {
+                    row.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                        .contains("60")
+                })
+                .expect("replacement row is rendered");
+            let gutter = replacement.spans.first().expect("state gutter");
+            assert!(gutter.content.contains(crate::symbols::SEARCH_CHAR));
+            assert!(!gutter.content.contains('≈'));
+            if layout == "split" {
+                let text = replacement
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>();
+                assert!(text.contains('-'));
+                assert!(text.contains('+'));
+                assert!(UnicodeWidthStr::width(text.as_str()) <= 48);
+            }
+        }
     }
 }

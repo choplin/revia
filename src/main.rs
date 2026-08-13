@@ -6,10 +6,13 @@ mod diff;
 mod input;
 mod mode;
 mod presentation;
+mod render_loop;
 mod renderer;
 mod review;
 mod runtime;
 mod semantic;
+mod symbols;
+mod syntax;
 mod thread;
 mod ui;
 
@@ -20,15 +23,17 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use app::{ActiveMode, Effect, Model};
+use app::{Effect, Model};
 use clap::Parser;
 use cli::Args;
 use crossterm::event::{self, Event as CrosstermEvent};
 use diff::LoadedDiff;
-use input::{Key, KeyPhase};
-use ratatui::{Terminal, backend::CrosstermBackend};
-use renderer::Renderer;
+use input::KeyPhase;
+use render_loop::PhysicalRenderer;
 use runtime::Runtime;
+
+const LOGICAL_FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(8);
 
 fn main() -> Result<()> {
     let args = Args::parse();
@@ -58,76 +63,93 @@ fn main() -> Result<()> {
 
 fn run_tui(mut model: Model, runtime: Runtime) -> Result<()> {
     let mut session = crossterm_adapter::TerminalSession::start(io::stdout())?;
-    let backend = CrosstermBackend::new(session.writer_mut());
-    let mut terminal = Terminal::new(backend).context("could not initialize terminal renderer")?;
-
-    let result = run_app(&mut terminal, &mut model, &runtime);
-    drop(terminal);
+    model.global.keyboard_protocol = session.keyboard_protocol();
+    let renderer = PhysicalRenderer::start()?;
+    let app_result = run_app(&renderer, &mut model, &runtime);
+    let render_result = renderer.finish();
+    let result = app_result.and(render_result);
     session.finish(result)
 }
 
-fn run_app(
-    terminal: &mut Terminal<CrosstermBackend<&mut io::Stdout>>,
-    model: &mut Model,
-    runtime: &Runtime,
-) -> Result<()> {
-    let renderer = Renderer::default();
-    let mut last_scroll_at: Option<Instant> = None;
-    let size = terminal.size()?;
+fn run_app(renderer: &PhysicalRenderer, model: &mut Model, runtime: &Runtime) -> Result<()> {
+    let (width, height) = crossterm::terminal::size()?;
     let effects = app::update(
         model,
         app::global::Event::ViewportResized {
-            rows: size.height.saturating_sub(5),
-            columns: size.width,
+            rows: height.saturating_sub(3),
+            columns: width,
         },
     );
     dispatch_effects(model, runtime, effects);
-    while model.is_running() {
-        let semantic_view = app::view(model);
-        terminal.draw(|frame| renderer.render(frame, &semantic_view))?;
+    if !renderer.try_publish(app::view(model)) {
+        bail!("terminal renderer rejected the initial frame");
+    }
+    let mut last_logical_frame_at = Instant::now();
+    let mut dirty = false;
 
-        if !event::poll(Duration::from_millis(16))? {
+    while model.is_running() && renderer.is_running() {
+        if dirty
+            && renderer.is_ready()
+            && last_logical_frame_at.elapsed() >= LOGICAL_FRAME_INTERVAL
+            && renderer.try_publish(app::view(model))
+        {
+            dirty = false;
+            last_logical_frame_at = Instant::now();
+        }
+
+        let poll_interval = if dirty && renderer.is_ready() {
+            LOGICAL_FRAME_INTERVAL
+                .saturating_sub(last_logical_frame_at.elapsed())
+                .min(INPUT_POLL_INTERVAL)
+        } else {
+            INPUT_POLL_INTERVAL
+        };
+        if !event::poll(poll_interval)? {
             continue;
         }
-        match event::read()? {
-            CrosstermEvent::Key(key) => {
-                if crossterm_adapter::is_interrupt(key) {
-                    bail!("interrupted by Ctrl-C");
-                }
-                let input = crossterm_adapter::physical_input(key);
-                if input.phase == KeyPhase::Release {
-                    continue;
-                }
-                let is_scroll = matches!(
-                    input.key,
-                    Key::Char('j') | Key::Down | Key::Char('k') | Key::Up
-                ) && model.active_mode == ActiveMode::Review;
-                if is_scroll
-                    && input.phase == KeyPhase::Repeat
-                    && last_scroll_at.is_some_and(|last| last.elapsed() < Duration::from_millis(28))
-                {
-                    continue;
-                }
-                if is_scroll {
-                    last_scroll_at = Some(Instant::now());
-                }
-                let (_, effects) = app::handle_input(model, input);
-                dispatch_effects(model, runtime, effects);
+        let mut drained = 0;
+        loop {
+            dirty |= handle_terminal_event(model, runtime, event::read()?)?;
+            drained += 1;
+            if drained >= 64 || !model.is_running() || !event::poll(Duration::ZERO)? {
+                break;
             }
-            CrosstermEvent::Resize(width, height) => {
-                let effects = app::update(
-                    model,
-                    app::global::Event::ViewportResized {
-                        rows: height.saturating_sub(5),
-                        columns: width,
-                    },
-                );
-                dispatch_effects(model, runtime, effects);
-            }
-            _ => {}
         }
     }
     Ok(())
+}
+
+fn handle_terminal_event(
+    model: &mut Model,
+    runtime: &Runtime,
+    event: CrosstermEvent,
+) -> Result<bool> {
+    match event {
+        CrosstermEvent::Key(key) => {
+            if crossterm_adapter::is_interrupt(key) {
+                bail!("interrupted by Ctrl-C");
+            }
+            let input = crossterm_adapter::physical_input(key);
+            if input.phase == KeyPhase::Release {
+                return Ok(false);
+            }
+            let (_, effects) = app::handle_input(model, input);
+            dispatch_effects(model, runtime, effects);
+            Ok(true)
+        }
+        CrosstermEvent::Resize(width, height) => {
+            let effects = app::update(
+                model,
+                app::global::Event::ViewportResized {
+                    rows: height.saturating_sub(3),
+                    columns: width,
+                },
+            );
+            dispatch_effects(model, runtime, effects);
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
 }
 
 fn dispatch_effects(model: &mut Model, runtime: &Runtime, initial: Vec<Effect>) {

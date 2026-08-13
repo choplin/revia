@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
 use crate::{
     anchor::HunkLocation,
@@ -31,6 +31,29 @@ pub struct Model {
     search: Option<SearchState>,
     expanded_threads: BTreeSet<ThreadId>,
     filter: ReviewFilter,
+    projection_revision: u64,
+    row_map_cache: RefCell<Option<RowMapCache>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RowMapKey {
+    projection_revision: u64,
+    presentation_width: u16,
+    focus: FocusArea,
+    layout: LayoutMode,
+    wrap_lines: bool,
+    show_hunk_headers: bool,
+    filter: ReviewFilter,
+    selected_file: usize,
+    selected_hunk: usize,
+    selected_thread: usize,
+    expanded_threads: BTreeSet<ThreadId>,
+}
+
+#[derive(Debug, Clone)]
+struct RowMapCache {
+    key: RowMapKey,
+    rows: Rc<ReviewRowMap>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -78,10 +101,17 @@ struct SemanticSelection {
 #[derive(Debug)]
 struct SearchState {
     query: String,
+    entries: Vec<SearchEntry>,
     matches: Vec<DiffSearchTarget>,
     selected: Option<usize>,
     editing: bool,
     origin: SearchOrigin,
+}
+
+#[derive(Debug)]
+struct SearchEntry {
+    normalized: String,
+    target: DiffSearchTarget,
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +157,8 @@ impl Model {
             search: None,
             expanded_threads: BTreeSet::new(),
             filter: ReviewFilter::AllChanges,
+            projection_revision: 0,
+            row_map_cache: RefCell::new(None),
         }
     }
 
@@ -397,6 +429,7 @@ impl Model {
     pub fn reconcile_replaced_threads(&mut self, previous: &Threads, replacement: &Threads) {
         let selection = self.semantic_selection(previous);
         let anchor = self.viewport_anchor(previous);
+        self.invalidate_projection();
         self.reconcile_projection(replacement, selection);
         self.restore_viewport(anchor, replacement);
         self.reveal_selected_target(replacement);
@@ -476,6 +509,35 @@ impl Model {
         self.current_thread_id(threads)
     }
 
+    pub fn selected_thread_position(&self, threads: &Threads) -> Option<(usize, usize)> {
+        let selected = self.selected_threads(threads);
+        (!selected.is_empty()).then(|| {
+            (
+                self.session
+                    .cursor()
+                    .selected_thread()
+                    .min(selected.len().saturating_sub(1)),
+                selected.len(),
+            )
+        })
+    }
+
+    pub fn focus_thread(&mut self, id: ThreadId, threads: &Threads) -> bool {
+        let Some(index) = self
+            .selected_threads(threads)
+            .iter()
+            .position(|thread| thread.id == id)
+        else {
+            return false;
+        };
+        self.change_geometry(threads, |model| {
+            model.session.select_thread(index);
+            model.view.focus = FocusArea::Threads;
+        });
+        self.reveal_selected_target(threads);
+        true
+    }
+
     pub fn selected_target_label(&self, threads: &Threads) -> Option<String> {
         let location = self.projected_location(threads)?;
         let file = self
@@ -525,17 +587,52 @@ impl Model {
             .max(1)
     }
 
-    fn row_map(&self, threads: &Threads) -> ReviewRowMap {
+    fn row_map_key(&self) -> RowMapKey {
+        RowMapKey {
+            projection_revision: self.projection_revision,
+            presentation_width: review_body_width(self.viewport_columns, self.sidebar_visible),
+            focus: self.focus(),
+            layout: self.view.layout,
+            wrap_lines: self.wrap_lines,
+            show_hunk_headers: self.show_hunk_headers,
+            filter: self.filter,
+            selected_file: self.session.cursor().selected_file(),
+            selected_hunk: self.session.cursor().selected_hunk(),
+            selected_thread: self.session.cursor().selected_thread(),
+            expanded_threads: self.expanded_threads.clone(),
+        }
+    }
+
+    fn row_map(&self, threads: &Threads) -> Rc<ReviewRowMap> {
+        let key = self.row_map_key();
+        if let Some(cache) = self
+            .row_map_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| cache.key == key)
+        {
+            return Rc::clone(&cache.rows);
+        }
         let body = review_body(self, threads);
-        presentation::review_row_map(
+        let rows = Rc::new(presentation::review_row_map(
             &body,
-            review_body_width(self.viewport_columns, self.sidebar_visible),
+            key.presentation_width,
             LayoutPolicy {
                 focus: self.focus(),
                 diff_layout: self.view.layout,
                 wrap_lines: self.wrap_lines,
             },
-        )
+        ));
+        self.row_map_cache.replace(Some(RowMapCache {
+            key,
+            rows: Rc::clone(&rows),
+        }));
+        rows
+    }
+
+    fn invalidate_projection(&mut self) {
+        self.projection_revision = self.projection_revision.wrapping_add(1);
+        self.row_map_cache.get_mut().take();
     }
 
     fn viewport_anchor(&self, threads: &Threads) -> ViewportAnchor {
@@ -559,6 +656,57 @@ impl Model {
         if let Some(row) = rows.selected_target_row() {
             self.view.reveal(row, visible_rows);
             self.view.clamp(rows.total_rows(), visible_rows);
+        }
+    }
+
+    fn center_selected_hunk(&mut self, threads: &Threads) {
+        let rows = self.row_map(threads);
+        let visible_rows = self.visible_rows_for(&rows);
+        let Some(range) = rows.selected_hunk_range() else {
+            return;
+        };
+        let hunk_rows = range.end.saturating_sub(range.start);
+        let scroll = if hunk_rows > visible_rows {
+            range.start
+        } else {
+            range
+                .start
+                .saturating_sub(visible_rows.saturating_sub(hunk_rows) / 2)
+        };
+        self.view.set_scroll(scroll);
+        self.view.clamp(rows.total_rows(), visible_rows);
+    }
+
+    fn follow_scroll_target(&mut self, threads: &Threads) {
+        let rows = self.row_map(threads);
+        let visible_rows = self.visible_rows_for(&rows);
+        let top = self.view.resolved_scroll(rows.total_rows(), visible_rows);
+        // Follow what dominates the viewport rather than a hunk whose last
+        // line merely clips the top edge.
+        let focus_row = top.saturating_add(visible_rows / 2);
+        let Some(location) = rows.hunk_at(focus_row).cloned() else {
+            return;
+        };
+        let target = self
+            .session
+            .diff()
+            .document
+            .files
+            .iter()
+            .enumerate()
+            .find_map(|(file_index, file)| {
+                (file.path == location.path()).then(|| {
+                    file.hunks
+                        .iter()
+                        .position(|hunk| hunk.header == location.hunk_header())
+                        .map(|hunk_index| (file_index, hunk_index))
+                })?
+            });
+        if let Some((file, hunk)) = target
+            && (file != self.session.cursor().selected_file()
+                || hunk != self.session.cursor().selected_hunk())
+        {
+            self.session.select_hunk(file, hunk);
         }
     }
 
@@ -681,7 +829,7 @@ pub enum Event {
     ScrollRows(i16),
     ScrollViewport(i16),
     ScrollHalfViewport(i16),
-    JumpToStreamEdge { end: bool },
+    JumpToDiffEdge { end: bool },
     MoveHunk(i32),
     MoveFile(i32),
     AdjustContext(i32),
@@ -830,6 +978,9 @@ pub fn bindings(model: &Model, input: PhysicalInput) -> BindingResolution<Event>
         return BindingResolution::Consume;
     }
     match input.key {
+        Key::Esc if model.focus() == FocusArea::Threads => {
+            BindingResolution::Handle(Event::CycleFocus)
+        }
         Key::Char('q') | Key::Esc | Key::Char('?') => BindingResolution::Delegate,
         Key::Char('F') => BindingResolution::Handle(Event::CycleFilter(1)),
         Key::Char('A') => BindingResolution::Handle(Event::ShowAllChanges),
@@ -847,11 +998,9 @@ pub fn bindings(model: &Model, input: PhysicalInput) -> BindingResolution<Event>
         Key::Char('d') => BindingResolution::Handle(Event::ScrollHalfViewport(1)),
         Key::Char('u') => BindingResolution::Handle(Event::ScrollHalfViewport(-1)),
         Key::Char('g') | Key::Home => {
-            BindingResolution::Handle(Event::JumpToStreamEdge { end: false })
+            BindingResolution::Handle(Event::JumpToDiffEdge { end: false })
         }
-        Key::Char('G') | Key::End => {
-            BindingResolution::Handle(Event::JumpToStreamEdge { end: true })
-        }
+        Key::Char('G') | Key::End => BindingResolution::Handle(Event::JumpToDiffEdge { end: true }),
         Key::Char(']') => BindingResolution::Handle(Event::MoveHunk(1)),
         Key::Char('[') => BindingResolution::Handle(Event::MoveHunk(-1)),
         Key::Char('.') => BindingResolution::Handle(Event::MoveFile(1)),
@@ -926,6 +1075,7 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
             let scroll = model.view.resolved_scroll(rows.total_rows(), visible_rows);
             model.search = Some(SearchState {
                 query: String::new(),
+                entries: diff_search_entries(model.session.diff()),
                 matches: Vec::new(),
                 selected: None,
                 editing: true,
@@ -992,21 +1142,26 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
         }
         Event::PreviousFocus => move_focus(model, input.threads, &mut result, true),
         Event::ScrollRows(delta) => {
+            model.view.focus = FocusArea::Review;
             model.view.scroll_by(delta);
             let rows = model.row_map(input.threads);
             let visible_rows = model.visible_rows_for(&rows);
             model.view.clamp(rows.total_rows(), visible_rows);
+            model.follow_scroll_target(input.threads);
             status(&mut result, scroll_status(&model.view));
         }
         Event::ScrollViewport(direction) => {
+            model.view.focus = FocusArea::Review;
             let rows = model.row_map(input.threads);
             let visible_rows = model.visible_rows_for(&rows);
             let viewport = visible_rows.min(i16::MAX as usize) as i16;
             model.view.scroll_by(direction.saturating_mul(viewport));
             model.view.clamp(rows.total_rows(), visible_rows);
+            model.follow_scroll_target(input.threads);
             status(&mut result, scroll_status(&model.view));
         }
         Event::ScrollHalfViewport(direction) => {
+            model.view.focus = FocusArea::Review;
             let rows = model.row_map(input.threads);
             let visible_rows = model.visible_rows_for(&rows);
             let half_viewport = (visible_rows / 2).max(1).min(i16::MAX as usize) as i16;
@@ -1014,22 +1169,18 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
                 .view
                 .scroll_by(direction.saturating_mul(half_viewport));
             model.view.clamp(rows.total_rows(), visible_rows);
+            model.follow_scroll_target(input.threads);
             status(&mut result, scroll_status(&model.view));
         }
-        Event::JumpToStreamEdge { end } => {
+        Event::JumpToDiffEdge { end } => {
+            model.view.focus = FocusArea::Review;
             if end {
                 model.view.jump_to_end();
             } else {
                 model.view.set_scroll(0);
             }
-            status(
-                &mut result,
-                if end {
-                    "review stream end"
-                } else {
-                    "review stream start"
-                },
-            );
+            model.follow_scroll_target(input.threads);
+            status(&mut result, if end { "diff end" } else { "diff start" });
         }
         Event::MoveHunk(direction) => {
             let hunks = model.visible_hunks(input.threads);
@@ -1062,7 +1213,7 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
                 let (file, hunk) = hunks[target];
                 model.session.select_hunk(file, hunk);
                 model.view.focus = FocusArea::Review;
-                model.reveal_selected_target(input.threads);
+                model.center_selected_hunk(input.threads);
                 status(
                     &mut result,
                     format!(
@@ -1166,7 +1317,7 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
                 status(
                     &mut result,
                     reply_to.map_or_else(
-                        || "composing a new thread".into(),
+                        || "writing a new comment".into(),
                         |id| format!("replying to thread #{id}"),
                     ),
                 );
@@ -1390,7 +1541,7 @@ fn move_focus(model: &mut Model, threads: &Threads, result: &mut Update, previou
     }
     model.change_geometry(threads, |model| model.view.focus = next);
     match next {
-        FocusArea::Review => status(result, "review stream focused"),
+        FocusArea::Review => status(result, "diff focused"),
         FocusArea::Threads => {
             model.reveal_selected_target(threads);
             let id = model
@@ -1403,10 +1554,10 @@ fn move_focus(model: &mut Model, threads: &Threads, result: &mut Update, previou
 
 fn scroll_status(view: &ViewState) -> String {
     match view.scroll_from_end {
-        Some(0) => "review stream end".into(),
-        Some(1) => "review stream 1 row before end".into(),
-        Some(offset) => format!("review stream {offset} rows before end"),
-        None => format!("review stream row {}", view.scroll + 1),
+        Some(0) => "diff end".into(),
+        Some(1) => "diff 1 row before end".into(),
+        Some(offset) => format!("diff {offset} rows before end"),
+        None => format!("diff row {}", view.scroll + 1),
     }
 }
 
@@ -1438,6 +1589,7 @@ fn apply_outcome(model: &mut Model, threads: &Threads, outcome: Outcome, result:
                     })
                     .flatten();
                 model.session.replace_diff(diff);
+                model.invalidate_projection();
                 let semantic_selection = model.semantic_selection(threads);
                 model.reconcile_projection(threads, semantic_selection);
                 let restored_thread_target =
@@ -1551,7 +1703,7 @@ fn status(result: &mut Update, message: impl Into<String>) {
 
 fn success_status(success: ThreadSuccess) -> String {
     match success {
-        ThreadSuccess::Posted(id) => format!("posted thread #{id}"),
+        ThreadSuccess::Posted(id) => format!("posted comment #{id}"),
         ThreadSuccess::Replied => "posted reply".into(),
         ThreadSuccess::Closed => "thread closed".into(),
         ThreadSuccess::Reopened => "thread reopened".into(),
@@ -1568,7 +1720,17 @@ fn refresh_search(model: &mut Model, threads: &Threads, result: &mut Update) {
         .selected
         .and_then(|index| search.matches.get(index))
         .cloned();
-    search.matches = diff_search_matches(model.session.diff(), &search.query);
+    let query = search.query.to_lowercase();
+    search.matches = if query.is_empty() {
+        Vec::new()
+    } else {
+        search
+            .entries
+            .iter()
+            .filter(|entry| entry.normalized.contains(&query))
+            .map(|entry| entry.target.clone())
+            .collect()
+    };
     search.selected = if search.matches.is_empty() {
         None
     } else {
@@ -1665,37 +1827,35 @@ fn search_position_status(search: &SearchState, prefix: &str) -> String {
     }
 }
 
-fn diff_search_matches(diff: &LoadedDiff, query: &str) -> Vec<DiffSearchTarget> {
-    if query.is_empty() {
-        return Vec::new();
-    }
-    let query = query.to_lowercase();
-    let matches = |value: &str| value.to_lowercase().contains(&query);
-    let mut targets = Vec::new();
+fn diff_search_entries(diff: &LoadedDiff) -> Vec<SearchEntry> {
+    let mut entries = Vec::new();
     for file in &diff.document.files {
-        if matches(&file.path) {
-            targets.push(DiffSearchTarget::FilePath {
+        entries.push(SearchEntry {
+            normalized: file.path.to_lowercase(),
+            target: DiffSearchTarget::FilePath {
                 path: file.path.clone(),
-            });
-        }
+            },
+        });
         for hunk in &file.hunks {
             let location = HunkLocation::new(&file.path, &hunk.header);
-            if matches(&hunk.header) {
-                targets.push(DiffSearchTarget::HunkHeader {
+            entries.push(SearchEntry {
+                normalized: hunk.header.to_lowercase(),
+                target: DiffSearchTarget::HunkHeader {
                     location: location.clone(),
-                });
-            }
+                },
+            });
             for (line_index, line) in hunk.lines.iter().enumerate() {
-                if matches(&line.text) {
-                    targets.push(DiffSearchTarget::DiffLine {
+                entries.push(SearchEntry {
+                    normalized: line.text.to_lowercase(),
+                    target: DiffSearchTarget::DiffLine {
                         location: location.clone(),
                         line_index,
-                    });
-                }
+                    },
+                });
             }
         }
     }
-    targets
+    entries
 }
 
 fn restore_search_origin(model: &mut Model, origin: SearchOrigin, threads: &Threads) {
@@ -1757,7 +1917,7 @@ fn hunk_change_overlaps(anchor: HunkCoordinates, hunk: &DiffHunk) -> bool {
     let mut new_line = coordinates.new.start;
     let mut old_change = None;
     let mut new_change = None;
-    for line in &hunk.lines {
+    for line in hunk.lines.iter() {
         match line.kind {
             DiffLineKind::Removed => {
                 extend_range(&mut old_change, old_line);
@@ -1878,15 +2038,7 @@ pub fn view(model: &Model, input: ViewInput<'_>) -> View {
     });
     let mut review = review_body(model, input.threads);
     let presentation_width = review_body_width(model.viewport_columns, model.sidebar_visible);
-    let rows = presentation::review_row_map(
-        &review,
-        presentation_width,
-        LayoutPolicy {
-            focus: model.focus(),
-            diff_layout: model.view.layout,
-            wrap_lines: model.wrap_lines,
-        },
-    );
+    let rows = model.row_map(input.threads);
     let visible_rows = model.visible_rows_for(&rows);
     let scroll = model.view.resolved_scroll(rows.total_rows(), visible_rows);
     review.scroll = scroll;
@@ -1895,6 +2047,9 @@ pub fn view(model: &Model, input: ViewInput<'_>) -> View {
         total_rows: rows.total_rows(),
         visible_rows,
         sticky_context: rows.sticky_context(scroll),
+        sections: std::sync::Arc::new(
+            rows.window_sections(scroll, scroll.saturating_add(visible_rows)),
+        ),
     };
     let body = Body::Review(review);
     View {
@@ -1919,11 +2074,13 @@ fn review_body(model: &Model, threads: &Threads) -> ReviewBody {
             total_rows: 0,
             visible_rows: 0,
             sticky_context: None,
+            sections: std::sync::Arc::new(Vec::new()),
         },
         empty_state: source_is_empty
             .then(|| empty_diff_message(&model.request.target))
             .or_else(|| filtered_is_empty.then(|| empty_filter_message(model.filter))),
         search_target: model.current_search_target().cloned(),
+        search_query: model.search.as_ref().map(|search| search.query.clone()),
         files: model
             .session
             .diff()

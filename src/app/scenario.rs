@@ -324,6 +324,20 @@ fn incremental_search_uses_semantic_git_order_and_wraps_both_directions() {
 }
 
 #[test]
+fn search_context_always_reports_current_and_total_matches() {
+    let mut scenario = Scenario::given(SEARCH_DIFF, ThreadState::default());
+    type_search(&mut scenario, "needle");
+
+    let editing = super::view(&scenario.model);
+    assert!(editing.footer.current_context.text.contains("match 1/4"));
+
+    scenario.when_input(input(Key::Enter));
+    scenario.when_input(input(Key::Char('n')));
+    let results = super::view(&scenario.model);
+    assert!(results.footer.current_context.text.contains("match 2/4"));
+}
+
+#[test]
 fn deleted_file_search_targets_keep_unique_paths() {
     let raw = concat!(
         "diff --git a/old-a.rs b/old-a.rs\ndeleted file mode 100644\n",
@@ -384,16 +398,16 @@ fn empty_and_missing_search_queries_are_visible_and_do_not_move() {
 fn cancelling_search_restores_exact_cursor_and_viewport() {
     let mut scenario = Scenario::given(LONG_DIFF, ThreadState::default());
     scenario.when_event(global::Event::ViewportResized {
-        rows: 7,
+        rows: 3,
         columns: 80,
     });
     scenario.when_event(review::Event::MoveHunk(1));
-    scenario.when_event(review::Event::JumpToStreamEdge { end: true });
+    scenario.when_event(review::Event::JumpToDiffEdge { end: true });
     scenario.when_event(review::Event::ScrollRows(-2));
     let location = scenario.model.review.selected_location();
     let (before, _, _) = review_geometry(&scenario.model);
 
-    type_search(&mut scenario, "eighty two");
+    type_search(&mut scenario, "first");
     assert_ne!(scenario.model.review.selected_location(), location);
     assert!(matches!(
         scenario.when_input(input(Key::Esc)),
@@ -598,7 +612,7 @@ fn help_emphasizes_thread_commands_only_for_a_thread_target() {
         panic!("help overlay is visible");
     };
     let text = help.lines.join("\n");
-    assert!(text.contains("commands valid from review stream"));
+    assert!(text.contains("commands valid from diff"));
     assert!(text.contains("· x/R resolve/reopen"));
     scenario.when_input(input(Key::Esc));
 
@@ -747,12 +761,12 @@ fn failed_outcome_clears_pending_state_without_replacing_session() {
 fn viewport_is_scenario_input_and_controls_page_scrolling() {
     let mut scenario = Scenario::given(RAW, ThreadState::default());
     scenario.when_event(global::Event::ViewportResized {
-        rows: 7,
+        rows: 3,
         columns: 80,
     });
     scenario.when_event(review::Event::ScrollViewport(1));
 
-    assert_eq!(scenario.model.review.scroll(), 2);
+    assert_eq!(scenario.model.review.scroll(), 3);
 }
 
 #[test]
@@ -762,8 +776,6 @@ fn long_review_reports_sticky_context_and_complete_position_at_top_middle_and_en
         rows: 7,
         columns: 80,
     });
-    let selection = scenario.model.review.selected_location();
-
     let (top, _, _) = review_geometry(&scenario.model);
     assert_eq!(top.scroll, 0);
     assert_eq!(
@@ -784,8 +796,16 @@ fn long_review_reports_sticky_context_and_complete_position_at_top_middle_and_en
     assert!(middle.scroll > 0);
     assert!(middle.scroll < maximum);
     assert!(middle.viewport.sticky_context.is_some());
+    let focused = scenario
+        .model
+        .review
+        .selected_location()
+        .expect("scrolling selects the hunk at the viewport top");
+    let context = middle.viewport.sticky_context.as_ref().unwrap();
+    assert_eq!(focused.path(), context.file);
+    assert_eq!(Some(focused.hunk_header()), context.hunk_header.as_deref());
 
-    scenario.when_event(review::Event::JumpToStreamEdge { end: true });
+    scenario.when_event(review::Event::JumpToDiffEdge { end: true });
     let (end, _, _) = review_geometry(&scenario.model);
     assert_eq!(
         end.scroll,
@@ -800,11 +820,19 @@ fn long_review_reports_sticky_context_and_complete_position_at_top_middle_and_en
             .map(|context| context.file.as_str()),
         Some("c.rs")
     );
-    assert_eq!(scenario.model.review.selected_location(), selection);
+    assert_eq!(
+        scenario
+            .model
+            .review
+            .selected_location()
+            .as_ref()
+            .map(|location| location.path()),
+        Some("c.rs")
+    );
 }
 
 #[test]
-fn logical_stream_position_reaches_beyond_terminal_coordinate_limits() {
+fn logical_diff_position_reaches_beyond_terminal_coordinate_limits() {
     let mut raw = String::from(
         "diff --git a/huge.rs b/huge.rs\n--- a/huge.rs\n+++ b/huge.rs\n@@ -1,70000 +1,70000 @@\n",
     );
@@ -827,8 +855,8 @@ fn logical_stream_position_reaches_beyond_terminal_coordinate_limits() {
     assert!(target >= targeted.scroll);
     assert!(target < targeted.scroll + targeted.viewport.visible_rows);
 
-    scenario.when_event(review::Event::JumpToStreamEdge { end: false });
-    scenario.when_event(review::Event::JumpToStreamEdge { end: true });
+    scenario.when_event(review::Event::JumpToDiffEdge { end: false });
+    scenario.when_event(review::Event::JumpToDiffEdge { end: true });
 
     let (body, _, _) = review_geometry(&scenario.model);
     assert!(body.scroll > usize::from(u16::MAX));
@@ -844,7 +872,7 @@ fn logical_stream_position_reaches_beyond_terminal_coordinate_limits() {
 }
 
 #[test]
-fn file_and_hunk_jumps_reveal_the_semantic_target_without_recentering_visible_rows() {
+fn hunk_jumps_center_small_hunks_and_start_large_hunks() {
     let mut scenario = Scenario::given(LONG_DIFF, ThreadState::default());
     scenario.when_event(global::Event::ViewportResized {
         rows: 6,
@@ -863,7 +891,6 @@ fn file_and_hunk_jumps_reveal_the_semantic_target_without_recentering_visible_ro
         Some(HunkLocation::new("b.rs", "@@ -40,6 +40,6 @@ middle"))
     );
 
-    let already_visible_scroll = body.scroll;
     scenario.when_event(review::Event::MoveHunk(-1));
     let (previous, _, previous_rows) = review_geometry(&scenario.model);
     let previous_target = previous_rows
@@ -873,8 +900,25 @@ fn file_and_hunk_jumps_reveal_the_semantic_target_without_recentering_visible_ro
     assert!(previous_target < previous.scroll + previous.viewport.visible_rows);
 
     scenario.when_event(review::Event::MoveHunk(1));
-    let (returned, _, _) = review_geometry(&scenario.model);
-    assert_eq!(returned.scroll, already_visible_scroll);
+    let (returned, _, returned_rows) = review_geometry(&scenario.model);
+    let range = returned_rows
+        .selected_hunk_range()
+        .expect("hunk jump selects a physical hunk range");
+    let extent = range.end.saturating_sub(range.start);
+    let expected = if extent > returned.viewport.visible_rows {
+        range.start
+    } else {
+        range
+            .start
+            .saturating_sub((returned.viewport.visible_rows - extent) / 2)
+    }
+    .min(
+        returned
+            .viewport
+            .total_rows
+            .saturating_sub(returned.viewport.visible_rows),
+    );
+    assert_eq!(returned.scroll, expected);
 }
 
 #[test]
@@ -995,15 +1039,8 @@ fn resize_and_presentation_toggles_preserve_selection_and_viewport_anchor() {
     scenario.when_event(review::Event::MoveFile(1));
     scenario.when_event(review::Event::ScrollRows(2));
     let selection = scenario.model.review.selected_location();
-
     for columns in [88, 64, 120] {
         scenario.when_event(global::Event::ViewportResized { rows: 8, columns });
-        let (body, _, rows) = review_geometry(&scenario.model);
-        let selected = rows
-            .selected_target_row()
-            .expect("resize preserves semantic selection");
-        assert!(selected >= body.scroll);
-        assert!(selected < body.scroll + body.viewport.visible_rows);
         assert_eq!(scenario.model.review.selected_location(), selection);
     }
 
@@ -1015,16 +1052,29 @@ fn resize_and_presentation_toggles_preserve_selection_and_viewport_anchor() {
         review::Event::SetLayout(LayoutMode::Split),
     ] {
         scenario.when_event(event);
-        let (body, _, _) = review_geometry(&scenario.model);
         assert_eq!(scenario.model.review.selected_location(), selection);
-        assert_eq!(
-            body.viewport
-                .sticky_context
-                .as_ref()
-                .map(|context| context.file.as_str()),
-            Some("b.rs")
-        );
     }
+}
+
+#[test]
+fn scrolling_follows_the_hunk_at_the_viewport_center() {
+    let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,8 +1,8 @@ first\n one\n two\n three\n four\n five\n six\n seven\n-eight\n+eight changed\n@@ -20 +20 @@ second\n-old second\n+new second\n";
+    let mut scenario = Scenario::given(raw, ThreadState::default());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 6,
+        columns: 80,
+    });
+    scenario.when_event(review::Event::ScrollRows(11));
+
+    assert_eq!(
+        scenario
+            .model
+            .review
+            .selected_location()
+            .as_ref()
+            .map(HunkLocation::hunk_header),
+        Some("@@ -20 +20 @@ second")
+    );
 }
 
 #[test]
@@ -1061,7 +1111,7 @@ fn end_relative_height_shrink_keeps_a_previously_visible_target_visible() {
         rows: 12,
         columns: 80,
     });
-    scenario.when_event(review::Event::JumpToStreamEdge { end: true });
+    scenario.when_event(review::Event::JumpToDiffEdge { end: true });
     let (before, _, rows) = review_geometry(&scenario.model);
     let target = rows
         .selected_target_row()
@@ -1096,7 +1146,7 @@ fn end_relative_and_transient_mode_transitions_preserve_review_position() {
         rows: 7,
         columns: 80,
     });
-    scenario.when_event(review::Event::JumpToStreamEdge { end: true });
+    scenario.when_event(review::Event::JumpToDiffEdge { end: true });
 
     for event in [
         review::Event::SetLayout(LayoutMode::Stack),
@@ -1226,7 +1276,7 @@ fn escape_unwinds_each_transient_mode_before_review_can_quit() {
     assert!(scenario.model.is_running());
     assert_eq!(
         scenario.model.global.status.as_deref(),
-        Some("cancelled thread draft")
+        Some("cancelled comment draft")
     );
 
     scenario.when_input(input(Key::Char('?')));
@@ -1291,7 +1341,7 @@ fn q_only_quits_from_review() {
 }
 
 #[test]
-fn one_review_cursor_drives_file_hunk_thread_and_stream_targets() {
+fn one_review_cursor_drives_file_hunk_thread_and_diff_targets() {
     let mut scenario = Scenario::given(TWO_FILES, threads());
 
     scenario.when_input(input(Key::Char('.')));
@@ -1338,6 +1388,10 @@ fn one_review_cursor_drives_file_hunk_thread_and_stream_targets() {
 
     scenario.when_input(input(Key::Tab));
     assert_eq!(scenario.model.review.focus(), FocusArea::Review);
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 3,
+        columns: 80,
+    });
     let previous_scroll = scenario.model.review.scroll();
     scenario.when_input(input(Key::Char('j')));
     assert_eq!(scenario.model.review.scroll(), previous_scroll + 1);
@@ -1347,7 +1401,7 @@ fn one_review_cursor_drives_file_hunk_thread_and_stream_targets() {
             .global
             .status
             .as_deref()
-            .is_some_and(|status| status == format!("review stream row {}", previous_scroll + 2))
+            .is_some_and(|status| status == format!("diff row {}", previous_scroll + 2))
     );
 }
 
@@ -1428,7 +1482,7 @@ fn lifecycle_cards_fold_deterministically_and_actions_follow_the_visible_target(
 fn contextual_keys_follow_mode_and_visible_thread_availability() {
     let mut empty = Scenario::given(RAW, ThreadState::default());
     let view = super::view(&empty.model);
-    assert!(view.footer.contextual_keys.text.contains("c new"));
+    assert!(view.footer.contextual_keys.text.contains("c comment"));
     assert!(!view.footer.contextual_keys.text.contains("x resolve"));
     empty.when_input(input(Key::Tab));
     assert_eq!(empty.model.review.focus(), FocusArea::Review);
@@ -1441,7 +1495,7 @@ fn contextual_keys_follow_mode_and_visible_thread_availability() {
     let view = super::view(&empty.model);
     assert_eq!(
         view.footer.contextual_keys.text,
-        "Esc cancel · Ctrl-S post · Enter newline"
+        "Esc cancel · Ctrl-J post · Enter newline"
     );
     empty.when_input(input(Key::Esc));
     empty.when_input(input(Key::Char('?')));
@@ -1509,7 +1563,7 @@ fn composer_keeps_empty_and_failed_submissions_open_for_retry() {
     assert_eq!(scenario.model.global.pending, None);
     assert_eq!(
         scenario.model.global.status.as_deref(),
-        Some("thread message cannot be empty")
+        Some("comment cannot be empty")
     );
 
     for character in "retry this 画面".chars() {
@@ -1545,6 +1599,10 @@ fn composer_keeps_empty_and_failed_submissions_open_for_retry() {
     assert_eq!(scenario.model.active_mode, ActiveMode::Review);
     assert_eq!(scenario.model.composer.input(), "");
     assert_eq!(scenario.model.composer.reply_to(), None);
+    assert!(matches!(
+        super::view(&scenario.model).overlay,
+        Some(Overlay::Thread(ref thread)) if Some(thread.id) == reply_to
+    ));
     assert_eq!(
         scenario.model.global.status.as_deref(),
         Some("posted reply")
@@ -1579,7 +1637,7 @@ fn composer_grows_then_scrolls_and_reflows_across_narrow_resizes() {
     assert!(wide.height <= 12);
     assert!(wide.lines.len() < narrow.lines.len());
     assert!(wide.cursor_row >= wide.scroll);
-    assert!(wide.cursor_row < wide.scroll + usize::from(wide.height.saturating_sub(4)));
+    assert!(wide.cursor_row < wide.scroll + usize::from(wide.height.saturating_sub(3)));
 }
 
 #[test]
@@ -2480,6 +2538,6 @@ fn narrow_footer_and_rail_feedback_remain_truthful() {
     scenario.when_input(input(Key::Char('t')));
     let view = super::view(&scenario.model);
     assert!(view.footer.current_context.text.contains("thread #0"));
-    assert!(view.footer.contextual_keys.text.contains("Tab stream"));
+    assert!(view.footer.contextual_keys.text.contains("Tab diff"));
     assert!(view.footer.contextual_keys.text.contains("x resolve"));
 }

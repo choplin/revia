@@ -3,19 +3,27 @@ use std::io::{self, Write};
 use anyhow::{Context, Result};
 use crossterm::{
     cursor::Show,
-    event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+        supports_keyboard_enhancement,
+    },
 };
 
-use crate::input::{Key, KeyPhase, PhysicalInput};
+use crate::input::{Key, KeyPhase, KeyboardProtocol, PhysicalInput};
 
 pub fn physical_input(event: KeyEvent) -> PhysicalInput {
     let word_modifier = event
         .modifiers
         .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL);
     let key = match event.code {
-        KeyCode::Char('s' | 'S') if event.modifiers.contains(KeyModifiers::CONTROL) => Key::Submit,
+        KeyCode::Enter if event.modifiers.contains(KeyModifiers::CONTROL) => Key::Submit,
+        KeyCode::Char('j' | 'J') if event.modifiers.contains(KeyModifiers::CONTROL) => Key::Submit,
+        KeyCode::Char(_) if event.modifiers.contains(KeyModifiers::CONTROL) => Key::Other,
         KeyCode::Char(character) => Key::Char(character),
         KeyCode::Esc => Key::Esc,
         KeyCode::Enter => Key::Enter,
@@ -56,7 +64,10 @@ pub fn is_interrupt(event: KeyEvent) -> bool {
 
 pub trait TerminalControl {
     fn enable_raw_mode(&mut self) -> io::Result<()>;
+    fn supports_keyboard_enhancement(&mut self) -> io::Result<bool>;
     fn enter_alternate_screen(&mut self) -> io::Result<()>;
+    fn enable_keyboard_enhancement(&mut self) -> io::Result<()>;
+    fn disable_keyboard_enhancement(&mut self) -> io::Result<()>;
     fn show_cursor(&mut self) -> io::Result<()>;
     fn leave_alternate_screen(&mut self) -> io::Result<()>;
     fn disable_raw_mode(&mut self) -> io::Result<()>;
@@ -66,6 +77,7 @@ pub struct TerminalSession<C: TerminalControl> {
     control: C,
     raw_mode_enabled: bool,
     alternate_screen_enabled: bool,
+    keyboard_enhancement_enabled: bool,
 }
 
 impl<C: TerminalControl> TerminalSession<C> {
@@ -77,13 +89,35 @@ impl<C: TerminalControl> TerminalSession<C> {
             control,
             raw_mode_enabled: true,
             alternate_screen_enabled: false,
+            keyboard_enhancement_enabled: false,
         };
+        // Enhancement detection is optional. If the terminal cannot answer the
+        // query, legacy input remains a complete and usable fallback.
+        let keyboard_enhancement_supported = session
+            .control
+            .supports_keyboard_enhancement()
+            .unwrap_or(false);
         session.alternate_screen_enabled = true;
         session
             .control
             .enter_alternate_screen()
             .context("could not enter terminal alternate screen")?;
+        if keyboard_enhancement_supported {
+            session.keyboard_enhancement_enabled = true;
+            session
+                .control
+                .enable_keyboard_enhancement()
+                .context("could not enable modified-key reporting")?;
+        }
         Ok(session)
+    }
+
+    pub fn keyboard_protocol(&self) -> KeyboardProtocol {
+        if self.keyboard_enhancement_enabled {
+            KeyboardProtocol::Kitty
+        } else {
+            KeyboardProtocol::Legacy
+        }
     }
 
     pub fn finish<T>(&mut self, result: Result<T>) -> Result<T> {
@@ -104,6 +138,13 @@ impl<C: TerminalControl> TerminalSession<C> {
 
     fn restore(&mut self) -> io::Result<()> {
         let mut first_error = None;
+        if self.keyboard_enhancement_enabled {
+            restore_step(
+                &mut first_error,
+                self.control.disable_keyboard_enhancement(),
+            );
+            self.keyboard_enhancement_enabled = false;
+        }
         if self.alternate_screen_enabled {
             restore_step(&mut first_error, self.control.show_cursor());
             restore_step(&mut first_error, self.control.leave_alternate_screen());
@@ -143,19 +184,28 @@ impl<W> CrosstermControl<W> {
     }
 }
 
-impl<W: Write> CrosstermControl<W> {
-    pub fn writer_mut(&mut self) -> &mut W {
-        &mut self.writer
-    }
-}
-
 impl<W: Write> TerminalControl for CrosstermControl<W> {
     fn enable_raw_mode(&mut self) -> io::Result<()> {
         enable_raw_mode()
     }
 
+    fn supports_keyboard_enhancement(&mut self) -> io::Result<bool> {
+        supports_keyboard_enhancement()
+    }
+
     fn enter_alternate_screen(&mut self) -> io::Result<()> {
         execute!(self.writer, EnterAlternateScreen)
+    }
+
+    fn enable_keyboard_enhancement(&mut self) -> io::Result<()> {
+        execute!(
+            self.writer,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )
+    }
+
+    fn disable_keyboard_enhancement(&mut self) -> io::Result<()> {
+        execute!(self.writer, PopKeyboardEnhancementFlags)
     }
 
     fn show_cursor(&mut self) -> io::Result<()> {
@@ -175,10 +225,6 @@ impl<W: Write> TerminalSession<CrosstermControl<W>> {
     pub fn start(writer: W) -> Result<Self> {
         Self::acquire(CrosstermControl::new(writer))
     }
-
-    pub fn writer_mut(&mut self) -> &mut W {
-        self.control.writer_mut()
-    }
 }
 
 #[cfg(test)]
@@ -189,7 +235,7 @@ mod tests {
 
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use crate::input::Key;
+    use crate::input::{Key, KeyboardProtocol};
 
     use super::{TerminalControl, TerminalSession, is_interrupt, physical_input};
 
@@ -197,6 +243,7 @@ mod tests {
     struct FakeControl {
         calls: std::rc::Rc<RefCell<Vec<&'static str>>>,
         fail_at: Option<&'static str>,
+        keyboard_enhancement_supported: bool,
     }
 
     impl FakeControl {
@@ -206,6 +253,7 @@ mod tests {
                 Self {
                     calls: calls.clone(),
                     fail_at,
+                    keyboard_enhancement_supported: true,
                 },
                 calls,
             )
@@ -226,8 +274,21 @@ mod tests {
             self.step("enable_raw")
         }
 
+        fn supports_keyboard_enhancement(&mut self) -> io::Result<bool> {
+            self.step("detect_keys")?;
+            Ok(self.keyboard_enhancement_supported)
+        }
+
         fn enter_alternate_screen(&mut self) -> io::Result<()> {
             self.step("enter_alt")
+        }
+
+        fn enable_keyboard_enhancement(&mut self) -> io::Result<()> {
+            self.step("enable_keys")
+        }
+
+        fn disable_keyboard_enhancement(&mut self) -> io::Result<()> {
+            self.step("disable_keys")
         }
 
         fn show_cursor(&mut self) -> io::Result<()> {
@@ -256,6 +317,72 @@ mod tests {
             &*calls.borrow(),
             &[
                 "enable_raw",
+                "detect_keys",
+                "enter_alt",
+                "show_cursor",
+                "leave_alt",
+                "disable_raw"
+            ]
+        );
+    }
+
+    #[test]
+    fn restores_keyboard_mode_when_enhancement_initialization_fails() {
+        let (control, calls) = FakeControl::new(Some("enable_keys"));
+        let error = match TerminalSession::acquire(control) {
+            Ok(_) => panic!("initialization should fail"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("modified-key reporting"));
+        assert_eq!(
+            &*calls.borrow(),
+            &[
+                "enable_raw",
+                "detect_keys",
+                "enter_alt",
+                "enable_keys",
+                "disable_keys",
+                "show_cursor",
+                "leave_alt",
+                "disable_raw"
+            ]
+        );
+    }
+
+    #[test]
+    fn unsupported_keyboard_enhancement_keeps_legacy_input_without_push_or_pop() {
+        let (mut control, calls) = FakeControl::new(None);
+        control.keyboard_enhancement_supported = false;
+        let mut session = TerminalSession::acquire(control).unwrap();
+
+        assert_eq!(session.keyboard_protocol(), KeyboardProtocol::Legacy);
+        session.finish(Ok(())).unwrap();
+        assert_eq!(
+            &*calls.borrow(),
+            &[
+                "enable_raw",
+                "detect_keys",
+                "enter_alt",
+                "show_cursor",
+                "leave_alt",
+                "disable_raw"
+            ]
+        );
+    }
+
+    #[test]
+    fn keyboard_detection_failure_falls_back_to_legacy_input() {
+        let (control, calls) = FakeControl::new(Some("detect_keys"));
+        let mut session = TerminalSession::acquire(control).unwrap();
+
+        assert_eq!(session.keyboard_protocol(), KeyboardProtocol::Legacy);
+        session.finish(Ok(())).unwrap();
+        assert_eq!(
+            &*calls.borrow(),
+            &[
+                "enable_raw",
+                "detect_keys",
                 "enter_alt",
                 "show_cursor",
                 "leave_alt",
@@ -277,7 +404,10 @@ mod tests {
                 &*calls.borrow(),
                 &[
                     "enable_raw",
+                    "detect_keys",
                     "enter_alt",
+                    "enable_keys",
+                    "disable_keys",
                     "show_cursor",
                     "leave_alt",
                     "disable_raw"
@@ -300,7 +430,10 @@ mod tests {
             &*calls.borrow(),
             &[
                 "enable_raw",
+                "detect_keys",
                 "enter_alt",
+                "enable_keys",
+                "disable_keys",
                 "show_cursor",
                 "leave_alt",
                 "disable_raw"
@@ -321,7 +454,10 @@ mod tests {
             &*calls.borrow(),
             &[
                 "enable_raw",
+                "detect_keys",
                 "enter_alt",
+                "enable_keys",
+                "disable_keys",
                 "show_cursor",
                 "leave_alt",
                 "disable_raw"
@@ -340,7 +476,9 @@ mod tests {
     #[test]
     fn maps_terminal_editor_commands_to_semantic_keys() {
         for (code, modifiers, expected) in [
-            (KeyCode::Char('s'), KeyModifiers::CONTROL, Key::Submit),
+            (KeyCode::Enter, KeyModifiers::CONTROL, Key::Submit),
+            (KeyCode::Char('j'), KeyModifiers::CONTROL, Key::Submit),
+            (KeyCode::Char('s'), KeyModifiers::CONTROL, Key::Other),
             (KeyCode::Left, KeyModifiers::NONE, Key::Left),
             (KeyCode::Right, KeyModifiers::ALT, Key::WordRight),
             (KeyCode::Left, KeyModifiers::CONTROL, Key::WordLeft),

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     anchor::HunkLocation,
     diff::{DiffLine, HunkCoordinates},
@@ -58,6 +60,10 @@ pub struct ReviewBody {
     pub viewport: ReviewViewport,
     pub empty_state: Option<String>,
     pub search_target: Option<DiffSearchTarget>,
+    /// The active query is presentation state rather than source data.  Keeping
+    /// it here lets the renderer mark the exact matching graphemes without
+    /// changing the semantic diff rows.
+    pub search_query: Option<String>,
     pub files: Vec<ReviewFile>,
 }
 
@@ -81,6 +87,36 @@ pub struct ReviewViewport {
     pub total_rows: usize,
     pub visible_rows: usize,
     pub sticky_context: Option<StickyReviewContext>,
+    pub sections: Arc<Vec<ReviewWindowSection>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewWindowSection {
+    FileHeader {
+        file_index: usize,
+        start: usize,
+        end: usize,
+    },
+    Hunk {
+        file_index: usize,
+        hunk_index: usize,
+        start: usize,
+        end: usize,
+    },
+}
+
+impl ReviewWindowSection {
+    pub(crate) fn start(self) -> usize {
+        match self {
+            Self::FileHeader { start, .. } | Self::Hunk { start, .. } => start,
+        }
+    }
+
+    pub(crate) fn end(self) -> usize {
+        match self {
+            Self::FileHeader { end, .. } | Self::Hunk { end, .. } => end,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,7 +144,7 @@ pub struct ReviewHunk {
     pub header: Option<String>,
     pub coordinates: Option<HunkCoordinates>,
     pub selected: bool,
-    pub lines: Vec<DiffLine>,
+    pub lines: Arc<Vec<DiffLine>>,
     pub threads: Vec<ThreadCard>,
 }
 
@@ -194,6 +230,7 @@ pub struct ComposerOverlay {
     pub scroll: usize,
     pub height: u16,
     pub message: Option<String>,
+    pub instructions: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,9 +241,26 @@ pub struct HelpOverlay {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadOverlay {
+    pub id: ThreadId,
+    pub context: String,
+    pub state: ThreadState,
+    pub outdated: bool,
+    pub position: String,
+    pub messages: Vec<ThreadMessage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadMessage {
+    pub author: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Overlay {
     Composer(ComposerOverlay),
     Help(HelpOverlay),
+    Thread(ThreadOverlay),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

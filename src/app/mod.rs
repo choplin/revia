@@ -301,6 +301,12 @@ fn apply_composer(model: &mut Model, result: composer::Update) -> Vec<Effect> {
     for intent in result.intents {
         match intent {
             composer::Intent::Close => model.active_mode = ActiveMode::Review,
+            composer::Intent::FocusThread(id) => {
+                if !model.review.focus_thread(id, &model.global.threads) {
+                    model.global.status =
+                        Some(format!("posted thread #{id}, but its hunk is hidden"));
+                }
+            }
             composer::Intent::SetStatus(status) => model.global.status = Some(status),
             composer::Intent::ReplaceThreads(threads) => replace_threads(model, threads),
         }
@@ -392,7 +398,8 @@ pub fn view(model: &Model) -> semantic::View {
     let (file_rail, body, overlay, layout) = match model.active_mode {
         ActiveMode::Review => {
             let review = review_view(model);
-            (review.file_rail, review.body, None, review.layout)
+            let overlay = thread_overlay(model);
+            (review.file_rail, review.body, overlay, review.layout)
         }
         ActiveMode::Composer => {
             let review = review_view(model);
@@ -405,6 +412,7 @@ pub fn view(model: &Model) -> semantic::View {
                         .review
                         .selected_target_label(&model.global.threads)
                         .as_deref(),
+                    model.global.keyboard_protocol,
                 )),
                 review.layout,
             )
@@ -438,7 +446,7 @@ pub fn view(model: &Model) -> semantic::View {
                 || {
                     review_target
                         .as_ref()
-                        .map(|target| format!("new thread at {target}"))
+                        .map(|target| format!("comment on {target}"))
                 },
                 |id| Some(format!("reply to thread #{id}")),
             ),
@@ -461,9 +469,19 @@ pub fn view(model: &Model) -> semantic::View {
             Some(search) if search.editing => (
                 semantic::SurfaceContext::SearchInput,
                 Some(if search.query.is_empty() {
-                    "empty query".into()
+                    "empty query • 0 matches".into()
                 } else {
-                    format!("query “{}”", search.query)
+                    search.selected.map_or_else(
+                        || format!("query “{}” • 0 matches", search.query),
+                        |selected| {
+                            format!(
+                                "query “{}” • match {}/{}",
+                                search.query,
+                                selected + 1,
+                                search.match_count
+                            )
+                        },
+                    )
                 }),
                 false,
             ),
@@ -473,7 +491,7 @@ pub fn view(model: &Model) -> semantic::View {
                     || format!("“{}” • no matches", search.query),
                     |selected| {
                         format!(
-                            "“{}” • {}/{}",
+                            "“{}” • match {}/{}",
                             search.query,
                             selected + 1,
                             search.match_count
@@ -538,4 +556,40 @@ fn review_view(model: &Model) -> review::View {
             threads: &model.global.threads,
         },
     )
+}
+
+fn thread_overlay(model: &Model) -> Option<semantic::Overlay> {
+    if model.review.focus() != crate::ui::FocusArea::Threads {
+        return None;
+    }
+    let id = model.review.selected_thread_id(&model.global.threads)?;
+    let thread = model.global.threads.thread(id)?;
+    let (index, count) = model
+        .review
+        .selected_thread_position(&model.global.threads)?;
+    let state = if thread.needs_attention {
+        semantic::ThreadState::NeedsAttention
+    } else if matches!(thread.resolution, Resolution::Open) {
+        semantic::ThreadState::Open
+    } else {
+        semantic::ThreadState::Resolved
+    };
+    Some(semantic::Overlay::Thread(semantic::ThreadOverlay {
+        id,
+        context: model
+            .review
+            .selected_target_label(&model.global.threads)
+            .unwrap_or_else(|| "Selected hunk".into()),
+        state,
+        outdated: thread.outdated,
+        position: format!("{}/{}", index + 1, count),
+        messages: thread
+            .messages
+            .iter()
+            .map(|message| semantic::ThreadMessage {
+                author: message.author.id.clone(),
+                body: message.body.clone(),
+            })
+            .collect(),
+    }))
 }

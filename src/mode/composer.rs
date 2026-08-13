@@ -4,7 +4,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     anchor::HunkLocation,
     diff::DiffTarget,
-    input::{BindingResolution, Key, PhysicalInput},
+    input::{BindingResolution, Key, KeyboardProtocol, PhysicalInput},
     semantic::{ComposerOverlay, Overlay},
     thread::{ThreadChange, ThreadId, ThreadOperation, ThreadState, ThreadSuccess},
 };
@@ -165,6 +165,7 @@ pub struct UpdateInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Intent {
     Close,
+    FocusThread(ThreadId),
     SetStatus(String),
     ReplaceThreads(ThreadState),
 }
@@ -231,13 +232,24 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput) -> Update {
             model.submitting = false;
             match outcome {
                 Ok(change) => {
+                    let focus_thread = match change.success {
+                        ThreadSuccess::Posted(id) => Some(id),
+                        ThreadSuccess::Replied => model.reply_to,
+                        ThreadSuccess::Closed
+                        | ThreadSuccess::Reopened
+                        | ThreadSuccess::AttentionToggled
+                        | ThreadSuccess::OutdatedToggled => None,
+                    };
                     model.reset();
                     status(&mut result, success_status(change.success));
                     result.intents.push(Intent::ReplaceThreads(change.state));
+                    if let Some(id) = focus_thread {
+                        result.intents.push(Intent::FocusThread(id));
+                    }
                     result.intents.push(Intent::Close);
                 }
                 Err(error) => {
-                    model.validation = Some("Post failed. Draft preserved; Ctrl-S retries.".into());
+                    model.validation = Some("Post failed. Draft preserved; Ctrl-J retries.".into());
                     status(&mut result, error);
                 }
             }
@@ -251,12 +263,12 @@ fn cancel(model: &mut Model, result: &mut Update) {
         model.validation = Some("Posting is in progress; wait for the result.".into());
     } else if model.input.is_empty() || model.cancel_armed {
         model.reset();
-        status(result, "cancelled thread draft");
+        status(result, "cancelled comment draft");
         result.intents.push(Intent::Close);
     } else {
         model.cancel_armed = true;
         model.validation = Some("Unsaved draft. Press Esc again to discard it.".into());
-        status(result, "press Esc again to discard the thread draft");
+        status(result, "press Esc again to discard the comment draft");
     }
 }
 
@@ -269,12 +281,12 @@ fn submit(model: &mut Model, input: UpdateInput, result: &mut Update) {
     }
     if model.input.trim().is_empty() {
         model.validation = Some("Message cannot be empty.".into());
-        status(result, "thread message cannot be empty");
+        status(result, "comment cannot be empty");
         return;
     }
     let Some(location) = input.selected_location else {
         model.validation = Some("The target hunk is unavailable. Draft preserved.".into());
-        status(result, "select a hunk before posting a thread");
+        status(result, "select a hunk before posting a comment");
         return;
     };
     model.submitting = true;
@@ -477,7 +489,7 @@ fn status(result: &mut Update, message: impl Into<String>) {
 
 fn success_status(success: ThreadSuccess) -> String {
     match success {
-        ThreadSuccess::Posted(id) => format!("posted thread #{id}"),
+        ThreadSuccess::Posted(id) => format!("posted comment #{id}"),
         ThreadSuccess::Replied => "posted reply".into(),
         ThreadSuccess::Closed => "thread closed".into(),
         ThreadSuccess::Reopened => "thread reopened".into(),
@@ -486,20 +498,25 @@ fn success_status(success: ThreadSuccess) -> String {
     }
 }
 
-pub fn view(model: &Model, target: Option<&str>) -> Overlay {
+pub fn view(model: &Model, target: Option<&str>, keyboard_protocol: KeyboardProtocol) -> Overlay {
     let layout = visual_layout(&model.input, model.cursor, model.editor_width());
     let visible_rows = layout.lines.len().min(model.editor_row_capacity()).max(1);
     Overlay::Composer(ComposerOverlay {
         context: model.reply_to.map_or_else(
-            || target.map_or_else(|| "New thread".into(), |target| format!("New • {target}")),
+            || target.map_or_else(|| "Comment".into(), |target| format!("Comment • {target}")),
             |id| format!("Reply • thread #{id}"),
         ),
         lines: layout.lines,
         cursor_row: layout.cursor_row,
         cursor_column: layout.cursor_column,
         scroll: model.scroll,
-        height: u16::try_from(visible_rows.saturating_add(4)).unwrap_or(u16::MAX),
+        height: u16::try_from(visible_rows.saturating_add(3)).unwrap_or(u16::MAX),
         message: model.validation.clone(),
+        instructions: if keyboard_protocol.supports_ctrl_enter() {
+            "Ctrl-Enter/Ctrl-J post · Enter newline · Esc cancel".into()
+        } else {
+            "Ctrl-J post · Enter newline · Esc cancel".into()
+        },
     })
 }
 
@@ -507,10 +524,10 @@ pub fn view(model: &Model, target: Option<&str>) -> Overlay {
 mod tests {
     use crate::{
         diff::DiffTarget,
-        input::{BindingResolution, Key, KeyPhase, PhysicalInput},
+        input::{BindingResolution, Key, KeyPhase, KeyboardProtocol, PhysicalInput},
     };
 
-    use super::{Event, Model, UpdateInput};
+    use super::{Event, Model, Overlay, UpdateInput, view};
 
     fn input(key: Key) -> PhysicalInput {
         PhysicalInput {
@@ -610,11 +627,32 @@ mod tests {
         for character in "abc画面\nsecond\nthird\nfourth".chars() {
             update(&mut model, Event::InsertCharacter(character));
         }
-        let super::Overlay::Composer(overlay) = super::view(&model, None) else {
+        let super::Overlay::Composer(overlay) = super::view(&model, None, KeyboardProtocol::Legacy)
+        else {
             panic!("composer overlay")
         };
         assert!(overlay.lines.len() > 2);
         assert!(overlay.cursor_row >= overlay.scroll);
         assert!(overlay.cursor_row < overlay.scroll + 2);
+    }
+
+    #[test]
+    fn instructions_only_advertise_ctrl_enter_for_enhanced_input() {
+        let model = Model::default();
+        let Overlay::Composer(legacy) = view(&model, None, KeyboardProtocol::Legacy) else {
+            panic!("composer overlay")
+        };
+        let Overlay::Composer(kitty) = view(&model, None, KeyboardProtocol::Kitty) else {
+            panic!("composer overlay")
+        };
+
+        assert_eq!(
+            legacy.instructions,
+            "Ctrl-J post · Enter newline · Esc cancel"
+        );
+        assert_eq!(
+            kitty.instructions,
+            "Ctrl-Enter/Ctrl-J post · Enter newline · Esc cancel"
+        );
     }
 }

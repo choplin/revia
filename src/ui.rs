@@ -150,7 +150,7 @@ pub(crate) fn review_body_width(columns: u16, sidebar_visible: bool) -> u16 {
     } else {
         columns
     };
-    body_width.saturating_sub(2)
+    body_width.saturating_sub(1)
 }
 
 pub(crate) fn truncate_start(value: &str, max_width: usize) -> String {

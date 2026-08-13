@@ -29,6 +29,19 @@ pub enum KeyPhase {
     Release,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum KeyboardProtocol {
+    #[default]
+    Legacy,
+    Kitty,
+}
+
+impl KeyboardProtocol {
+    pub const fn supports_ctrl_enter(self) -> bool {
+        matches!(self, Self::Kitty)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhysicalInput {
     pub key: Key,

@@ -169,19 +169,19 @@ pub fn view(model: &Model) -> Overlay {
 
 fn help_text(context: Context) -> String {
     let context_label = match context {
-        Context::Review => "review stream",
+        Context::Review => "diff",
         Context::Threads => "inline thread",
         Context::SearchResults => "search results",
     };
     let search = marker(context == Context::SearchResults);
     let thread = marker(context == Context::Threads);
-    let escape = if context == Context::SearchResults {
-        "Esc cancel search"
+    let search_exit = if context == Context::SearchResults {
+        " · Esc cancels search"
     } else {
-        "Esc quit review"
+        ""
     };
     format!(
-        "◆ commands valid from {context_label}\n\nNavigation\n◆ j/k, ↑/↓ rows   f/Space, b pages   d/u half page\n◆ g/G edges        [/] hunk          ,/. file\n◆ / full-diff search {search} n/N next/previous match (wrap)\n\nView\n◆ F cycle filter   A All changes     1/2/0 layout\n◆ s file rail      m headers · w wrap\n◆ =/- context      r reload (filter retained)\n\nReview actions\n◆ t/T thread       Tab stream/thread c/C compose/new\n{thread} x/R resolve/reopen   {thread} a/o flags   {thread} e resolved fold\n◆ {{/}} attention (Git order, wrap)   v rollup\n\nGlobal / exit\n◆ ? help           q quit review     {escape}\n  In help: Esc/? closes and returns to {context_label}"
+        "◆ commands valid from {context_label}\n\nNavigation\n◆ j/k, ↑/↓ rows   f/Space, b pages   d/u half page\n◆ g/G edges        [/] hunk          ,/. file\n◆ / full-diff search {search} n/N next/previous match (wrap)\n\nView\n◆ F cycle filter   A All changes     1/2/0 layout\n◆ s file rail      m headers · w wrap\n◆ =/- context      r reload (filter retained)\n\nReview actions\n◆ t/T thread       Tab diff/thread   c comment · C new comment\n{thread} x/R resolve/reopen   {thread} a/o flags   {thread} e resolved fold\n◆ {{/}} attention (Git order, wrap)   v rollup\n\nGlobal / exit\n◆ ? help           q quit review{search_exit}\n  In help: Esc/? closes and returns to {context_label}"
     )
 }
 
@@ -219,7 +219,7 @@ mod tests {
     use crate::input::{Key, KeyPhase, PhysicalInput};
     use crate::semantic::Overlay;
 
-    use super::{Context, Event, Model, bindings, update, view};
+    use super::{Context, Event, Model, bindings, help_text, update, view};
 
     fn input(key: Key) -> PhysicalInput {
         PhysicalInput {
@@ -293,6 +293,15 @@ mod tests {
             bindings(repeated),
             crate::input::BindingResolution::Consume
         ));
+    }
+
+    #[test]
+    fn review_help_names_the_current_comment_view_and_wrap_commands() {
+        let help = help_text(Context::Review);
+        assert!(help.contains("c comment · C new comment"));
+        assert!(help.contains("1/2/0 layout"));
+        assert!(help.contains("w wrap"));
+        assert!(!help.contains("Esc quit review"));
     }
 
     #[test]

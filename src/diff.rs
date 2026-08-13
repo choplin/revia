@@ -1,4 +1,4 @@
-use std::{path::Path, process::Command};
+use std::{path::Path, process::Command, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 
@@ -105,10 +105,10 @@ impl DiffDocument {
                 file.hunks.push(DiffHunk {
                     header: line.to_owned(),
                     coordinates: HunkCoordinates::parse(line),
-                    lines: Vec::new(),
+                    lines: Arc::new(Vec::new()),
                 });
             } else if let Some(hunk) = file.hunks.last_mut() {
-                hunk.lines.push(DiffLine::from_raw(line));
+                Arc::make_mut(&mut hunk.lines).push(DiffLine::from_raw(line));
             } else {
                 file.absorb_metadata(line);
             }
@@ -189,7 +189,7 @@ fn normalize_patch_path(path: &str) -> String {
 pub struct DiffHunk {
     pub header: String,
     pub coordinates: Option<HunkCoordinates>,
-    pub lines: Vec<DiffLine>,
+    pub lines: Arc<Vec<DiffLine>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

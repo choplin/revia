@@ -1,32 +1,30 @@
+use std::{cell::RefCell, collections::VecDeque, sync::Arc};
+
+use crate::{
+    presentation,
+    semantic::{
+        Body, DiffSearchTarget, FileAttention, Overlay, ReviewBody, ReviewWindowSection,
+        RollupBody, StickyReviewContext, ThreadState, Tone, View,
+    },
+    symbols,
+    syntax::SyntaxHighlighter,
+    ui::{LayoutMode, ShellSize, truncate_end, truncate_start},
+};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Text},
+    text::{Line, Span, Text},
     widgets::{
         Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
         ScrollbarOrientation, ScrollbarState, Wrap,
     },
 };
-use syntect::{
-    easy::HighlightLines,
-    highlighting::{Theme, ThemeSet},
-    parsing::SyntaxSet,
-};
-
-use crate::{
-    diff::DiffLineKind,
-    presentation,
-    semantic::{
-        Body, DiffSearchTarget, FileAttention, Overlay, ReviewBody, RollupBody,
-        StickyReviewContext, ThreadState, Tone, View,
-    },
-    ui::{FocusArea, LayoutMode, ShellSize, truncate_end, truncate_start},
-};
 use unicode_width::UnicodeWidthStr;
 
 const MINIMUM_WIDTH: u16 = 48;
 const MINIMUM_HEIGHT: u16 = 8;
+const HUNK_TEXT_CACHE_CAPACITY: usize = 96;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SemanticTheme {
@@ -35,7 +33,8 @@ pub(crate) struct SemanticTheme {
 
 fn sticky_context_text(context: &StickyReviewContext, width: u16) -> String {
     let file = format!(
-        "▣ {}/{} {}",
+        "{} {}/{} {}",
+        symbols::FILE,
         context.file_index + 1,
         context.file_count,
         context.file
@@ -52,6 +51,7 @@ fn sticky_context_text(context: &StickyReviewContext, width: u16) -> String {
     truncate_end(&value, usize::from(width))
 }
 
+#[cfg(test)]
 fn logical_review_window(body: Text<'static>, top: usize, visible_rows: usize) -> Text<'static> {
     Text::from(
         body.lines
@@ -68,7 +68,7 @@ impl SemanticTheme {
         Self::from_no_color(no_color.as_deref())
     }
 
-    fn from_no_color(no_color: Option<&std::ffi::OsStr>) -> Self {
+    pub(crate) fn from_no_color(no_color: Option<&std::ffi::OsStr>) -> Self {
         Self {
             colors_enabled: no_color.is_none_or(std::ffi::OsStr::is_empty),
         }
@@ -102,6 +102,34 @@ impl SemanticTheme {
     pub(crate) fn selection(self) -> Style {
         self.style(Tone::FocusSelection)
             .add_modifier(Modifier::REVERSED)
+    }
+
+    pub(crate) fn border(self, tone: Tone) -> Style {
+        self.style(tone)
+            .remove_modifier(Modifier::BOLD | Modifier::DIM | Modifier::REVERSED)
+    }
+
+    fn modal_backdrop(self) -> Style {
+        let style = Style::default().add_modifier(Modifier::DIM);
+        if self.colors_enabled {
+            style.fg(Color::DarkGray)
+        } else {
+            style
+        }
+    }
+
+    /// Row kind owns a quiet background only.  Source-token foregrounds and
+    /// modifiers are applied later by the presentation layer.
+    pub(crate) fn diff_row_style(self, tone: Tone) -> Style {
+        if !self.colors_enabled {
+            return Style::default();
+        }
+        let background = match tone {
+            Tone::ChangeAdded => Color::Rgb(20, 46, 32),
+            Tone::ChangeRemoved => Color::Rgb(54, 27, 32),
+            Tone::FocusSelection | Tone::Attention | Tone::MutedResolved => Color::Reset,
+        };
+        Style::default().bg(background)
     }
 
     pub(crate) fn colors_enabled(self) -> bool {
@@ -152,24 +180,63 @@ impl ShellAreas {
 }
 
 pub struct Renderer {
-    syntax_set: SyntaxSet,
-    theme: Theme,
+    syntax: SyntaxHighlighter,
     semantic_theme: SemanticTheme,
+    hunk_text_cache: RefCell<VecDeque<HunkTextCache>>,
+}
+
+#[derive(Debug, Clone)]
+struct HunkTextKey {
+    available_width: u16,
+    anchor: crate::anchor::HunkLocation,
+    header: Option<String>,
+    coordinates: Option<crate::diff::HunkCoordinates>,
+    lines: Arc<Vec<crate::diff::DiffLine>>,
+    threads: Vec<crate::semantic::ThreadCard>,
+    number_width: usize,
+    layout: LayoutMode,
+    wrap_lines: bool,
+    header_match: bool,
+    search: Option<(usize, String)>,
+}
+
+impl HunkTextKey {
+    fn matches(&self, hunk: &crate::semantic::ReviewHunk, lookup: HunkTextLookup<'_>) -> bool {
+        self.available_width == lookup.available_width
+            && self.anchor == hunk.anchor
+            && self.header == hunk.header
+            && self.coordinates == hunk.coordinates
+            && Arc::ptr_eq(&self.lines, &hunk.lines)
+            && self.threads == hunk.threads
+            && self.number_width == lookup.number_width
+            && self.layout == lookup.layout
+            && self.wrap_lines == lookup.wrap_lines
+            && self.header_match == lookup.header_match
+            && &self.search == lookup.search
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HunkTextLookup<'a> {
+    available_width: u16,
+    number_width: usize,
+    layout: LayoutMode,
+    wrap_lines: bool,
+    header_match: bool,
+    search: &'a Option<(usize, String)>,
+}
+
+struct HunkTextCache {
+    key: HunkTextKey,
+    lines: Vec<Line<'static>>,
 }
 
 impl Default for Renderer {
     fn default() -> Self {
-        let themes = ThemeSet::load_defaults();
-        let theme = themes
-            .themes
-            .get("base16-ocean.dark")
-            .or_else(|| themes.themes.values().next())
-            .expect("syntect includes a default theme")
-            .clone();
         Self {
-            syntax_set: SyntaxSet::load_defaults_newlines(),
-            theme,
+            syntax: SyntaxHighlighter::default(),
             semantic_theme: SemanticTheme::from_environment(),
+            hunk_text_cache: RefCell::new(VecDeque::new()),
         }
     }
 }
@@ -196,13 +263,13 @@ impl Renderer {
                 .enumerate()
                 .map(|(index, file)| {
                     let marker = match file.attention {
-                        FileAttention::NeedsAttention => "!",
-                        FileAttention::Open => "•",
-                        FileAttention::Resolved => "✓",
+                        FileAttention::NeedsAttention => symbols::NEEDS_ATTENTION,
+                        FileAttention::Open => symbols::OPEN,
+                        FileAttention::Resolved => symbols::RESOLVED,
                         FileAttention::None => " ",
                     };
                     let selection = if rail.selected == Some(index) {
-                        "›"
+                        symbols::NEXT
                     } else {
                         " "
                     };
@@ -241,16 +308,21 @@ impl Renderer {
             );
         }
 
-        let body_inner_width = areas.review_body.width.saturating_sub(2);
+        let review_content = Rect::new(
+            areas.review_body.x,
+            areas.review_body.y,
+            areas.review_body.width.saturating_sub(1),
+            areas.review_body.height,
+        );
+        let body_inner_width = match view.body {
+            Body::Review(_) => review_content.width,
+            Body::Rollup(_) => areas.review_body.width.saturating_sub(2),
+        };
         let (body, scroll) = match &view.body {
-            Body::Review(review) => {
-                let body = self.review_text(review, review.viewport.presentation_width, view);
-                debug_assert_eq!(body.height(), review.viewport.total_rows);
-                (
-                    logical_review_window(body, review.scroll, review.viewport.visible_rows),
-                    0,
-                )
-            }
+            Body::Review(review) => (
+                self.review_window(review, review.viewport.presentation_width, view),
+                0,
+            ),
             Body::Rollup(rollup) => {
                 let body = rollup_text(rollup, body_inner_width, self.semantic_theme);
                 let viewport_height = usize::from(areas.review_body.height.saturating_sub(2));
@@ -261,32 +333,26 @@ impl Renderer {
                 (body, rollup.scroll.min(max_scroll))
             }
         };
-        let body_is_focused = view.overlay.is_none();
-        let body_title = match &view.body {
-            Body::Review(_) => "Review stream",
-            Body::Rollup(_) => "Thread rollup",
+        let inner = match view.body {
+            Body::Review(_) => review_content,
+            Body::Rollup(_) => {
+                frame.render_widget(
+                    region_block(
+                        "Thread rollup",
+                        view.overlay.is_none(),
+                        None,
+                        self.semantic_theme,
+                    ),
+                    areas.review_body,
+                );
+                Rect::new(
+                    areas.review_body.x.saturating_add(1),
+                    areas.review_body.y.saturating_add(1),
+                    areas.review_body.width.saturating_sub(2),
+                    areas.review_body.height.saturating_sub(2),
+                )
+            }
         };
-        let body_focus_label = match (&view.body, view.layout.focus, body_is_focused) {
-            (_, _, false) => None,
-            (Body::Rollup(_), _, true) => Some("ROLLUP FOCUS"),
-            (Body::Review(_), FocusArea::Threads, true) => Some("THREAD TARGET"),
-            (Body::Review(_), FocusArea::Review, true) => Some("STREAM FOCUS"),
-        };
-        frame.render_widget(
-            region_block(
-                body_title,
-                body_is_focused,
-                body_focus_label,
-                self.semantic_theme,
-            ),
-            areas.review_body,
-        );
-        let inner = Rect::new(
-            areas.review_body.x.saturating_add(1),
-            areas.review_body.y.saturating_add(1),
-            areas.review_body.width.saturating_sub(2),
-            areas.review_body.height.saturating_sub(2),
-        );
         let content = if let Body::Review(review) = &view.body {
             if let Some(context) = &review.viewport.sticky_context {
                 let [sticky, content] =
@@ -318,14 +384,16 @@ impl Renderer {
             frame.render_stateful_widget(
                 Scrollbar::new(ScrollbarOrientation::VerticalRight)
                     .begin_symbol(None)
-                    .end_symbol(None),
+                    .end_symbol(None)
+                    .track_symbol(None)
+                    .thumb_symbol(symbols::SCROLL_THUMB),
                 areas.review_body,
                 &mut state,
             );
         }
 
         frame.render_widget(
-            Paragraph::new(format!("◆ {}", view.footer.current_context.text))
+            Paragraph::new(view.footer.current_context.text.as_str())
                 .style(self.semantic_theme.style(Tone::FocusSelection)),
             areas.current_context,
         );
@@ -335,26 +403,105 @@ impl Renderer {
             areas.contextual_keys,
         );
         if let Some(overlay) = &view.overlay {
+            if matches!(overlay, Overlay::Composer(_)) {
+                let area = frame.area();
+                frame
+                    .buffer_mut()
+                    .set_style(area, self.semantic_theme.modal_backdrop());
+            }
             self.render_overlay(frame, overlay);
         }
     }
 
-    fn review_text(&self, review: &ReviewBody, available_width: u16, view: &View) -> Text<'static> {
+    fn review_window(
+        &self,
+        review: &ReviewBody,
+        available_width: u16,
+        view: &View,
+    ) -> Text<'static> {
         if let Some(message) = &review.empty_state {
-            return Text::raw(message.clone());
-        }
-        let mut lines = Vec::new();
-        for file in &review.files {
-            lines.push(Line::raw(""));
-            let path_width = usize::from(available_width).saturating_sub(6);
-            let path_match = matches!(
-                review.search_target.as_ref(),
-                Some(DiffSearchTarget::FilePath { path }) if path == &file.path
+            return Text::from(
+                message
+                    .lines()
+                    .skip(review.scroll)
+                    .take(review.viewport.visible_rows)
+                    .map(|line| Line::raw(line.to_owned()))
+                    .collect::<Vec<_>>(),
             );
-            lines.push(Line::styled(
+        }
+
+        let window_start = review.scroll;
+        let window_end = window_start.saturating_add(review.viewport.visible_rows);
+        let mut lines = Vec::new();
+        for section in review.viewport.sections.iter().copied() {
+            let mut section_lines = match section {
+                ReviewWindowSection::FileHeader { file_index, .. } => {
+                    self.file_header_lines(&review.files[file_index], review, available_width)
+                }
+                ReviewWindowSection::Hunk {
+                    file_index,
+                    hunk_index,
+                    ..
+                } => {
+                    let file = &review.files[file_index];
+                    let hunk = &file.hunks[hunk_index];
+                    let number_width = presentation::line_number_width(
+                        file.hunks
+                            .iter()
+                            .map(|hunk| (hunk.lines.as_slice(), hunk.coordinates)),
+                    );
+                    let mut rendered = self.cached_hunk_lines(
+                        file,
+                        hunk,
+                        review,
+                        available_width,
+                        number_width,
+                        view,
+                    );
+                    if hunk.selected {
+                        highlight_hunk_box(
+                            &mut rendered,
+                            section.start(),
+                            section.start(),
+                            section.end(),
+                            self.semantic_theme.border(Tone::FocusSelection),
+                        );
+                    }
+                    rendered
+                }
+            };
+            let local_start = window_start.saturating_sub(section.start());
+            let local_end = section_lines
+                .len()
+                .min(window_end.saturating_sub(section.start()));
+            if local_start < local_end {
+                lines.extend(section_lines.drain(local_start..local_end));
+            }
+        }
+        Text::from(lines)
+    }
+
+    fn file_header_lines(
+        &self,
+        file: &crate::semantic::ReviewFile,
+        review: &ReviewBody,
+        available_width: u16,
+    ) -> Vec<Line<'static>> {
+        let path_width = usize::from(available_width).saturating_sub(6);
+        let path_match = matches!(
+            review.search_target.as_ref(),
+            Some(DiffSearchTarget::FilePath { path }) if path == &file.path
+        );
+        let mut lines = vec![
+            Line::raw(""),
+            Line::styled(
                 format!(
-                    "{}─ {} ──",
-                    if path_match { "⌕" } else { "─" },
+                    "{} {}",
+                    if path_match {
+                        symbols::SEARCH
+                    } else {
+                        symbols::FILE
+                    },
                     truncate_start(&file.path, path_width)
                 ),
                 if path_match {
@@ -362,134 +509,168 @@ impl Renderer {
                 } else {
                     self.semantic_theme.style(Tone::Attention)
                 },
-            ));
-            lines.extend(file.metadata.iter().map(|line| {
-                Line::styled(
-                    truncate_end(&format!("· {line}"), usize::from(available_width)),
-                    self.semantic_theme.style(Tone::MutedResolved),
-                )
-            }));
-            let syntax = file
-                .extension
-                .as_deref()
-                .and_then(|extension| self.syntax_set.find_syntax_by_extension(extension))
-                .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
-            let mut highlighter = HighlightLines::new(syntax, &self.theme);
-            let number_width = presentation::line_number_width(
-                file.hunks
-                    .iter()
-                    .map(|hunk| (hunk.lines.as_slice(), hunk.coordinates)),
-            );
-            for hunk in &file.hunks {
-                if let Some(header) = &hunk.header {
-                    let header_match = matches!(
-                        review.search_target.as_ref(),
-                        Some(DiffSearchTarget::HunkHeader { location }) if location == &hunk.anchor
-                    );
-                    let style = if header_match || hunk.selected {
-                        self.semantic_theme.selection()
-                    } else {
-                        self.semantic_theme.style(Tone::FocusSelection)
-                    };
-                    lines.push(Line::styled(
-                        truncate_end(
-                            &format!(
-                                "{} {header}",
-                                if header_match {
-                                    "⌕"
-                                } else if hunk.selected {
-                                    "▶"
-                                } else {
-                                    " "
-                                }
-                            ),
-                            usize::from(available_width),
-                        ),
-                        style,
-                    ));
-                }
-                let mut hunk_lines =
-                    if view.layout.diff_layout.resolved(available_width) == LayoutMode::Split {
-                        presentation::split_hunk_lines(
-                            &hunk.lines,
-                            hunk.coordinates,
-                            available_width,
-                            number_width,
-                            hunk.selected,
-                            self.semantic_theme,
-                        )
-                    } else {
-                        presentation::stack_hunk_lines(
-                            &hunk.lines,
-                            hunk.coordinates,
-                            available_width,
-                            number_width,
-                            view.layout.wrap_lines,
-                            hunk.selected,
-                            &mut highlighter,
-                            &self.syntax_set,
-                            self.semantic_theme,
-                        )
-                    };
-                let search_row = match review.search_target.as_ref() {
-                    Some(DiffSearchTarget::HunkHeader { location })
-                        if location == &hunk.anchor && hunk.header.is_none() =>
-                    {
-                        Some((0, "⌕ "))
-                    }
-                    Some(DiffSearchTarget::DiffLine {
-                        location,
-                        line_index,
-                    }) if location == &hunk.anchor => {
-                        let marker = hunk
-                            .lines
-                            .get(*line_index)
-                            .map(|line| search_marker(line.kind))
-                            .unwrap_or("⌕ ");
-                        presentation::search_line_row(
-                            &hunk.lines,
-                            hunk.coordinates,
-                            *line_index,
-                            available_width,
-                            number_width,
-                            view.layout,
-                        )
-                        .map(|row| (row, marker))
-                    }
-                    _ => None,
-                };
-                if let Some((row, search_marker)) = search_row
-                    && let Some(line) = hunk_lines.get_mut(row)
-                    && let Some(marker) = line.spans.first_mut()
-                {
-                    marker.content = search_marker.into();
-                    marker.style = self.semantic_theme.style(Tone::Attention);
-                }
-                lines.extend(hunk_lines);
-                for (thread_index, thread) in hunk.threads.iter().enumerate() {
-                    let style = match (thread.active, thread.state) {
-                        (true, _) => self.semantic_theme.selection(),
-                        (false, ThreadState::NeedsAttention) => {
-                            self.semantic_theme.style(Tone::Attention)
-                        }
-                        (false, ThreadState::Resolved) => {
-                            self.semantic_theme.style(Tone::MutedResolved)
-                        }
-                        (false, ThreadState::Open) => Style::default(),
-                    };
-                    lines.extend(
-                        presentation::thread_card_rows(
-                            thread,
-                            available_width,
-                            thread_index + 1 == hunk.threads.len(),
-                        )
-                        .into_iter()
-                        .map(|row| Line::styled(row, style)),
-                    );
-                }
-            }
+            ),
+        ];
+        lines.extend(
+            file.metadata
+                .iter()
+                .filter(|line| presentation::show_file_metadata(line))
+                .map(|line| {
+                    Line::styled(
+                        truncate_end(&format!("· {line}"), usize::from(available_width)),
+                        self.semantic_theme.style(Tone::MutedResolved),
+                    )
+                }),
+        );
+        lines
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn cached_hunk_lines(
+        &self,
+        file: &crate::semantic::ReviewFile,
+        hunk: &crate::semantic::ReviewHunk,
+        review: &ReviewBody,
+        available_width: u16,
+        number_width: usize,
+        view: &View,
+    ) -> Vec<Line<'static>> {
+        let content_width = available_width.saturating_sub(2);
+        let layout = view.layout.diff_layout.resolved(content_width);
+        let header_match = matches!(
+            review.search_target.as_ref(),
+            Some(DiffSearchTarget::HunkHeader { location }) if location == &hunk.anchor
+        );
+        let search = match (&review.search_target, review.search_query.as_deref()) {
+            (
+                Some(DiffSearchTarget::DiffLine {
+                    location,
+                    line_index,
+                }),
+                Some(query),
+            ) if location == &hunk.anchor => Some((*line_index, query.to_owned())),
+            _ => None,
+        };
+        if let Some(hit) = self.hunk_text_cache.borrow().iter().find(|entry| {
+            entry.key.matches(
+                hunk,
+                HunkTextLookup {
+                    available_width,
+                    number_width,
+                    layout,
+                    wrap_lines: view.layout.wrap_lines,
+                    header_match,
+                    search: &search,
+                },
+            )
+        }) {
+            return hit.lines.clone();
         }
-        Text::from(lines)
+
+        let border_style = if header_match {
+            self.semantic_theme.border(Tone::FocusSelection)
+        } else {
+            self.semantic_theme.border(Tone::MutedResolved)
+        };
+        let hunk_title = hunk.header.as_ref().map_or_else(
+            || header_match.then(|| symbols::SEARCH.to_owned()),
+            |header| {
+                Some(if header_match {
+                    format!("{} {header}", symbols::SEARCH)
+                } else {
+                    header.clone()
+                })
+            },
+        );
+        let syntax = self
+            .syntax
+            .highlight_hunk(file.extension.as_deref(), &hunk.lines);
+        let source_search = search
+            .as_ref()
+            .map(|(line_index, query)| (*line_index, query.as_str()));
+        let hunk_width = usize::from(available_width);
+        let mut lines = vec![hunk_box_top(
+            hunk_title.as_deref(),
+            hunk_width,
+            border_style,
+        )];
+        let source_lines = if layout == LayoutMode::Split {
+            presentation::split_hunk_lines(
+                &hunk.lines,
+                hunk.coordinates,
+                content_width,
+                number_width,
+                false,
+                source_search,
+                &syntax,
+                self.semantic_theme,
+            )
+        } else {
+            presentation::stack_hunk_lines(
+                &hunk.lines,
+                hunk.coordinates,
+                content_width,
+                number_width,
+                view.layout.wrap_lines,
+                false,
+                source_search,
+                &syntax,
+                self.semantic_theme,
+            )
+        };
+        lines.extend(
+            source_lines
+                .into_iter()
+                .map(|line| hunk_box_content(line, hunk_width, border_style)),
+        );
+        if !hunk.threads.is_empty() {
+            let active = hunk.threads.iter().any(|thread| thread.active);
+            let style = if active {
+                self.semantic_theme.selection()
+            } else if hunk
+                .threads
+                .iter()
+                .any(|thread| thread.state == ThreadState::NeedsAttention)
+            {
+                self.semantic_theme.style(Tone::Attention)
+            } else {
+                self.semantic_theme.style(Tone::MutedResolved)
+            };
+            let summary = format!(
+                "  Comments ({}) · t/T open{}",
+                hunk.threads.len(),
+                if active { " · selected" } else { "" }
+            );
+            lines.push(hunk_box_content(
+                Line::styled(summary, style),
+                hunk_width,
+                border_style,
+            ));
+        }
+        lines.push(hunk_box_bottom(hunk_width, border_style));
+
+        let key = HunkTextKey {
+            available_width,
+            anchor: hunk.anchor.clone(),
+            header: hunk.header.clone(),
+            coordinates: hunk.coordinates,
+            lines: Arc::clone(&hunk.lines),
+            threads: hunk.threads.clone(),
+            number_width,
+            layout,
+            wrap_lines: view.layout.wrap_lines,
+            header_match,
+            search,
+        };
+        let mut cache = self.hunk_text_cache.borrow_mut();
+        if cache.len() == HUNK_TEXT_CACHE_CAPACITY {
+            cache.pop_front();
+        }
+        cache.push_back(HunkTextCache {
+            key,
+            lines: lines.clone(),
+        });
+        lines
     }
 
     fn render_too_small(&self, frame: &mut Frame) {
@@ -513,9 +694,9 @@ impl Renderer {
                 frame.render_widget(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_type(BorderType::Double)
-                        .style(self.semantic_theme.style(Tone::FocusSelection))
-                        .title(" Thread composer — Ctrl-S post · Esc cancel "),
+                        .border_type(BorderType::Rounded)
+                        .border_style(self.semantic_theme.border(Tone::FocusSelection))
+                        .title(format!(" {} ", composer.context)),
                     area,
                 );
                 let inner = Rect::new(
@@ -524,17 +705,8 @@ impl Renderer {
                     area.width.saturating_sub(2),
                     area.height.saturating_sub(2),
                 );
-                let [context, editor, feedback] = Layout::vertical([
-                    Constraint::Length(1),
-                    Constraint::Min(1),
-                    Constraint::Length(1),
-                ])
-                .areas(inner);
-                frame.render_widget(
-                    Paragraph::new(truncate_end(&composer.context, usize::from(context.width)))
-                        .style(self.semantic_theme.style(Tone::MutedResolved)),
-                    context,
-                );
+                let [editor, feedback] =
+                    Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
                 frame.render_widget(
                     Paragraph::new(Text::from(
                         composer
@@ -552,7 +724,7 @@ impl Renderer {
                         composer
                             .message
                             .as_deref()
-                            .unwrap_or("Ctrl-S post · Enter newline · Esc cancel"),
+                            .unwrap_or(&composer.instructions),
                     )
                     .style(self.semantic_theme.style(Tone::MutedResolved)),
                     feedback,
@@ -609,16 +781,162 @@ impl Renderer {
                     hint,
                 );
             }
+            Overlay::Thread(thread) => {
+                let area = centered_rect(78, 18, frame.area());
+                frame.render_widget(Clear, area);
+                let state = match thread.state {
+                    ThreadState::NeedsAttention => "NEEDS ATTENTION",
+                    ThreadState::Open => "OPEN",
+                    ThreadState::Resolved => "RESOLVED",
+                };
+                let outdated = if thread.outdated { " · OUTDATED" } else { "" };
+                frame.render_widget(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(self.semantic_theme.border(Tone::FocusSelection))
+                        .title(format!(
+                            " Conversation #{} · {state}{outdated} · {} ",
+                            thread.id, thread.position
+                        )),
+                    area,
+                );
+                let inner = Rect::new(
+                    area.x.saturating_add(1),
+                    area.y.saturating_add(1),
+                    area.width.saturating_sub(2),
+                    area.height.saturating_sub(2),
+                );
+                let [context, messages, actions] = Layout::vertical([
+                    Constraint::Length(1),
+                    Constraint::Min(1),
+                    Constraint::Length(1),
+                ])
+                .areas(inner);
+                frame.render_widget(
+                    Paragraph::new(truncate_end(&thread.context, usize::from(context.width)))
+                        .style(self.semantic_theme.style(Tone::MutedResolved)),
+                    context,
+                );
+                let mut lines = Vec::new();
+                for (index, message) in thread.messages.iter().enumerate() {
+                    if index > 0 {
+                        lines.push(Line::raw(""));
+                    }
+                    lines.push(Line::styled(
+                        message.author.clone(),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ));
+                    lines.extend(message.body.lines().map(|line| Line::raw(line.to_owned())));
+                }
+                frame.render_widget(
+                    Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+                    messages,
+                );
+                frame.render_widget(
+                    Paragraph::new(if thread.state == ThreadState::Resolved {
+                        if actions.width >= 48 {
+                            "t/T switch · c reply · R reopen · Esc close"
+                        } else {
+                            "t/T · c reply · R reopen · Esc"
+                        }
+                    } else if actions.width >= 48 {
+                        "t/T switch · c reply · x resolve · Esc close"
+                    } else {
+                        "t/T · c reply · x resolve · Esc"
+                    })
+                    .style(self.semantic_theme.style(Tone::MutedResolved)),
+                    actions,
+                );
+            }
         }
     }
 }
 
-fn search_marker(kind: DiffLineKind) -> &'static str {
-    match kind {
-        DiffLineKind::Added => "⌕+",
-        DiffLineKind::Removed => "⌕-",
-        DiffLineKind::Context | DiffLineKind::Meta => "⌕ ",
+fn highlight_hunk_box(
+    lines: &mut [Line<'static>],
+    window_start: usize,
+    range_start: usize,
+    range_end: usize,
+    style: Style,
+) {
+    for (offset, line) in lines.iter_mut().enumerate() {
+        let row = window_start.saturating_add(offset);
+        if row < range_start || row >= range_end {
+            continue;
+        }
+        if row == range_start || row + 1 == range_end {
+            for span in &mut line.spans {
+                span.style = span.style.patch(style);
+            }
+        } else {
+            if let Some(border) = line.spans.first_mut() {
+                border.style = border.style.patch(style);
+            }
+            if let Some(border) = line.spans.last_mut() {
+                border.style = border.style.patch(style);
+            }
+        }
     }
+}
+
+fn hunk_box_top(title: Option<&str>, width: usize, style: Style) -> Line<'static> {
+    if width < 2 {
+        return Line::styled("─".repeat(width), style);
+    }
+    let title_width = width.saturating_sub(4);
+    let title = title
+        .filter(|title| !title.is_empty())
+        .map(|title| truncate_end(title, title_width));
+    let prefix = title
+        .as_ref()
+        .map_or_else(|| "╭".to_owned(), |title| format!("╭─ {title} "));
+    let fill = width
+        .saturating_sub(UnicodeWidthStr::width(prefix.as_str()))
+        .saturating_sub(1);
+    Line::styled(format!("{prefix}{}╮", "─".repeat(fill)), style)
+}
+
+fn hunk_box_content(mut line: Line<'static>, width: usize, style: Style) -> Line<'static> {
+    if width < 2 {
+        return line;
+    }
+    let inner_width = width.saturating_sub(2);
+    line = fit_line(line, inner_width);
+    let padding = inner_width.saturating_sub(line.width());
+    line.spans.insert(0, Span::styled("│", style));
+    line.spans.push(Span::raw(" ".repeat(padding)));
+    line.spans.push(Span::styled("│", style));
+    line
+}
+
+fn fit_line(line: Line<'static>, width: usize) -> Line<'static> {
+    let mut remaining = width;
+    let mut spans = Vec::new();
+    for span in line.spans {
+        if remaining == 0 {
+            break;
+        }
+        let span_width = span.width();
+        if span_width <= remaining {
+            remaining -= span_width;
+            spans.push(span);
+        } else {
+            spans.push(Span::styled(
+                truncate_end(span.content.as_ref(), remaining),
+                span.style,
+            ));
+            break;
+        }
+    }
+    Line::from(spans)
+}
+
+fn hunk_box_bottom(width: usize, style: Style) -> Line<'static> {
+    if width < 2 {
+        return Line::styled("─".repeat(width), style);
+    }
+    Line::styled(format!("╰{}╯", "─".repeat(width - 2)), style)
 }
 
 fn rollup_text(rollup: &RollupBody, available_width: u16, theme: SemanticTheme) -> Text<'static> {
@@ -640,7 +958,7 @@ fn rollup_text(rollup: &RollupBody, available_width: u16, theme: SemanticTheme) 
             truncate_end(
                 &format!(
                     "{}#{id} [{state}] {} {}{provenance}",
-                    if item.selected { "› " } else { "  " },
+                    if item.selected { " " } else { "  " },
                     item.path,
                     item.hunk_header,
                     id = item.id
@@ -702,16 +1020,15 @@ fn region_block<'a>(
 ) -> Block<'a> {
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title(match focus_label {
-            Some(label) => format!(" {title} ◆ {label} "),
+            Some(label) => format!(" {title}  {label} "),
             None => format!(" {title} "),
         });
     if focused {
-        block
-            .border_type(BorderType::Double)
-            .border_style(theme.style(Tone::FocusSelection))
+        block.border_style(theme.border(Tone::FocusSelection))
     } else {
-        block.border_style(theme.style(Tone::MutedResolved))
+        block.border_style(theme.border(Tone::MutedResolved))
     }
 }
 
@@ -740,7 +1057,8 @@ mod tests {
         backend::TestBackend,
         buffer::Buffer,
         layout::Rect,
-        style::{Color, Modifier},
+        style::{Color, Modifier, Style},
+        text::{Line, Span},
     };
 
     use crate::{
@@ -749,6 +1067,7 @@ mod tests {
         diff::{DiffDocument, DiffRequest, DiffTarget, LoadedDiff},
         mode::{help, review},
         semantic::Body,
+        symbols,
         thread::{Participant, ParticipantKind, ThreadState},
         ui::LayoutMode,
     };
@@ -831,34 +1150,26 @@ mod tests {
             },
             threads,
         );
-        let renderer = Renderer::default();
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::from_no_color(None),
+            ..Renderer::default()
+        };
 
-        let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
-        let semantic = crate::app::view(&model);
-        terminal
-            .draw(|frame| renderer.render(frame, &semantic))
-            .unwrap();
-        let split = terminal
-            .backend()
-            .buffer()
+        let split = render(&renderer, &mut model, 120, 48)
             .content()
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(split.contains("1 need you"));
-        assert!(split.contains("NEEDS ATTENTION"));
-        assert!(split.contains("RESOLVED"));
+        let semantic = crate::app::view(&model);
+        let Body::Review(review) = semantic.body else {
+            panic!("review body")
+        };
+        assert!(!review.files[0].hunks[0].threads.is_empty());
         assert!(split.contains(" │ "));
 
         crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Stack));
-        let semantic = crate::app::view(&model);
-        let mut terminal = Terminal::new(TestBackend::new(80, 32)).unwrap();
-        terminal
-            .draw(|frame| renderer.render(frame, &semantic))
-            .unwrap();
-        let stack = terminal
-            .backend()
-            .buffer()
+        let stack = render(&renderer, &mut model, 80, 32)
             .content()
             .iter()
             .map(|cell| cell.symbol())
@@ -918,31 +1229,27 @@ mod tests {
 
         let wide = render(&renderer, &mut model, 120, 40);
         let wide_text = rows(&wide).join("\n");
-        assert!(wide_text.contains("├─"));
-        assert!(wide_text.contains("╰─ ▶ ACTIVE · #002 ! NEEDS ATTENTION · • OPEN · ~ OUTDATED"));
-        assert!(wide_text.contains("✓ RESOLVED · closed by reviewer"));
+        assert!(wide_text.contains("Conversation #2 · NEEDS ATTENTION · OUTDATED · 3/3"));
+        assert!(wide_text.contains("reviewer:"));
+        assert!(wide_text.contains("t/T switch · c reply · x resolve · Esc close"));
         assert!(wide.content().iter().all(|cell| cell.fg == Color::Reset));
 
         let narrow = render(&renderer, &mut model, 48, 40);
         let narrow_rows = rows(&narrow);
         let narrow_text = narrow_rows.join("\n");
-        assert!(narrow_text.contains("▶ ACTIVE"));
-        assert!(narrow_text.contains("! ATTENTION"));
-        assert!(narrow_text.contains("• OPEN"));
-        assert!(narrow_text.contains("~ OUTDATED"));
-        assert!(narrow_text.contains('…'));
+        assert!(narrow_text.contains("Conversation #2"));
+        assert!(narrow_text.contains("NEEDS ATTENTION"));
+        let semantic = crate::app::view(&model);
+        let Some(crate::semantic::Overlay::Thread(thread)) = semantic.overlay else {
+            panic!("thread overlay")
+        };
+        assert!(thread.outdated);
         assert!(narrow.content().iter().all(|cell| cell.fg == Color::Reset));
 
         crate::app::update(&mut model, review::Event::MoveThread(-1));
         let resolved = render(&renderer, &mut model, 48, 40);
         let resolved_text = rows(&resolved).join("\n");
-        for action in [
-            "c reply",
-            "R reopen",
-            "a attention",
-            "o outdated",
-            "e keep/fold",
-        ] {
+        for action in ["c reply", "R reopen", "Esc"] {
             assert!(
                 resolved_text.contains(action),
                 "missing {action}: {resolved_text}"
@@ -952,7 +1259,10 @@ mod tests {
 
     #[test]
     fn renders_a_stable_explanation_below_the_minimum_layout_size() {
-        let renderer = Renderer::default();
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::from_no_color(None),
+            ..Renderer::default()
+        };
         let model = Model::new(
             DiffRequest {
                 target: DiffTarget::WorkingTree,
@@ -1046,7 +1356,7 @@ mod tests {
         assert!(minimum_rows.contains("No review targets match Filter:"));
         assert!(minimum_rows.contains("Git diff is still loaded"));
         assert!(minimum_rows.contains("Press A for All changes"));
-        assert!((1..6).all(|y| minimum[(47, y)].symbol() != "█"));
+        assert!((1..6).all(|y| minimum[(47, y)].symbol() != symbols::SCROLL_THUMB));
 
         let semantic = crate::app::view(&model);
         let Body::Review(review) = semantic.body else {
@@ -1087,11 +1397,8 @@ mod tests {
         let wide = rows(&render(&renderer, &mut model, 120, 24));
         assert!(wide[0].contains("resolved"));
         assert!(wide.iter().any(|row| row.contains("Files")));
-        assert!(
-            wide.iter()
-                .any(|row| row.contains("Review stream ◆ STREAM FOCUS"))
-        );
-        assert!(wide[22].contains("Context: Review stream"));
+        assert!(wide.iter().any(|row| row.contains("Diff")));
+        assert!(wide[22].contains("Context: Diff"));
         assert!(wide[23].starts_with("Keys:"));
         let wide_areas = ShellAreas::resolve(Rect::new(0, 0, 120, 24), true);
         assert_eq!(wide_areas.header, Rect::new(0, 0, 120, 1));
@@ -1127,7 +1434,7 @@ mod tests {
         assert_eq!(narrow_areas.contextual_keys.y, 15);
 
         let minimum = rows(&render(&renderer, &mut model, 48, 8));
-        assert!(minimum.iter().any(|row| row.contains("Review stream")));
+        assert!(minimum.iter().any(|row| row.contains("@@ -1 +1 @@")));
         assert!(minimum.iter().any(|row| row.contains("navigation.rs")));
         assert!(minimum[6].contains("Review"), "{}", minimum[6]);
         assert!(minimum[7].starts_with("Keys:"));
@@ -1155,8 +1462,21 @@ mod tests {
         let buffer = render(&renderer, &mut model, 120, 24);
         for y in 2..21 {
             assert_eq!(buffer[(29, y)].symbol(), "│");
-            assert_eq!(buffer[(30, y)].symbol(), "║");
+            assert_ne!(buffer[(30, y)].symbol(), "║");
         }
+    }
+
+    #[test]
+    fn hunk_content_keeps_both_borders_at_a_fixed_width() {
+        let line = Line::from(vec![
+            Span::styled("画面", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("x".repeat(40)),
+        ]);
+        let boxed = super::hunk_box_content(line, 20, Style::default());
+
+        assert_eq!(boxed.width(), 20);
+        assert_eq!(boxed.spans.first().unwrap().content, "│");
+        assert_eq!(boxed.spans.last().unwrap().content, "│");
     }
 
     #[test]
@@ -1169,11 +1489,11 @@ mod tests {
         let buffer = render(&renderer, &mut model, 120, 24);
         let rendered = rows(&buffer).join("\n");
 
-        assert!(rendered.contains("›"));
-        assert!(rendered.contains("▶"));
-        assert!(rendered.contains("◆ STREAM FOCUS"));
-        assert!(rendered.contains("1 -old_navigation"));
-        assert!(rendered.contains("1 +new_navigation"));
+        assert!(rendered.contains(""));
+        assert!(rendered.contains("╭─ @@ -1 +1 @@"));
+        assert!(rendered.contains("Diff"));
+        assert!(rendered.contains("-old_navigation"));
+        assert!(rendered.contains("+new_navigation"));
         assert!(
             buffer
                 .content()
@@ -1204,9 +1524,99 @@ mod tests {
         }
 
         let rendered = rows(&render(&renderer, &mut model, 80, 24)).join("\n");
-        assert!(rendered.contains("⌕+"));
+        assert!(rendered.contains(""));
         assert!(rendered.contains("Context: Search input"));
         assert!(rendered.contains("Esc cancel"));
+    }
+
+    #[test]
+    fn case_insensitive_search_reverses_the_actual_source_graphemes() {
+        let raw =
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+INSERTED\n";
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::no_color(),
+            ..Renderer::default()
+        };
+        let mut model = model_with_diff(raw);
+        crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Split));
+        crate::app::update(&mut model, review::Event::BeginSearch);
+        for character in "inserted".chars() {
+            crate::app::update(&mut model, review::Event::InsertSearchCharacter(character));
+        }
+
+        let buffer = render(&renderer, &mut model, 80, 24);
+        let source_row = rows(&buffer)
+            .into_iter()
+            .find(|row| row.contains("+INSERTED"))
+            .expect("selected source row is rendered");
+        assert!(source_row.contains("  "), "{source_row:?}");
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .any(|cell| { cell.symbol() == "I" && cell.modifier.contains(Modifier::REVERSED) })
+        );
+    }
+
+    #[test]
+    fn renderer_keeps_selected_split_and_stack_change_evidence_composed() {
+        let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,2 +1,2 @@\n let stable = 1;\n-let timeout = 30;\n+let timeout = 60;\n@@ -10,2 +10,2 @@\n fn stable_two() {}\n-let retries = 2;\n+let retries = 3;\n";
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::from_no_color(None),
+            ..Renderer::default()
+        };
+        let mut model = model_with_diff(raw);
+        crate::app::update(&mut model, review::Event::BeginSearch);
+        for character in "60".chars() {
+            crate::app::update(&mut model, review::Event::InsertSearchCharacter(character));
+        }
+
+        for layout in [LayoutMode::Split, LayoutMode::Stack] {
+            crate::app::update(&mut model, review::Event::SetLayout(layout));
+            let buffer = render(&renderer, &mut model, 80, 32);
+            let source_row = rows(&buffer)
+                .into_iter()
+                .find(|row| row.contains("60"))
+                .expect("selected replacement source row is rendered");
+            assert!(source_row.contains("  "), "{layout:?}: {source_row:?}");
+            let changed = buffer
+                .content()
+                .iter()
+                .find(|cell| cell.symbol() == "6" && cell.modifier.contains(Modifier::REVERSED))
+                .expect("searched changed grapheme is reverse-marked");
+            assert!(changed.modifier.contains(Modifier::UNDERLINED));
+
+            let rendered_rows = rows(&buffer);
+            for source in ["stable = 1", "timeout = 30", "timeout = 60", "stable_two"] {
+                let y = rendered_rows
+                    .iter()
+                    .position(|row| row.contains(source))
+                    .unwrap_or_else(|| panic!("{layout:?}: missing source row {source:?}"));
+                assert!(
+                    (0..buffer.area.width).any(|x| {
+                        let cell = &buffer[(x, y as u16)];
+                        cell.fg != Color::Reset && !cell.symbol().trim().is_empty()
+                    }),
+                    "{layout:?}: {source:?} lost lexical foreground"
+                );
+            }
+
+            let selected_box = rendered_rows
+                .iter()
+                .position(|row| row.contains("@@ -1,2 +1,2 @@"))
+                .expect("selected hunk box is visible");
+            let unselected_box = rendered_rows
+                .iter()
+                .position(|row| row.contains("@@ -10,2 +10,2 @@"))
+                .expect("unselected hunk box is visible");
+            assert!(
+                (0..buffer.area.width).any(|x| buffer[(x, selected_box as u16)].fg == Color::Cyan)
+            );
+            assert!(
+                (0..buffer.area.width)
+                    .all(|x| buffer[(x, unselected_box as u16)].fg != Color::Cyan)
+            );
+        }
     }
 
     #[test]
@@ -1224,7 +1634,7 @@ mod tests {
 
         let rendered = rows(&render(&renderer, &mut model, 80, 24)).join("\n");
         assert!(!rendered.contains("@@ -100,2 +200,3 @@ fn second()"));
-        assert!(rendered.contains("⌕ "));
+        assert!(rendered.contains(""));
         assert!(rendered.contains("next"));
     }
 
@@ -1243,16 +1653,17 @@ mod tests {
         }
 
         let removed = rows(&render(&renderer, &mut model, 120, 16)).join("\n");
-        assert!(removed.contains("⌕-"));
+        assert!(removed.contains(""));
+        assert!(removed.contains("-needle old"));
         crate::app::update(&mut model, review::Event::FinishSearch);
         crate::app::update(&mut model, review::Event::MoveSearch(1));
         let added = rows(&render(&renderer, &mut model, 120, 16)).join("\n");
-        assert!(added.contains("⌕+"));
-        assert!(!added.contains("⌕-"));
+        assert!(added.contains(""));
+        assert!(added.contains("+needle new"));
     }
 
     #[test]
-    fn stack_selection_survives_hidden_hunk_headers_without_color() {
+    fn hunk_box_survives_hidden_hunk_headers_without_color() {
         let renderer = Renderer {
             semantic_theme: SemanticTheme::no_color(),
             ..Renderer::default()
@@ -1263,12 +1674,8 @@ mod tests {
         let rendered = rows(&buffer).join("\n");
 
         assert!(!rendered.contains("▶"));
-        assert!(
-            buffer
-                .content()
-                .iter()
-                .any(|cell| { cell.symbol() == "-" && cell.modifier.contains(Modifier::REVERSED) })
-        );
+        assert!(rows(&buffer).iter().any(|row| row.contains("╭─")));
+        assert!(rows(&buffer).iter().any(|row| row.contains("╰─")));
     }
 
     #[test]
@@ -1283,47 +1690,32 @@ mod tests {
 
         crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Split));
         let split = render(&renderer, &mut model, 120, 24);
-        assert_selected_source_block(&split, &["┃  8  before", "┃  9 -old_", "┃ 10  after"]);
+        assert_selected_source_block(&split, &["before", "-old_", "after"]);
 
         crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Stack));
         crate::app::update(&mut model, review::Event::ToggleWrap);
         let stack = render(&renderer, &mut model, 64, 24);
-        assert_selected_source_block(
-            &stack,
-            &[
-                "┃  8 18 │  before",
-                "┃  9    │ -old_",
-                "┃       │ ↪",
-                "┃    19 │ +new",
-                "┃ 10 20 │  after",
-            ],
-        );
+        assert_selected_source_block(&stack, &["before", "-old_", "↪", "+new", "after"]);
     }
 
     fn assert_selected_source_block(buffer: &Buffer, expected_rows: &[&str]) {
         let rendered = rows(buffer);
         assert!(rendered.iter().all(|row| !row.contains("@@")));
-        let start = rendered
-            .iter()
-            .position(|row| row.contains(expected_rows[0]))
-            .expect("first expected selected source row is visible");
-        assert_eq!(
-            rendered.iter().filter(|row| row.contains('┃')).count(),
-            expected_rows.len()
-        );
-        for (offset, expected) in expected_rows.iter().enumerate() {
-            let y = start + offset;
+        for expected in expected_rows {
+            let (y, row) = rendered
+                .iter()
+                .enumerate()
+                .find(|(_, row)| row.contains(expected))
+                .expect("selected source row is visible");
             assert!(
-                rendered[y].contains(expected),
-                "row {y} did not contain {expected:?}: {:?}",
-                rendered[y]
+                row.contains('│'),
+                "source row is outside its hunk box: {row:?}"
             );
-            for x in 1..buffer.area.width.saturating_sub(1) {
-                assert!(
-                    buffer[(x, y as u16)].modifier.contains(Modifier::REVERSED),
-                    "selection style missing at ({x}, {y})"
-                );
-            }
+            assert!(
+                (1..buffer.area.width.saturating_sub(1))
+                    .all(|x| { !buffer[(x, y as u16)].modifier.contains(Modifier::REVERSED) }),
+                "hunk membership must not reverse-paint source row {y}"
+            );
         }
     }
 
@@ -1342,13 +1734,14 @@ mod tests {
             .iter()
             .find(|row| row.contains("old_ascii_line"))
             .expect("wide fixture renders its replacement row");
-        assert!(replacement.contains("┃   9 -old_ascii_line"));
-        assert!(replacement.contains("│  19 +new wide_"), "{replacement:?}");
+        assert!(replacement.contains("old_ascii_line"));
+        assert!(replacement.contains("new wide_"), "{replacement:?}");
+        assert!(!replacement.contains('≈'));
         let split_at = replacement.find(" │ ").expect("split separator is visible");
         let split_column = unicode_width::UnicodeWidthStr::width(&replacement[..split_at]);
         let context = wide
             .iter()
-            .find(|row| row.contains("┃   8  context"))
+            .find(|row| row.contains("context"))
             .expect("wide fixture renders context numbers");
         let context_split = context.find(" │ ").expect("context separator is visible");
         assert_eq!(
@@ -1358,7 +1751,8 @@ mod tests {
         assert!(wide.iter().any(|row| row.contains("100  next")));
         assert!(wide.iter().any(|row| row.contains("│ 200  next")));
         assert!(wide.iter().any(|row| row.contains("· index 111..222")));
-        assert!(wide.iter().any(|row| row.contains("▶ @@ -8,3 +18,3 @@")));
+        assert!(wide.iter().any(|row| row.contains("╭─ @@ -8,3 +18,3 @@")));
+        assert!(wide.iter().any(|row| row.contains("╰──")));
 
         crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Stack));
         let narrow_buffer = render(&renderer, &mut model, 64, 32);
@@ -1366,12 +1760,12 @@ mod tests {
         assert!(
             narrow
                 .iter()
-                .any(|row| row.contains("┃   9     │ -old_ascii_line"))
+                .any(|row| row.contains("-old_ascii_line") && !row.contains('≈'))
         );
         assert!(
             narrow
                 .iter()
-                .any(|row| row.contains("┃      19 │ +new wide_"))
+                .any(|row| row.contains("+new wide_") && !row.contains('≈'))
         );
         assert!(narrow.iter().any(|row| row.contains('…')));
         assert!(narrow.iter().all(|row| !row.contains('\t')));
@@ -1383,34 +1777,16 @@ mod tests {
                 .all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset)
         );
 
-        for (y, _row) in narrow
-            .iter()
-            .enumerate()
-            .filter(|(_, row)| row.contains('┃'))
-        {
-            assert_eq!(narrow_buffer[(63, y as u16)].symbol(), "║");
-            assert!(
-                narrow_buffer[(1, y as u16)]
-                    .modifier
-                    .contains(Modifier::REVERSED)
-            );
-            assert!(
-                narrow_buffer[(62, y as u16)]
-                    .modifier
-                    .contains(Modifier::REVERSED)
-            );
-        }
-        let ascii_selection_row = narrow
+        let ascii_row = narrow
             .iter()
             .position(|row| row.contains("-old_ascii_line"))
             .expect("selected ASCII row is visible") as u16;
-        for x in 1..63 {
-            assert!(
-                narrow_buffer[(x, ascii_selection_row)]
-                    .modifier
-                    .contains(Modifier::REVERSED)
-            );
-        }
+        assert_eq!(narrow_buffer[(0, ascii_row)].symbol(), "│");
+        assert!(
+            !narrow_buffer[(62, ascii_row)]
+                .modifier
+                .contains(Modifier::REVERSED)
+        );
     }
 
     #[test]
@@ -1426,31 +1802,127 @@ mod tests {
         let rendered = rows(&buffer);
         let continuation = rendered
             .iter()
-            .find(|row| row.contains("┃         │ ↪"))
+            .find(|row| row.contains('↪'))
             .expect("wrapped source has a gutter-preserving continuation");
         assert_eq!(
             unicode_width::UnicodeWidthStr::width(continuation.as_str()),
             64
         );
 
-        let selected_source_rows = rendered
+        let boxed_source_rows = rendered
             .iter()
-            .filter(|row| row.contains("║┃ "))
+            .filter(|row| row.starts_with("│ "))
             .collect::<Vec<_>>();
-        assert!(selected_source_rows.len() >= 6);
+        assert!(boxed_source_rows.len() >= 6);
     }
 
     #[test]
-    fn syntax_colors_use_the_terminal_palette_instead_of_fixed_rgb() {
-        let renderer = Renderer::default();
-        let mut model = model_with_diff(RESPONSIVE_DIFF);
+    fn syntax_colors_preserve_the_theme_truecolor_palette() {
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::from_no_color(None),
+            ..Renderer::default()
+        };
+        let mut model = model_with_diff(
+            "diff --git a/main.rs b/main.rs\n--- a/main.rs\n+++ b/main.rs\n@@ -1 +1 @@\n-fn old() { let value: usize = 1; }\n+fn new() { let value: usize = 2; }\n",
+        );
         let buffer = render(&renderer, &mut model, 88, 20);
 
         assert!(
             buffer
                 .content()
                 .iter()
-                .all(|cell| !matches!(cell.fg, Color::Rgb(_, _, _)))
+                .any(|cell| matches!(cell.fg, Color::Rgb(_, _, _)))
+        );
+    }
+
+    #[test]
+    fn added_and_removed_rows_have_distinct_quiet_backgrounds() {
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::from_no_color(None),
+            ..Renderer::default()
+        };
+        let mut model = model_with_diff(
+            "diff --git a/main.rs b/main.rs\n--- a/main.rs\n+++ b/main.rs\n@@ -1 +1 @@\n-old_value\n+new_value\n",
+        );
+        let buffer = render(&renderer, &mut model, 80, 20);
+        let rendered = rows(&buffer);
+        let removed_y = rendered
+            .iter()
+            .position(|row| row.contains("-old_value"))
+            .expect("removed row is visible") as u16;
+        let added_y = rendered
+            .iter()
+            .position(|row| row.contains("+new_value"))
+            .expect("added row is visible") as u16;
+        let removed = (0..buffer.area.width)
+            .find_map(|x| {
+                (buffer[(x, removed_y)].symbol() == "o").then_some(buffer[(x, removed_y)].bg)
+            })
+            .expect("removed source cell is visible");
+        let added = (0..buffer.area.width)
+            .find_map(|x| (buffer[(x, added_y)].symbol() == "n").then_some(buffer[(x, added_y)].bg))
+            .expect("added source cell is visible");
+
+        assert_eq!(removed, Color::Rgb(54, 27, 32));
+        assert_eq!(added, Color::Rgb(20, 46, 32));
+        assert_ne!(removed, added);
+    }
+
+    #[test]
+    fn tree_sitter_rust_query_highlights_macros_and_structural_punctuation() {
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::from_no_color(None),
+            ..Renderer::default()
+        };
+        let mut model = model_with_diff(
+            "diff --git a/main.rs b/main.rs\n--- a/main.rs\n+++ b/main.rs\n@@ -1 +1 @@\n-old();\n+assert_eq!(actual, expected);\n",
+        );
+        let buffer = render(&renderer, &mut model, 80, 20);
+        let rendered = rows(&buffer);
+        let y = rendered
+            .iter()
+            .position(|row| row.contains("assert_eq!(actual"))
+            .expect("macro row is visible") as u16;
+        let row = &rendered[usize::from(y)];
+        let macro_byte = row.find("assert_eq!").expect("macro starts in row");
+        let paren_byte = row.find('(').expect("opening parenthesis is visible");
+        let macro_x = unicode_width::UnicodeWidthStr::width(&row[..macro_byte]) as u16;
+        let paren_x = unicode_width::UnicodeWidthStr::width(&row[..paren_byte]) as u16;
+
+        assert_eq!(buffer[(macro_x, y)].fg, Color::Rgb(220, 220, 170));
+        assert!(buffer[(macro_x, y)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(paren_x, y)].fg, Color::Rgb(143, 161, 190));
+    }
+
+    #[test]
+    fn layout_wrap_and_search_decorate_only_visible_hunks() {
+        let mut raw =
+            String::from("diff --git a/main.rs b/main.rs\n--- a/main.rs\n+++ b/main.rs\n");
+        for index in 1..=40 {
+            raw.push_str(&format!(
+                "@@ -{index} +{index} @@\n-old_{index}\n+new_{index}\n"
+            ));
+        }
+        let renderer = Renderer::default();
+        let mut model = model_with_diff(&raw);
+        let _ = render(&renderer, &mut model, 80, 20);
+        let initial = renderer.hunk_text_cache.borrow().len();
+        assert!(initial < 10, "rendered {initial} off-screen hunk variants");
+
+        crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Split));
+        let _ = render(&renderer, &mut model, 80, 20);
+        crate::app::update(&mut model, review::Event::ToggleWrap);
+        let _ = render(&renderer, &mut model, 80, 20);
+        crate::app::update(&mut model, review::Event::BeginSearch);
+        for character in "new_1".chars() {
+            crate::app::update(&mut model, review::Event::InsertSearchCharacter(character));
+            let _ = render(&renderer, &mut model, 80, 20);
+        }
+
+        let variants = renderer.hunk_text_cache.borrow().len();
+        assert!(
+            variants < 30,
+            "layout/search/wrap decorated the whole diff: {variants} variants"
         );
     }
 
@@ -1471,31 +1943,149 @@ mod tests {
 
         assert_eq!(&before[1..18], &after[1..18]);
         assert_ne!(before[18], after[18]);
-        assert!(after[18].contains("Context: Review stream"));
+        assert!(after[18].contains("Context: Diff"));
         assert!(after[18].contains("Status: reloading diff…"));
         assert_eq!(before[19], after[19]);
     }
 
     #[test]
-    fn modal_overlay_is_the_only_region_that_claims_focus() {
+    fn scrolling_reuses_the_predecorated_review_text() {
         let renderer = Renderer::default();
+        let mut model = model_with_diff(READABLE_DIFF);
+        let _ = render(&renderer, &mut model, 80, 20);
+        let initial_lines = renderer
+            .hunk_text_cache
+            .borrow()
+            .front()
+            .expect("initial render populates the hunk text cache")
+            .lines
+            .as_ptr();
+
+        crate::app::update(&mut model, review::Event::ScrollRows(1));
+        let _ = render(&renderer, &mut model, 80, 20);
+        let scrolled_lines = renderer
+            .hunk_text_cache
+            .borrow()
+            .front()
+            .expect("scroll keeps the hunk text cache")
+            .lines
+            .as_ptr();
+
+        assert_eq!(initial_lines, scrolled_lines);
+    }
+
+    #[test]
+    fn hunk_and_file_navigation_reuse_the_predecorated_review_text() {
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::from_no_color(None),
+            ..Renderer::default()
+        };
+        let mut model = model_with_diff(RESPONSIVE_DIFF);
+        let initial = render(&renderer, &mut model, 80, 20);
+        let initial_focus_count = (0..initial.area.height)
+            .flat_map(|y| (0..initial.area.width).map(move |x| (x, y)))
+            .filter(|(x, y)| {
+                let cell = &initial[(*x, *y)];
+                cell.symbol() == "╭" && cell.fg == Color::Cyan
+            })
+            .count();
+        let _initial_focus_row = (0..initial.area.height)
+            .find(|y| {
+                (0..initial.area.width).any(|x| {
+                    let cell = &initial[(x, *y)];
+                    cell.symbol() == "╭" && cell.fg == Color::Cyan
+                })
+            })
+            .expect("selected hunk box is highlighted");
+        assert_eq!(initial_focus_count, 1);
+        let initial_location = model.review.selected_location();
+        let initial_lines = renderer
+            .hunk_text_cache
+            .borrow()
+            .front()
+            .expect("initial render populates the hunk text cache")
+            .lines
+            .as_ptr();
+
+        crate::app::update(&mut model, review::Event::MoveHunk(1));
+        assert_ne!(model.review.selected_location(), initial_location);
+        let navigated = render(&renderer, &mut model, 80, 20);
+        let navigated_focus_count = (0..navigated.area.height)
+            .flat_map(|y| (0..navigated.area.width).map(move |x| (x, y)))
+            .filter(|(x, y)| {
+                let cell = &navigated[(*x, *y)];
+                cell.symbol() == "╭" && cell.fg == Color::Cyan
+            })
+            .count();
+        let _navigated_focus_row = (0..navigated.area.height)
+            .find(|y| {
+                (0..navigated.area.width).any(|x| {
+                    let cell = &navigated[(x, *y)];
+                    cell.symbol() == "╭" && cell.fg == Color::Cyan
+                })
+            })
+            .expect("navigated hunk box is highlighted");
+        assert_eq!(navigated_focus_count, 1);
+        let navigated_lines = renderer
+            .hunk_text_cache
+            .borrow()
+            .front()
+            .expect("navigation keeps the hunk text cache")
+            .lines
+            .as_ptr();
+
+        assert_eq!(initial_lines, navigated_lines);
+
+        crate::app::update(&mut model, review::Event::MoveFile(1));
+        let _ = render(&renderer, &mut model, 80, 20);
+        let file_navigated_lines = renderer
+            .hunk_text_cache
+            .borrow()
+            .front()
+            .expect("file navigation keeps the hunk text cache")
+            .lines
+            .as_ptr();
+        assert_eq!(initial_lines, file_navigated_lines);
+    }
+
+    #[test]
+    fn modal_overlay_is_the_only_region_that_claims_focus() {
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::from_no_color(None),
+            ..Renderer::default()
+        };
 
         let mut composer = model_with_diff(RESPONSIVE_DIFF);
         crate::app::update(
             &mut composer,
             review::Event::BeginThread { always_new: true },
         );
-        let rendered = rows(&render(&renderer, &mut composer, 120, 24)).join("\n");
-        assert!(rendered.contains("Thread composer — Ctrl-S post · Esc cancel"));
-        assert!(rendered.contains("New •"));
-        assert!(!rendered.contains("STREAM FOCUS"));
+        let semantic = crate::app::view(&composer);
+        let Some(crate::semantic::Overlay::Composer(ref overlay)) = semantic.overlay else {
+            panic!("composer overlay")
+        };
+        let overlay_area = super::centered_rect(70, overlay.height, Rect::new(0, 0, 120, 24));
+        let buffer = render(&renderer, &mut composer, 120, 24);
+        let rendered = rows(&buffer).join("\n");
+        assert!(rendered.contains("Comment •"));
+        assert!(rendered.contains("Ctrl-J post · Enter newline · Esc cancel"));
+        assert!(!rendered.contains("DIFF FOCUS"));
         assert!(!rendered.contains("THREAD TARGET"));
+        assert!(buffer[(0, 0)].modifier.contains(Modifier::DIM));
+        assert_eq!(buffer[(0, 0)].fg, Color::DarkGray);
+        assert_eq!(buffer[(overlay_area.x, overlay_area.y)].symbol(), "╭");
+        assert_ne!(buffer[(overlay_area.x, overlay_area.y)].fg, Color::DarkGray);
+        assert!(
+            !buffer[(overlay_area.x, overlay_area.y)]
+                .modifier
+                .contains(Modifier::DIM)
+        );
 
         let mut help = model_with_diff(RESPONSIVE_DIFF);
         crate::app::update(&mut help, crate::app::global::Event::OpenHelp);
         let rendered = rows(&render(&renderer, &mut help, 120, 24)).join("\n");
         assert!(rendered.contains("Keyboard help — Esc/? to close"));
-        assert!(!rendered.contains("STREAM FOCUS"));
+        assert!(!rendered.contains("DIFF FOCUS"));
         assert!(!rendered.contains("THREAD TARGET"));
     }
 
@@ -1545,7 +2135,7 @@ mod tests {
         let review_rows = rows(&render(&renderer, &mut review, 48, 20));
         assert!(review_rows[18].contains("hunk 1/1"), "{}", review_rows[18]);
         assert!(review_rows[19].contains("q exit"), "{}", review_rows[19]);
-        assert!(review_rows[19].contains("c new"), "{}", review_rows[19]);
+        assert!(review_rows[19].contains("c comment"), "{}", review_rows[19]);
         assert!(review_rows[19].contains("? help"), "{}", review_rows[19]);
         crate::app::update(&mut review, review::Event::ToggleSidebar);
         crate::app::update(&mut review, review::Event::ToggleSidebar);
@@ -1610,14 +2200,13 @@ mod tests {
             },
         );
         crate::app::update(&mut thread, review::Event::MoveThread(1));
-        let thread_rows = rows(&render(&renderer, &mut thread, 64, 20));
-        assert!(thread_rows[18].contains("thread #0"), "{}", thread_rows[18]);
-        assert!(
-            thread_rows[19].contains("Tab stream"),
-            "{}",
-            thread_rows[19]
-        );
-        assert!(thread_rows[19].contains("x resolve"), "{}", thread_rows[19]);
+        let semantic = crate::app::view(&thread);
+        assert!(semantic.footer.current_context.text.contains("thread #0"));
+        assert!(semantic.footer.contextual_keys.text.contains("Tab diff"));
+        assert!(semantic.footer.contextual_keys.text.contains("x resolve"));
+        let thread_rows = rows(&render(&renderer, &mut thread, 64, 20)).join("\n");
+        assert!(thread_rows.contains("Conversation #0"));
+        assert!(thread_rows.contains("Conversation #0"));
     }
 
     #[test]
@@ -1627,13 +2216,13 @@ mod tests {
         crate::app::update(&mut model, review::Event::ShowRollup);
         let rendered = rows(&render(&renderer, &mut model, 120, 24)).join("\n");
 
-        assert!(rendered.contains("Thread rollup ◆ ROLLUP FOCUS"));
+        assert!(rendered.contains("Thread rollup"));
         assert!(rendered.contains("Keys: v/Esc return · no targets"));
         assert!(!rendered.contains("j/k select • Enter jump"));
     }
 
     #[test]
-    fn stream_end_jump_renders_the_end_of_the_diff() {
+    fn diff_end_jump_renders_the_end_of_the_diff() {
         let renderer = Renderer::default();
         let mut model = model_with_diff(RESPONSIVE_DIFF);
         crate::app::update(&mut model, review::Event::ToggleSidebar);
@@ -1644,7 +2233,7 @@ mod tests {
                 columns: 80,
             },
         );
-        crate::app::update(&mut model, review::Event::JumpToStreamEdge { end: true });
+        crate::app::update(&mut model, review::Event::JumpToDiffEdge { end: true });
 
         let at_end = rows(&render(&renderer, &mut model, 80, 14)).join("\n");
         assert!(at_end.contains("new_wide"), "{at_end}");
@@ -1663,27 +2252,28 @@ mod tests {
 
         let top = render(&renderer, &mut model, 80, 14);
         let top_rows = rows(&top);
-        assert!(top_rows[2].contains("▣ 1/1 src/readable.rs"));
-        let top_thumb = (2..12)
-            .find(|y| top[(79, *y)].symbol() == "█")
+        assert!(top_rows[1].contains("󰈔 1/1 src/readable.rs"));
+        let top_thumb = (1..12)
+            .find(|y| top[(79, *y)].symbol() == symbols::SCROLL_THUMB)
             .expect("long review renders a scrollbar thumb");
+        assert!((1..12).all(|y| matches!(top[(79, y)].symbol(), " " | symbols::SCROLL_THUMB)));
 
         crate::app::update(&mut model, review::Event::ScrollViewport(1));
         let middle = render(&renderer, &mut model, 80, 14);
-        let middle_thumb = (2..12)
-            .find(|y| middle[(79, *y)].symbol() == "█")
+        let middle_thumb = (1..12)
+            .find(|y| middle[(79, *y)].symbol() == symbols::SCROLL_THUMB)
             .expect("middle review renders a scrollbar thumb");
         assert!(middle_thumb >= top_thumb);
 
-        crate::app::update(&mut model, review::Event::JumpToStreamEdge { end: true });
+        crate::app::update(&mut model, review::Event::JumpToDiffEdge { end: true });
         let end = render(&renderer, &mut model, 80, 14);
-        let end_thumb = (2..12)
+        let end_thumb = (1..12)
             .rev()
-            .find(|y| end[(79, *y)].symbol() == "█")
+            .find(|y| end[(79, *y)].symbol() == symbols::SCROLL_THUMB)
             .expect("review end renders a scrollbar thumb");
         assert!(end_thumb > top_thumb);
-        assert_eq!(end[(79, 11)].symbol(), "█");
-        assert!(rows(&end)[2].contains("▣ 1/1 src/readable.rs"));
+        assert_eq!(end[(79, 11)].symbol(), symbols::SCROLL_THUMB);
+        assert!(rows(&end)[1].contains("󰈔 1/1 src/readable.rs"));
     }
 
     #[test]

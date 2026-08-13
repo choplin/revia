@@ -1,6 +1,6 @@
 use crate::{
     app::effect::{OperationId, PendingEffectKind},
-    input::{BindingResolution, Key, PhysicalInput},
+    input::{BindingResolution, Key, KeyboardProtocol, PhysicalInput},
     mode::ActiveMode,
     semantic::{ContextualKeys, CurrentContext, Footer, Header, SurfaceContext},
     thread::{Resolution, ThreadState},
@@ -29,6 +29,7 @@ pub struct Model {
     pub pending: Option<PendingEffect>,
     next_operation_id: OperationId,
     pub running: RunningState,
+    pub keyboard_protocol: KeyboardProtocol,
 }
 
 impl Model {
@@ -39,6 +40,7 @@ impl Model {
             pending: None,
             next_operation_id: 0,
             running: RunningState::Running,
+            keyboard_protocol: KeyboardProtocol::Legacy,
         }
     }
 
@@ -167,6 +169,7 @@ pub fn view(model: &Model, input: ViewInput) -> View {
                     input.context,
                     input.selected_thread_available,
                     input.selected_thread_resolved,
+                    model.keyboard_protocol,
                     input.width,
                 ),
             },
@@ -176,12 +179,12 @@ pub fn view(model: &Model, input: ViewInput) -> View {
 
 fn context_label(context: SurfaceContext) -> &'static str {
     match context {
-        SurfaceContext::Review => "Context: Review stream",
+        SurfaceContext::Review => "Context: Diff",
         SurfaceContext::Threads => "Context: Inline threads",
         SurfaceContext::SearchInput => "Context: Search input",
         SurfaceContext::SearchResults => "Context: Search results",
         SurfaceContext::Rollup => "Context: Thread rollup",
-        SurfaceContext::Composer => "Context: Thread composer",
+        SurfaceContext::Composer => "Context: Comment",
         SurfaceContext::Help => "Context: Keyboard help",
     }
 }
@@ -232,7 +235,7 @@ fn compact_context(
         SurfaceContext::SearchInput => "Search",
         SurfaceContext::SearchResults => "Matches",
         SurfaceContext::Rollup => "Rollup",
-        SurfaceContext::Composer => "Compose",
+        SurfaceContext::Composer => "Comment",
         SurfaceContext::Help => "Help",
     };
     let available = usize::from(width.saturating_sub(2));
@@ -269,29 +272,35 @@ fn context_keys(
     context: SurfaceContext,
     selected_thread_available: bool,
     selected_thread_resolved: bool,
+    keyboard_protocol: KeyboardProtocol,
     width: u16,
 ) -> String {
     let (required, optional): (&[&str], &[&str]) = match context {
         SurfaceContext::Review if selected_thread_available => (
-            &["q exit", "t/T thread", "? help"],
+            &["q exit", "c comment", "? help"],
             &[
-                "j/k stream",
+                "j/k rows",
                 "[/] hunk",
+                "1/2 layout",
+                "w wrap",
+                "/ search",
+                "t/T thread",
                 ",/. file",
                 "F filter",
                 "A all",
-                "/ search",
             ],
         ),
         SurfaceContext::Review => (
-            &["q exit", "c new", "? help"],
+            &["q exit", "c comment", "? help"],
             &[
-                "j/k stream",
+                "j/k rows",
                 "[/] hunk",
+                "1/2 layout",
+                "w wrap",
+                "/ search",
                 ",/. file",
                 "F filter",
                 "A all",
-                "/ search",
             ],
         ),
         SurfaceContext::Threads if selected_thread_resolved => (
@@ -299,10 +308,10 @@ fn context_keys(
             &["t/T thread", "c reply", "C new", "a/o flags"],
         ),
         SurfaceContext::Threads if selected_thread_available => (
-            &["q exit", "Tab stream", "x resolve", "? help"],
+            &["q exit", "Tab diff", "x resolve", "? help"],
             &["t/T thread", "c reply", "C new", "a/o flags", "e fold"],
         ),
-        SurfaceContext::Threads => (&["q exit", "Tab stream", "c new", "? help"], &[]),
+        SurfaceContext::Threads => (&["q exit", "Tab diff", "c comment", "? help"], &[]),
         SurfaceContext::SearchInput => (
             &["Esc cancel", "Enter keep"],
             &["type query", "Backspace delete"],
@@ -314,7 +323,11 @@ fn context_keys(
             (&["v/Esc return", "Enter jump"], &["j/k select"])
         }
         SurfaceContext::Rollup => (&["v/Esc return"], &["no targets"]),
-        SurfaceContext::Composer => (&["Esc cancel", "Ctrl-S post"], &["Enter newline"]),
+        SurfaceContext::Composer if keyboard_protocol.supports_ctrl_enter() => (
+            &["Esc cancel", "Ctrl-Enter/Ctrl-J post"],
+            &["Enter newline"],
+        ),
+        SurfaceContext::Composer => (&["Esc cancel", "Ctrl-J post"], &["Enter newline"]),
         SurfaceContext::Help => (&["Esc/? close"], &["j/k rows", "f/b pages", "g/G edges"]),
     };
     fit_key_groups(required, optional, width)
@@ -350,9 +363,27 @@ mod tests {
 
     #[test]
     fn resolved_thread_keys_preserve_critical_actions_at_exact_widths() {
-        let at_48 = context_keys(SurfaceContext::Threads, true, true, 48);
-        let at_72 = context_keys(SurfaceContext::Threads, true, true, 72);
-        let at_119 = context_keys(SurfaceContext::Threads, true, true, 119);
+        let at_48 = context_keys(
+            SurfaceContext::Threads,
+            true,
+            true,
+            KeyboardProtocol::Legacy,
+            48,
+        );
+        let at_72 = context_keys(
+            SurfaceContext::Threads,
+            true,
+            true,
+            KeyboardProtocol::Legacy,
+            72,
+        );
+        let at_119 = context_keys(
+            SurfaceContext::Threads,
+            true,
+            true,
+            KeyboardProtocol::Legacy,
+            119,
+        );
 
         assert_eq!(at_48, "q exit · Tab · R reopen · e fold · ? help");
         assert_eq!(
@@ -386,7 +417,8 @@ mod tests {
         for width in [48, 72, 119] {
             for context in contexts {
                 for selected in [false, true] {
-                    let keys = context_keys(context, selected, selected, width);
+                    let keys =
+                        context_keys(context, selected, selected, KeyboardProtocol::Legacy, width);
                     assert!(
                         UnicodeWidthStr::width(format!("Keys: {keys}").as_str())
                             <= usize::from(width),
@@ -395,5 +427,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn composer_keys_only_advertise_ctrl_enter_when_enhanced_input_is_available() {
+        let legacy = context_keys(
+            SurfaceContext::Composer,
+            false,
+            false,
+            KeyboardProtocol::Legacy,
+            80,
+        );
+        let kitty = context_keys(
+            SurfaceContext::Composer,
+            false,
+            false,
+            KeyboardProtocol::Kitty,
+            80,
+        );
+
+        assert_eq!(legacy, "Esc cancel · Ctrl-J post · Enter newline");
+        assert_eq!(kitty, "Esc cancel · Ctrl-Enter/Ctrl-J post · Enter newline");
     }
 }
