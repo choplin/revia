@@ -206,6 +206,13 @@ impl ReviewRowMap {
             })
     }
 
+    pub(crate) fn selected_file_start_row(&self) -> Option<usize> {
+        self.files
+            .iter()
+            .find(|file| file.selected)
+            .map(|file| file.start)
+    }
+
     pub(crate) fn selected_hunk_range(&self) -> Option<std::ops::Range<usize>> {
         self.files
             .iter()

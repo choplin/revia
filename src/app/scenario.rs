@@ -9,7 +9,7 @@ use crate::{
     input::{BindingResolution, Key, KeyPhase, PhysicalInput},
     mode::{composer, help, review, rollup},
     presentation::{self, ReviewRowMap},
-    semantic::{Body, LayoutPolicy, Overlay, ReviewBody},
+    semantic::{Body, DiffSearchTarget, LayoutPolicy, Overlay, ReviewBody},
     thread::{
         Participant, ParticipantKind, Resolution, ThreadChange, ThreadId, ThreadState,
         ThreadSuccess,
@@ -335,6 +335,32 @@ fn search_context_always_reports_current_and_total_matches() {
     scenario.when_input(input(Key::Char('n')));
     let results = super::view(&scenario.model);
     assert!(results.footer.current_context.text.contains("match 2/4"));
+}
+
+#[test]
+fn search_jumps_keep_the_target_away_from_viewport_edges() {
+    let mut scenario = Scenario::given(LONG_DIFF, ThreadState::default());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 8,
+        columns: 80,
+    });
+    type_search(&mut scenario, "middle");
+
+    let (body, _, rows) = review_geometry(&scenario.model);
+    let target = rows
+        .row_for_search_target(&DiffSearchTarget::HunkHeader {
+            location: HunkLocation::new("b.rs", "@@ -40,6 +40,6 @@ middle"),
+        })
+        .expect("search target has a physical row");
+    assert_eq!(
+        target,
+        body.scroll
+            + body
+                .viewport
+                .visible_rows
+                .saturating_sub(1)
+                .saturating_sub(2)
+    );
 }
 
 #[test]
@@ -884,6 +910,7 @@ fn hunk_jumps_center_small_hunks_and_start_large_hunks() {
     let selected = rows
         .selected_target_row()
         .expect("file jump keeps a selected hunk");
+    assert_eq!(body.scroll, rows.selected_file_start_row().unwrap());
     assert!(selected >= body.scroll);
     assert!(selected < body.scroll + body.viewport.visible_rows);
     assert_eq!(
@@ -935,6 +962,7 @@ fn hunkless_file_jump_reveals_its_header_and_hunk_navigation_continues() {
     let file_header = rows
         .selected_target_row()
         .expect("hunkless selected file has a physical header target");
+    assert_eq!(body.scroll, rows.selected_file_start_row().unwrap());
     assert!(file_header >= body.scroll);
     assert!(file_header < body.scroll + body.viewport.visible_rows);
     assert_eq!(
@@ -949,6 +977,37 @@ fn hunkless_file_jump_reveals_its_header_and_hunk_navigation_continues() {
     assert_eq!(
         scenario.model.review.selected_location(),
         Some(HunkLocation::new("c.rs", "@@ -3 +3 @@"))
+    );
+}
+
+#[test]
+fn file_jumps_align_headers_to_the_top_and_clamp_at_the_document_end() {
+    let mut scenario = Scenario::given(LONG_DIFF, ThreadState::default());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 6,
+        columns: 80,
+    });
+
+    scenario.when_event(review::Event::MoveFile(1));
+    let (middle, _, middle_rows) = review_geometry(&scenario.model);
+    assert_eq!(
+        middle.scroll,
+        middle_rows.selected_file_start_row().unwrap()
+    );
+
+    scenario.when_event(review::Event::MoveFile(-1));
+    let (first, _, first_rows) = review_geometry(&scenario.model);
+    assert_eq!(first.scroll, first_rows.selected_file_start_row().unwrap());
+
+    scenario.when_event(review::Event::MoveFile(-1));
+    let (last, _, last_rows) = review_geometry(&scenario.model);
+    let maximum = last
+        .viewport
+        .total_rows
+        .saturating_sub(last.viewport.visible_rows);
+    assert_eq!(
+        last.scroll,
+        last_rows.selected_file_start_row().unwrap().min(maximum)
     );
 }
 

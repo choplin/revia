@@ -18,6 +18,8 @@ use crate::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+const TARGET_REVEAL_MARGIN: usize = 2;
+
 #[derive(Debug)]
 pub struct Model {
     request: DiffRequest,
@@ -654,7 +656,16 @@ impl Model {
         let rows = self.row_map(threads);
         let visible_rows = self.visible_rows_for(&rows);
         if let Some(row) = rows.selected_target_row() {
-            self.view.reveal(row, visible_rows);
+            self.view.reveal(row, visible_rows, TARGET_REVEAL_MARGIN);
+            self.view.clamp(rows.total_rows(), visible_rows);
+        }
+    }
+
+    fn align_selected_file_to_top(&mut self, threads: &Threads) {
+        let rows = self.row_map(threads);
+        let visible_rows = self.visible_rows_for(&rows);
+        if let Some(row) = rows.selected_file_start_row() {
+            self.view.set_scroll(row);
             self.view.clamp(rows.total_rows(), visible_rows);
         }
     }
@@ -807,7 +818,7 @@ impl Model {
         let rows = self.row_map(threads);
         let visible_rows = self.visible_rows_for(&rows);
         if let Some(row) = rows.row_for_search_target(target) {
-            self.view.reveal(row, visible_rows);
+            self.view.reveal(row, visible_rows, TARGET_REVEAL_MARGIN);
             self.view.clamp(rows.total_rows(), visible_rows);
         }
         filter_was_reset
@@ -1259,7 +1270,7 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
                     model.session.select_file(file);
                 }
                 model.view.focus = FocusArea::Review;
-                model.reveal_selected_target(input.threads);
+                model.align_selected_file_to_top(input.threads);
                 status(
                     &mut result,
                     format!(

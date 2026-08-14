@@ -115,15 +115,18 @@ impl ViewState {
         self.scroll_from_end = Some(0);
     }
 
-    pub fn reveal(&mut self, row: usize, viewport_height: usize) {
+    pub fn reveal(&mut self, row: usize, viewport_height: usize, margin: usize) {
         self.scroll_from_end = None;
+        let margin = margin.min(viewport_height.saturating_sub(1) / 2);
+        let top = self.scroll.saturating_add(margin);
         let bottom = self
             .scroll
-            .saturating_add(viewport_height.saturating_sub(1));
-        if row < self.scroll {
-            self.scroll = row;
+            .saturating_add(viewport_height.saturating_sub(1).saturating_sub(margin));
+        if row < top {
+            self.scroll = row.saturating_sub(margin);
         } else if row > bottom {
-            self.scroll = row.saturating_sub(viewport_height.saturating_sub(1));
+            self.scroll =
+                row.saturating_sub(viewport_height.saturating_sub(1).saturating_sub(margin));
         }
     }
 
@@ -255,17 +258,19 @@ mod tests {
     }
 
     #[test]
-    fn reveal_only_moves_the_viewport_when_needed() {
+    fn reveal_keeps_the_target_inside_the_requested_margin() {
         let mut view = ViewState {
             scroll: 10,
             ..ViewState::default()
         };
-        view.reveal(14, 8);
+        view.reveal(14, 8, 2);
         assert_eq!(view.scroll, 10);
-        view.reveal(20, 8);
-        assert_eq!(view.scroll, 13);
-        view.reveal(2, 8);
-        assert_eq!(view.scroll, 2);
+        view.reveal(16, 8, 2);
+        assert_eq!(view.scroll, 11);
+        view.reveal(2, 8, 2);
+        assert_eq!(view.scroll, 0);
+        view.reveal(8, 3, 2);
+        assert_eq!(view.scroll, 7);
     }
 
     #[test]
