@@ -13,6 +13,7 @@ pub enum Context {
     #[default]
     Review,
     Threads,
+    Files,
     SearchResults,
 }
 
@@ -171,17 +172,19 @@ fn help_text(context: Context) -> String {
     let context_label = match context {
         Context::Review => "diff",
         Context::Threads => "inline thread",
+        Context::Files => "file rail",
         Context::SearchResults => "search results",
     };
     let search = marker(context == Context::SearchResults);
     let thread = marker(context == Context::Threads);
+    let rail = marker(context == Context::Files);
     let search_exit = if context == Context::SearchResults {
         " · Esc cancels search"
     } else {
         ""
     };
     format!(
-        "◆ commands valid from {context_label}\n\nNavigation\n◆ j/k, ↑/↓ rows   f/Space, b pages   d/u half page\n◆ g/G edges        [/] hunk          ,/. file\n◆ / full-diff search {search} n/N next/previous match (wrap)\n\nView\n◆ F cycle filter   A All changes     1/2/0 layout\n◆ s file rail      m headers · w wrap\n◆ =/- context      r reload (filter retained)\n\nReview actions\n◆ t/T thread       Tab diff/thread   c comment · C new comment\n{thread} x/R resolve/reopen   {thread} a/o flags   {thread} e resolved fold\n◆ {{/}} attention (Git order, wrap)   v rollup\n\nGlobal / exit\n◆ ? help           q quit review{search_exit}\n  In help: Esc/? closes and returns to {context_label}"
+        "◆ commands valid from {context_label}\n\nNavigation\n◆ j/k, ↑/↓ rows   f/Space, b pages   d/u half page\n◆ g/G edges        [/] hunk          ,/. file\n◆ / full-diff search {search} n/N next/previous match (wrap)\n\nView\n◆ F cycle filter   A All changes     1/2/0 layout\n◆ s file rail      {rail} j/k file (rail focus)\n◆ m headers · w wrap\n◆ =/- context      r reload (filter retained)\n\nReview actions\n◆ Tab diff/rail    t/T thread (Tab returns to the diff)\n◆ c comment · C new comment\n{thread} x/R resolve/reopen   {thread} a/o flags   {thread} e resolved fold\n◆ {{/}} attention (Git order, wrap)   v rollup\n\nGlobal / exit\n◆ ? help           q quit review{search_exit}\n  In help: Esc/? closes and returns to {context_label}"
     )
 }
 

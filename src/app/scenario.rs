@@ -170,6 +170,107 @@ fn lifecycle_threads() -> ThreadState {
     threads
 }
 
+fn rail_selection(scenario: &Scenario) -> Option<usize> {
+    super::view(&scenario.model)
+        .file_rail
+        .as_ref()
+        .and_then(|rail| rail.selected)
+}
+
+#[test]
+fn the_file_rail_scopes_vertical_keys_and_leaves_global_keys_alone() {
+    let mut scenario = Scenario::given(TWO_FILES, ThreadState::default());
+    assert_eq!(scenario.model.review.focus(), FocusArea::Review);
+
+    // This diff carries no threads, so Tab steps over the thread region.
+    scenario.when_input(input(Key::Tab));
+    assert_eq!(scenario.model.review.focus(), FocusArea::Files);
+
+    // j/k address whole files here rather than scrolling the diff.
+    assert_eq!(rail_selection(&scenario), Some(0));
+    scenario.when_input(input(Key::Char('j')));
+    assert_eq!(rail_selection(&scenario), Some(1));
+    scenario.when_input(input(Key::Char('k')));
+    assert_eq!(rail_selection(&scenario), Some(0));
+
+    // Keys the scoped layer does not claim keep their global meaning, and
+    // hiding the rail cannot leave focus stranded on it.
+    scenario.when_input(input(Key::Char('s')));
+    assert_eq!(scenario.model.review.focus(), FocusArea::Review);
+    assert!(super::view(&scenario.model).file_rail.is_none());
+}
+
+#[test]
+fn shared_navigation_acts_from_the_rail_without_taking_its_focus() {
+    let mut scenario = Scenario::given(TWO_FILES, ThreadState::default());
+    scenario.when_input(input(Key::Tab));
+    assert_eq!(scenario.model.review.focus(), FocusArea::Files);
+
+    // Navigation is shared across regions: it does the work and leaves focus
+    // where the user put it.
+    for key in [
+        Key::Char('d'),
+        Key::Char('u'),
+        Key::Char('f'),
+        Key::Char('b'),
+        Key::Char('g'),
+        Key::Char('G'),
+        Key::Char(']'),
+        Key::Char('['),
+    ] {
+        scenario.when_input(input(key));
+        assert_eq!(
+            scenario.model.review.focus(),
+            FocusArea::Files,
+            "{key:?} moved focus away from the rail"
+        );
+    }
+
+    let before = rail_selection(&scenario);
+    scenario.when_input(input(Key::Char('.')));
+    assert_ne!(rail_selection(&scenario), before);
+    assert_eq!(scenario.model.review.focus(), FocusArea::Files);
+    scenario.when_input(input(Key::Char(',')));
+    assert_eq!(rail_selection(&scenario), before);
+    assert_eq!(scenario.model.review.focus(), FocusArea::Files);
+}
+
+#[test]
+fn scrolling_keeps_a_selected_inline_thread_focused() {
+    let mut scenario = Scenario::given(RAW, threads());
+    scenario.when_input(input(Key::Char('t')));
+    assert_eq!(scenario.model.review.focus(), FocusArea::Threads);
+
+    scenario.when_input(input(Key::Char('d')));
+    assert_eq!(scenario.model.review.focus(), FocusArea::Threads);
+    scenario.when_input(input(Key::Char('u')));
+    assert_eq!(scenario.model.review.focus(), FocusArea::Threads);
+
+    // Tab is the way out, and it returns to the diff rather than the rail.
+    scenario.when_input(input(Key::Tab));
+    assert_eq!(scenario.model.review.focus(), FocusArea::Review);
+}
+
+#[test]
+fn a_shell_too_narrow_to_draw_the_rail_keeps_focus_off_it() {
+    let mut scenario = Scenario::given(TWO_FILES, ThreadState::default());
+    scenario.when_input(input(Key::Tab));
+    assert_eq!(scenario.model.review.focus(), FocusArea::Files);
+
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 20,
+        columns: 48,
+    });
+    assert_eq!(scenario.model.review.focus(), FocusArea::Review);
+
+    scenario.when_input(input(Key::Tab));
+    assert_eq!(scenario.model.review.focus(), FocusArea::Review);
+    assert_eq!(
+        scenario.model.global.status.as_deref(),
+        Some("cannot focus the file rail: it is hidden; press s to show it")
+    );
+}
+
 const RAW: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
 const TWO_FILES: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-old_b\n+new_b\n";
 const FILTER_DIFF: &str = concat!(
@@ -1445,6 +1546,8 @@ fn one_review_cursor_drives_file_hunk_thread_and_diff_targets() {
             .is_some_and(|status| status.contains("thread target: #0 (1/2)"))
     );
 
+    // A thread target is left by returning to the diff, not by continuing on
+    // to the file rail.
     scenario.when_input(input(Key::Tab));
     assert_eq!(scenario.model.review.focus(), FocusArea::Review);
     scenario.when_event(global::Event::ViewportResized {
@@ -1543,12 +1646,16 @@ fn contextual_keys_follow_mode_and_visible_thread_availability() {
     let view = super::view(&empty.model);
     assert!(view.footer.contextual_keys.text.contains("c comment"));
     assert!(!view.footer.contextual_keys.text.contains("x resolve"));
+    // With no threads to address, Tab steps over the thread region and lands on
+    // the file rail instead of refusing to move.
     empty.when_input(input(Key::Tab));
-    assert_eq!(empty.model.review.focus(), FocusArea::Review);
+    assert_eq!(empty.model.review.focus(), FocusArea::Files);
     assert_eq!(
         empty.model.global.status.as_deref(),
-        Some("cannot focus threads: this hunk has no threads")
+        Some("file rail focused")
     );
+    empty.when_input(input(Key::Tab));
+    assert_eq!(empty.model.review.focus(), FocusArea::Review);
 
     empty.when_input(input(Key::Char('c')));
     let view = super::view(&empty.model);

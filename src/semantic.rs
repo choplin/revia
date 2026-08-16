@@ -205,6 +205,7 @@ pub struct ContextualKeys {
 pub enum SurfaceContext {
     Review,
     Threads,
+    Files,
     SearchInput,
     SearchResults,
     Rollup,

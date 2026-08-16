@@ -504,6 +504,7 @@ pub fn view(model: &Model) -> semantic::View {
                 match layout.focus {
                     crate::ui::FocusArea::Review => semantic::SurfaceContext::Review,
                     crate::ui::FocusArea::Threads => semantic::SurfaceContext::Threads,
+                    crate::ui::FocusArea::Files => semantic::SurfaceContext::Files,
                 },
                 match layout.focus {
                     crate::ui::FocusArea::Threads => selected_thread.map(|id| {
@@ -512,7 +513,7 @@ pub fn view(model: &Model) -> semantic::View {
                             review_target.as_deref().unwrap_or("unknown hunk")
                         )
                     }),
-                    crate::ui::FocusArea::Review => review_target,
+                    crate::ui::FocusArea::Review | crate::ui::FocusArea::Files => review_target,
                 },
                 selected_thread.is_some(),
             ),

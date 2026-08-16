@@ -8,23 +8,16 @@
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+/// Which region a key is scoped to.  `Threads` is not a stop on the `Tab`
+/// route: it is entered with the thread verbs and left again by returning to
+/// the diff, so the route itself stays a two-way switch between the diff and
+/// the file rail.  Availability depends on what the shell is drawing, so the
+/// route lives in the review model rather than here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusArea {
     Review,
     Threads,
-}
-
-impl FocusArea {
-    pub fn next(self) -> Self {
-        match self {
-            Self::Review => Self::Threads,
-            Self::Threads => Self::Review,
-        }
-    }
-
-    pub fn previous(self) -> Self {
-        self.next()
-    }
+    Files,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,7 +228,7 @@ pub(crate) fn fit_width(value: &str, width: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{FocusArea, LayoutMode, ShellSize, ViewState, fit_width, truncate_start};
+    use super::{LayoutMode, ShellSize, ViewState, fit_width, truncate_start};
 
     #[test]
     fn viewport_state_does_not_own_review_selection() {
@@ -248,9 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn focus_and_layout_have_explicit_cycles() {
-        assert_eq!(FocusArea::Review.previous(), FocusArea::Threads);
-        assert_eq!(FocusArea::Threads.next(), FocusArea::Review);
+    fn layout_has_an_explicit_cycle() {
         assert_eq!(LayoutMode::Auto.resolved(120), LayoutMode::Split);
         assert_eq!(LayoutMode::Auto.resolved(80), LayoutMode::Stack);
         assert_eq!(LayoutMode::Auto.resolved(87), LayoutMode::Stack);

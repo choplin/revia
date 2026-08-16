@@ -8,7 +8,7 @@ use crate::{
     },
     symbols,
     syntax::SyntaxHighlighter,
-    ui::{LayoutMode, ShellSize, truncate_end, truncate_start},
+    ui::{FocusArea, LayoutMode, ShellSize, truncate_end, truncate_start},
 };
 use ratatui::{
     Frame,
@@ -293,16 +293,26 @@ impl Renderer {
                 .collect::<Vec<_>>();
             let mut state = ListState::default();
             state.select(rail.selected);
+            let focused = view.layout.focus == FocusArea::Files;
             let block = region_block(
                 "Files",
-                false,
-                rail.selected.map(|_| "CURRENT FILE"),
+                focused,
+                if focused {
+                    Some("FILE FOCUS")
+                } else {
+                    rail.selected.map(|_| "CURRENT FILE")
+                },
                 self.semantic_theme,
             );
+            // Only the focused region carries the reversed selection bar; the
+            // ▸ marker keeps the current file identifiable either way.
+            let highlight = if focused {
+                self.semantic_theme.selection()
+            } else {
+                self.semantic_theme.style(Tone::MutedResolved)
+            };
             frame.render_stateful_widget(
-                List::new(items)
-                    .block(block)
-                    .highlight_style(self.semantic_theme.selection()),
+                List::new(items).block(block).highlight_style(highlight),
                 area,
                 &mut state,
             );
@@ -358,8 +368,14 @@ impl Renderer {
                 let [sticky, content] =
                     Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
                 frame.render_widget(
-                    Paragraph::new(sticky_context_text(context, body_inner_width))
-                        .style(self.semantic_theme.style(Tone::FocusSelection)),
+                    Paragraph::new(sticky_context_text(context, body_inner_width)).style(
+                        self.semantic_theme
+                            .style(if view.layout.focus == FocusArea::Review {
+                                Tone::FocusSelection
+                            } else {
+                                Tone::MutedResolved
+                            }),
+                    ),
                     sticky,
                 );
                 content
@@ -430,6 +446,7 @@ impl Renderer {
             );
         }
 
+        let is_focused = view.layout.focus == FocusArea::Review;
         let window_start = review.scroll;
         let window_end = window_start.saturating_add(review.viewport.visible_rows);
         let mut lines = Vec::new();
@@ -459,12 +476,20 @@ impl Renderer {
                         view,
                     );
                     if hunk.selected {
+                        // The selected hunk stays boxed wherever focus is, but
+                        // it only claims the focus tone while the diff owns the
+                        // keys.  That is what makes a focus switch visible on
+                        // this side of the shell too.
                         highlight_hunk_box(
                             &mut rendered,
                             section.start(),
                             section.start(),
                             section.end(),
-                            self.semantic_theme.border(Tone::FocusSelection),
+                            self.semantic_theme.border(if is_focused {
+                                Tone::FocusSelection
+                            } else {
+                                Tone::MutedResolved
+                            }),
                         );
                     }
                     rendered
@@ -1115,6 +1140,60 @@ mod tests {
             .chunks(usize::from(buffer.area.width))
             .map(|row| row.iter().map(|cell| cell.symbol()).collect())
             .collect()
+    }
+
+    fn focus_toned_cells(buffer: &Buffer, columns: std::ops::Range<u16>) -> usize {
+        let width = buffer.area.width;
+        buffer
+            .content()
+            .iter()
+            .enumerate()
+            .filter(|(index, cell)| {
+                let column = (*index as u16) % width;
+                columns.contains(&column) && cell.fg == Color::Cyan
+            })
+            .count()
+    }
+
+    #[test]
+    fn a_focus_switch_is_visible_on_both_sides_of_the_shell() {
+        const RAIL: std::ops::Range<u16> = 0..30;
+        const BODY: std::ops::Range<u16> = 30..120;
+
+        let renderer = Renderer::default();
+        let mut model = model_with_diff(RESPONSIVE_DIFF);
+        let diff_focused = render(&renderer, &mut model, 120, 20);
+        let diff_focused_rows = rows(&diff_focused);
+        assert!(
+            diff_focused_rows.iter().any(|row| row.contains("Files")),
+            "{diff_focused_rows:#?}"
+        );
+        assert!(
+            !diff_focused_rows
+                .iter()
+                .any(|row| row.contains("FILE FOCUS"))
+        );
+
+        crate::app::update(&mut model, review::Event::CycleFocus);
+        let rail_focused = render(&renderer, &mut model, 120, 20);
+        let rail_focused_rows = rows(&rail_focused);
+        assert!(
+            rail_focused_rows
+                .iter()
+                .any(|row| row.contains("FILE FOCUS")),
+            "{rail_focused_rows:#?}"
+        );
+
+        // The rail gains the focus tone and the diff gives it up, so the switch
+        // reads from either half of the shell rather than the footer alone.
+        assert!(
+            focus_toned_cells(&rail_focused, RAIL) > focus_toned_cells(&diff_focused, RAIL),
+            "the rail did not gain the focus tone"
+        );
+        assert!(
+            focus_toned_cells(&rail_focused, BODY) < focus_toned_cells(&diff_focused, BODY),
+            "the diff kept the focus tone while the rail held focus"
+        );
     }
 
     #[test]

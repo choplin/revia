@@ -181,6 +181,7 @@ fn context_label(context: SurfaceContext) -> &'static str {
     match context {
         SurfaceContext::Review => "Context: Diff",
         SurfaceContext::Threads => "Context: Inline threads",
+        SurfaceContext::Files => "Context: File rail",
         SurfaceContext::SearchInput => "Context: Search input",
         SurfaceContext::SearchResults => "Context: Search results",
         SurfaceContext::Rollup => "Context: Thread rollup",
@@ -232,6 +233,7 @@ fn compact_context(
     let label = match context {
         SurfaceContext::Review => "Review",
         SurfaceContext::Threads => "Thread",
+        SurfaceContext::Files => "Files",
         SurfaceContext::SearchInput => "Search",
         SurfaceContext::SearchResults => "Matches",
         SurfaceContext::Rollup => "Rollup",
@@ -299,6 +301,7 @@ fn context_keys(
                 "w wrap",
                 "/ search",
                 ",/. file",
+                "Tab rail",
                 "F filter",
                 "A all",
             ],
@@ -312,6 +315,10 @@ fn context_keys(
             &["t/T thread", "c reply", "C new", "a/o flags", "e fold"],
         ),
         SurfaceContext::Threads => (&["q exit", "Tab diff", "c comment", "? help"], &[]),
+        SurfaceContext::Files => (
+            &["q exit", "Tab diff", "? help"],
+            &["j/k file", "s hide rail", "F filter", "A all"],
+        ),
         SurfaceContext::SearchInput => (
             &["Esc cancel", "Enter keep"],
             &["type query", "Backspace delete"],
@@ -408,6 +415,7 @@ mod tests {
         let contexts = [
             SurfaceContext::Review,
             SurfaceContext::Threads,
+            SurfaceContext::Files,
             SurfaceContext::SearchInput,
             SurfaceContext::SearchResults,
             SurfaceContext::Rollup,

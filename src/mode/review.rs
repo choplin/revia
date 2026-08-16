@@ -14,7 +14,7 @@ use crate::{
         Resolution, ReviewThread, ThreadChange, ThreadId, ThreadOperation, ThreadState as Threads,
         ThreadSuccess,
     },
-    ui::{FocusArea, LayoutMode, ViewState, review_body_width},
+    ui::{FocusArea, LayoutMode, ShellSize, ViewState, review_body_width},
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -185,7 +185,24 @@ impl Model {
         self.change_geometry(threads, |model| {
             model.viewport_rows = rows.max(1);
             model.viewport_columns = columns;
+            model.release_file_rail_focus();
         });
+    }
+
+    /// Whether the file rail actually occupies screen space.  `sidebar_visible`
+    /// only records the user's intent; a narrow shell drops the rail regardless.
+    pub fn file_rail_visible(&self) -> bool {
+        self.sidebar_visible
+            && ShellSize::for_width(self.viewport_columns)
+                .rail_width(self.viewport_columns)
+                .is_some()
+    }
+
+    /// Focus must never rest on a region the shell is not drawing.
+    fn release_file_rail_focus(&mut self) {
+        if self.view.focus == FocusArea::Files && !self.file_rail_visible() {
+            self.view.focus = FocusArea::Review;
+        }
     }
 
     pub fn viewport_columns(&self) -> u16 {
@@ -208,10 +225,12 @@ impl Model {
     pub fn help_context(&self) -> crate::mode::help::Context {
         if self.search.as_ref().is_some_and(|search| !search.editing) {
             crate::mode::help::Context::SearchResults
-        } else if self.focus() == FocusArea::Threads {
-            crate::mode::help::Context::Threads
         } else {
-            crate::mode::help::Context::Review
+            match self.focus() {
+                FocusArea::Threads => crate::mode::help::Context::Threads,
+                FocusArea::Files => crate::mode::help::Context::Files,
+                FocusArea::Review => crate::mode::help::Context::Review,
+            }
         }
     }
 
@@ -814,7 +833,11 @@ impl Model {
                 }
             }
         }
-        self.view.focus = FocusArea::Review;
+        // Landing on a match reselects the hunk, which can strand a thread
+        // target; any other focus keeps its place.
+        if self.view.focus == FocusArea::Threads {
+            self.view.focus = FocusArea::Review;
+        }
         let rows = self.row_map(threads);
         let visible_rows = self.visible_rows_for(&rows);
         if let Some(row) = rows.row_for_search_target(target) {
@@ -929,6 +952,18 @@ pub struct Update {
     pub effects: Vec<Effect>,
 }
 
+/// Keys that mean something different while the file rail holds focus.  The
+/// rail addresses whole files, so vertical movement walks the file list instead
+/// of scrolling the diff.  Returning `None` hands the key back to the shared
+/// table.
+fn file_rail_binding(key: Key) -> Option<Event> {
+    match key {
+        Key::Char('j') | Key::Down => Some(Event::MoveFile(1)),
+        Key::Char('k') | Key::Up => Some(Event::MoveFile(-1)),
+        _ => None,
+    }
+}
+
 pub fn bindings(model: &Model, input: PhysicalInput) -> BindingResolution<Event> {
     if model.search.as_ref().is_some_and(|search| search.editing) {
         if input.phase == crate::input::KeyPhase::Release
@@ -987,6 +1022,14 @@ pub fn bindings(model: &Model, input: PhysicalInput) -> BindingResolution<Event>
         )
     {
         return BindingResolution::Consume;
+    }
+    // Focus-scoped layer.  It is consulted before the shared table so a region
+    // can claim a key without renaming the diff binding behind it; anything the
+    // layer does not claim keeps its global meaning.
+    if model.focus() == FocusArea::Files
+        && let Some(event) = file_rail_binding(input.key)
+    {
+        return BindingResolution::Handle(event);
     }
     match input.key {
         Key::Esc if model.focus() == FocusArea::Threads => {
@@ -1148,12 +1191,10 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
         Event::MoveSearch(direction) => {
             move_search(model, direction, input.threads, &mut result);
         }
-        Event::CycleFocus => {
-            move_focus(model, input.threads, &mut result, false);
+        Event::CycleFocus | Event::PreviousFocus => {
+            move_focus(model, input.threads, &mut result);
         }
-        Event::PreviousFocus => move_focus(model, input.threads, &mut result, true),
         Event::ScrollRows(delta) => {
-            model.view.focus = FocusArea::Review;
             model.view.scroll_by(delta);
             let rows = model.row_map(input.threads);
             let visible_rows = model.visible_rows_for(&rows);
@@ -1162,7 +1203,6 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
             status(&mut result, scroll_status(&model.view));
         }
         Event::ScrollViewport(direction) => {
-            model.view.focus = FocusArea::Review;
             let rows = model.row_map(input.threads);
             let visible_rows = model.visible_rows_for(&rows);
             let viewport = visible_rows.min(i16::MAX as usize) as i16;
@@ -1172,7 +1212,6 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
             status(&mut result, scroll_status(&model.view));
         }
         Event::ScrollHalfViewport(direction) => {
-            model.view.focus = FocusArea::Review;
             let rows = model.row_map(input.threads);
             let visible_rows = model.visible_rows_for(&rows);
             let half_viewport = (visible_rows / 2).max(1).min(i16::MAX as usize) as i16;
@@ -1184,7 +1223,6 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
             status(&mut result, scroll_status(&model.view));
         }
         Event::JumpToDiffEdge { end } => {
-            model.view.focus = FocusArea::Review;
             if end {
                 model.view.jump_to_end();
             } else {
@@ -1223,7 +1261,6 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
             }) {
                 let (file, hunk) = hunks[target];
                 model.session.select_hunk(file, hunk);
-                model.view.focus = FocusArea::Review;
                 model.center_selected_hunk(input.threads);
                 status(
                     &mut result,
@@ -1269,7 +1306,6 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
                 } else {
                     model.session.select_file(file);
                 }
-                model.view.focus = FocusArea::Review;
                 model.align_selected_file_to_top(input.threads);
                 status(
                     &mut result,
@@ -1493,6 +1529,7 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
         Event::ToggleSidebar => {
             model.change_geometry(input.threads, |model| {
                 model.sidebar_visible = !model.sidebar_visible;
+                model.release_file_rail_focus();
             });
             let message = if !model.sidebar_visible {
                 "file rail hidden"
@@ -1540,27 +1577,30 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
     result
 }
 
-fn move_focus(model: &mut Model, threads: &Threads, result: &mut Update, previous: bool) {
-    let next = if previous {
-        model.view.focus.previous()
-    } else {
-        model.view.focus.next()
-    };
-    if next == FocusArea::Threads && model.selected_threads(threads).is_empty() {
-        status(result, "cannot focus threads: this hunk has no threads");
-        return;
-    }
-    model.change_geometry(threads, |model| model.view.focus = next);
-    match next {
-        FocusArea::Review => status(result, "diff focused"),
-        FocusArea::Threads => {
-            model.reveal_selected_target(threads);
-            let id = model
-                .current_thread_id(threads)
-                .expect("thread focus requires a selected thread");
-            status(result, format!("thread target: #{id}"));
+/// `Tab` switches between the two regions that own a lasting position: the diff
+/// and the file rail.  A selected inline thread is a target reached with `t`,
+/// not a stop on this route, so leaving it means returning to the diff.
+fn move_focus(model: &mut Model, threads: &Threads, result: &mut Update) {
+    let next = match model.view.focus {
+        FocusArea::Threads | FocusArea::Files => FocusArea::Review,
+        FocusArea::Review if model.file_rail_visible() => FocusArea::Files,
+        FocusArea::Review => {
+            status(
+                result,
+                "cannot focus the file rail: it is hidden; press s to show it",
+            );
+            return;
         }
-    }
+    };
+    model.change_geometry(threads, |model| model.view.focus = next);
+    status(
+        result,
+        if next == FocusArea::Files {
+            "file rail focused"
+        } else {
+            "diff focused"
+        },
+    );
 }
 
 fn scroll_status(view: &ViewState) -> String {

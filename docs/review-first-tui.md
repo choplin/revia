@@ -71,14 +71,25 @@ the old and new sides when two matches share one split-layout row.
   in that order. A sticky row keeps the file and hunk containing the viewport
   visible, while a scrollbar represents the complete stream and the current
   visible range.
-- The review cursor is the only navigation cursor. The rail follows its current
-  file and never claims a separate focus or scrolling target. `j`/`k` and
-  arrows always scroll the review stream as they do in Hunk. `[`/`]` traverse
-  hunks across file boundaries, `,` / `.` traverse files, `t`/`T` select and
-  cycle the current hunk's inline threads, and `}`/`{` jump to the next/previous
-  needs-attention thread. `Tab` switches only between the stream and an
-  available inline-thread target; when the hunk has no thread, it explains why
-  the target cannot change.
+- The review cursor is the only navigation cursor. The rail can take focus but
+  never holds a selection of its own: it always follows the cursor's current
+  file. `[`/`]` traverse hunks across file boundaries, `,` / `.` traverse files
+  from any focus, `t`/`T` select and cycle the current hunk's inline threads,
+  and `}`/`{` jump to the next/previous needs-attention thread.
+- Focus is what scopes a key, not a separate mode. `Tab` switches between the
+  two regions that hold a lasting position, the stream and the file rail; a
+  hidden or too-narrow rail is refused with the reason. An inline thread is a
+  target entered with `t`/`T` and left with `Tab`, not a third stop on that
+  route.
+- Only the keys a focused region claims change meaning: `j`/`k` and arrows
+  scroll the stream from the diff and walk files from the rail. Everything
+  else — scrolling by page or half page, hunk and file jumps, filters, search —
+  acts from wherever focus is and leaves it there. Focus moves only when the
+  user moves it, or when the region it rested on stops existing.
+- The focused region is the one carrying the focus tone. When the rail takes
+  focus its border and selection light up while the diff's selected-hunk box
+  and sticky context recede, so a switch is visible on both halves of the
+  shell rather than in the footer alone.
 - The diff is side-by-side by default on wide terminals and stacked on narrow
   terminals. Each source row has stable old/new line-number gutters derived
   from its parsed Git hunk range. Split mode allocates the two sides evenly
@@ -184,7 +195,8 @@ review cursor rather than a second scrolling model.
 | `m` | Show or hide hunk headers. |
 | `w` | Toggle line wrapping in stack layout. |
 | `=` / `-` | Increase / decrease diff context and reload. Context cannot go below zero. |
-| `Tab` / Shift-Tab | Switch between the review stream and an available selected inline thread. |
+| `Tab` / Shift-Tab | Switch focus between the review stream and the file rail; from a selected inline thread, return to the stream. A hidden or too-narrow rail is refused with the reason. |
+| `j` / `k`, arrows (file rail focused) | Move to the next / previous file. Keys the rail does not claim keep their global meaning. |
 | `?` | Show the grouped keyboard reference. It marks commands valid in the invoking review, thread, or search-results context. |
 | `q` | Quit from review. In the composer it is text; help and rollup consume it. |
 | `Esc` | Cancel active search or close the topmost composer, help, or rollup; a non-empty composer requires a second `Esc` before discarding; from review without transient state, quit. |
@@ -215,7 +227,8 @@ when an inline thread is actually available and selected.
 | Mode | Navigation and exit |
 | --- | --- |
 | Review stream | Hunk-compatible stream keys plus dedicated file, hunk, thread, and attention jumps; `Esc` quits. |
-| Inline thread | `t` / `T` cycles the visible target, thread verbs act on it, and `Tab` returns to the stream. |
+| Inline thread | `t` / `T` cycles the visible target, thread verbs act on it, and `Tab` returns to the stream. Scrolling does not drop the target. |
+| File rail | `j` / `k` and arrows walk files, every other key keeps its global meaning, and `Tab` returns to the stream. Hiding the rail or shrinking below its width hands focus back to the stream. |
 | Search input | Character keys edit the incremental query, Backspace deletes, `Enter` keeps a non-empty search, and `Esc` restores the invocation location. |
 | Search results | `n` / `N` wraps through matches, `/` starts a new search from the current location, `?` opens context-marked help, and `Esc` cancels back to the invocation location. |
 | Composer | `Ctrl-S` posts, `Enter` inserts a newline, and `Esc` cancels before any quit behavior. A non-empty draft requires a second `Esc` to confirm its loss. |
