@@ -13,21 +13,18 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     anchor::HunkLocation,
-    diff::{DiffLine, DiffLineKind, HunkCoordinates},
+    diff::{DiffFile, DiffLine, DiffLineKind, FileStatus, HunkCoordinates, Magnitude},
     renderer::SemanticTheme,
     semantic::{
         DiffSearchTarget, LayoutPolicy, ReviewBody, ReviewWindowSection, StickyReviewContext, Tone,
     },
     symbols,
     syntax::{HunkSyntax, SyntaxLine, TokenStyle},
-    ui::{LayoutMode, fit_width},
+    ui::{LayoutMode, fit_width, truncate_end, truncate_start},
 };
 
 #[cfg(test)]
-use crate::{
-    semantic::{ThreadCard, ThreadState},
-    ui::truncate_end,
-};
+use crate::semantic::{ThreadCard, ThreadState};
 
 const TAB_WIDTH: usize = 4;
 const SPLIT_SEPARATOR: &str = " │ ";
@@ -43,6 +40,8 @@ struct FileRows {
     path: String,
     selected: bool,
     index: usize,
+    magnitude: Magnitude,
+    notes: Vec<String>,
     start: usize,
     end: usize,
     hunks: Vec<HunkRows>,
@@ -121,8 +120,16 @@ impl ReviewRowMap {
         sections
     }
 
-    pub(crate) fn has_sticky_context(&self) -> bool {
-        !self.files.is_empty()
+    /// Physical rows the sticky position block occupies.
+    ///
+    /// The count is per-diff rather than per-scroll-position so the code
+    /// viewport does not resize as the reviewer moves between files.
+    pub(crate) fn sticky_rows(&self) -> usize {
+        if self.files.is_empty() {
+            0
+        } else {
+            STICKY_ROWS
+        }
     }
 
     pub(crate) fn anchor_at(&self, row: usize) -> ViewportAnchor {
@@ -262,6 +269,8 @@ impl ReviewRowMap {
             file: file.path.clone(),
             file_index: file.index,
             file_count: self.files.len(),
+            magnitude: file.magnitude,
+            notes: file.notes.clone(),
             hunk_header: hunk.and_then(|hunk| hunk.header.clone()),
             hunk_index: hunk.map(|hunk| hunk.index),
             hunk_count: file.hunks.len(),
@@ -281,13 +290,8 @@ pub(crate) fn review_row_map(
     let mut files = Vec::with_capacity(review.files.len());
     for (file_index, file) in review.files.iter().enumerate() {
         let file_start = cursor;
-        cursor = cursor.saturating_add(
-            2 + file
-                .metadata
-                .iter()
-                .filter(|line| show_file_metadata(line))
-                .count(),
-        );
+        cursor = cursor
+            .saturating_add(1 + file_boundary_for(file, &review.files, available_width).rows());
         let number_width = line_number_width(
             file.hunks
                 .iter()
@@ -329,6 +333,8 @@ pub(crate) fn review_row_map(
             path: file.path.clone(),
             selected: file.selected,
             index: file_index,
+            magnitude: file.magnitude,
+            notes: file.notes.clone(),
             start: file_start,
             end: cursor.max(file_start + 1),
             hunks,
@@ -340,8 +346,242 @@ pub(crate) fn review_row_map(
     }
 }
 
-pub(crate) fn show_file_metadata(line: &str) -> bool {
-    !line.starts_with("diff --git ") && !line.starts_with("--- ") && !line.starts_with("+++ ")
+/// The file boundary as the viewport row map sees it.
+///
+/// The renderer swaps in a search marker of the same cell width, so both agree
+/// on how many physical rows the boundary occupies.
+pub(crate) fn file_boundary_for(
+    file: &crate::semantic::ReviewFile,
+    files: &[crate::semantic::ReviewFile],
+    available_width: u16,
+) -> FileBoundary {
+    file_boundary(
+        symbols::FILE,
+        &file.path,
+        unique_prefix_segments(&file.path, files.iter().map(|file| file.path.as_str())),
+        &file.notes,
+        file.magnitude,
+        available_width,
+    )
+}
+
+/// Reduces one file's patch headers to the review facts that change how the
+/// change is interpreted. Everything else is Git transport and is dropped.
+pub(crate) fn file_change_notes(file: &DiffFile) -> Vec<String> {
+    let mut notes = Vec::new();
+    match file.change.status {
+        FileStatus::Added => notes.push("new file".to_owned()),
+        FileStatus::Deleted => notes.push("deleted file".to_owned()),
+        FileStatus::Modified => {}
+    }
+    if let Some(moved) = file.change.moved {
+        let verb = if moved.copied { "copy" } else { "rename" };
+        let similarity = moved
+            .similarity
+            .map(|value| format!(" {value}%"))
+            .unwrap_or_default();
+        let previous = file.previous_path.as_deref().unwrap_or("(unknown)");
+        notes.push(format!("{verb}{similarity} · {previous} → {}", file.path));
+    }
+    if let Some(mode) = &file.change.mode {
+        notes.push(format!("mode {} → {}", mode.old, mode.new));
+    }
+    if file.change.binary {
+        notes.push("binary".to_owned());
+    }
+    notes
+}
+
+pub(crate) fn format_magnitude(magnitude: Magnitude) -> String {
+    format!("+{} -{}", magnitude.additions, magnitude.deletions)
+}
+
+/// The direction of a file's change as a single cell.
+///
+/// Navigation rows are too narrow to carry exact counts without crowding out
+/// the path, so they answer "what kind of change is this" and leave the
+/// magnitude itself to the file boundary.
+pub(crate) fn change_direction(magnitude: Magnitude) -> &'static str {
+    match (magnitude.additions > 0, magnitude.deletions > 0) {
+        (true, true) => symbols::CHANGE_BOTH,
+        (true, false) => symbols::CHANGE_ADDED,
+        (false, true) => symbols::CHANGE_REMOVED,
+        (false, false) => symbols::CHANGE_NONE,
+    }
+}
+
+/// The physical rows of one file boundary.
+///
+/// Row count is width-dependent, so viewport row mapping and rendering must
+/// derive it from this single transform rather than agreeing by convention.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FileBoundary {
+    pub(crate) primary: String,
+    pub(crate) detail: Option<String>,
+}
+
+impl FileBoundary {
+    pub(crate) fn rows(&self) -> usize {
+        1 + usize::from(self.detail.is_some())
+    }
+}
+
+/// Lays out a file boundary as `<marker> <fitted path> … <+adds -dels>`.
+///
+/// The magnitude is never dropped: the path label is shortened first, and
+/// semantic notes move to their own row before they can displace either.
+pub(crate) fn file_boundary(
+    marker: &str,
+    path: &str,
+    required_prefix: usize,
+    notes: &[String],
+    magnitude: Magnitude,
+    available_width: u16,
+) -> FileBoundary {
+    let width = usize::from(available_width);
+    let prefix = if marker.is_empty() {
+        String::new()
+    } else {
+        format!("{marker} ")
+    };
+    let stat = format_magnitude(magnitude);
+    let reserved = UnicodeWidthStr::width(prefix.as_str())
+        .saturating_add(UnicodeWidthStr::width(stat.as_str()))
+        .saturating_add(GUTTER_GAP);
+    let label_width = width.saturating_sub(reserved);
+    let notes_text = notes.join(" · ");
+    let path_label = fit_path_label(path, required_prefix, label_width);
+    let inline = (!notes_text.is_empty())
+        .then(|| format!("{path_label}  {notes_text}"))
+        .filter(|value| UnicodeWidthStr::width(value.as_str()) <= label_width);
+    let detail = (!notes_text.is_empty() && inline.is_none())
+        .then(|| truncate_end(&format!("  {notes_text}"), width));
+    FileBoundary {
+        primary: right_aligned_row(
+            &prefix,
+            inline.as_deref().unwrap_or(&path_label),
+            &stat,
+            width,
+        ),
+        detail,
+    }
+}
+
+const GUTTER_GAP: usize = 2;
+
+/// The sticky position block: one row for the file, one for the hunk.
+///
+/// Splitting them keeps a long hunk header readable instead of competing with
+/// the path for the same row.
+pub(crate) const STICKY_ROWS: usize = 2;
+
+/// Places `value` after `prefix` and pins `right` to the last cell of `width`.
+pub(crate) fn right_aligned_row(prefix: &str, value: &str, right: &str, width: usize) -> String {
+    let prefix_width = UnicodeWidthStr::width(prefix);
+    let right_width = UnicodeWidthStr::width(right);
+    let value_width = width
+        .saturating_sub(prefix_width)
+        .saturating_sub(right_width)
+        .saturating_sub(GUTTER_GAP);
+    if value_width == 0 {
+        return truncate_end(&format!("{prefix}{right}"), width);
+    }
+    let fitted = fit_width(value, value_width);
+    format!("{prefix}{fitted}{}{right}", " ".repeat(GUTTER_GAP))
+}
+
+/// How many leading segments `path` must keep to stay distinguishable from the
+/// other files in the same changeset.
+///
+/// Only files sharing a filename can collide, so the answer is zero for almost
+/// every path and the scan stops as soon as the prefix separates them.
+pub(crate) fn unique_prefix_segments<'a>(
+    path: &str,
+    siblings: impl Iterator<Item = &'a str>,
+) -> usize {
+    let name = file_name(path);
+    let rivals = siblings
+        .filter(|other| *other != path && file_name(other) == name)
+        .collect::<Vec<_>>();
+    if rivals.is_empty() {
+        return 0;
+    }
+    let segments = path.split('/').count();
+    for keep in 1..segments {
+        let prefix = leading_segments(path, keep);
+        if rivals
+            .iter()
+            .all(|other| leading_segments(other, keep) != prefix)
+        {
+            return keep;
+        }
+    }
+    segments.saturating_sub(1)
+}
+
+fn file_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+fn leading_segments(path: &str, count: usize) -> String {
+    path.split('/').take(count).collect::<Vec<_>>().join("/")
+}
+
+/// How an over-long path label is shortened.
+///
+/// Shortening is a presentation judgement that is expected to change, so the
+/// strategy is named and selected in one place rather than being inlined at
+/// each call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PathFit {
+    /// Keep the filename and the leading segments; collapse the middle to `…`.
+    MiddleElision,
+    /// Keep as much of the path's tail as fits.
+    TailOnly,
+}
+
+/// The strategy every path label currently uses. Change this one binding to
+/// switch shortening behaviour across the rail and the file boundaries.
+pub(crate) const PATH_FIT: PathFit = PathFit::MiddleElision;
+
+/// Fits a repository path into `width` using the configured [`PATH_FIT`]
+/// strategy, keeping at least `required_prefix` leading segments so two files
+/// with the same name stay distinguishable by where they live.
+pub(crate) fn fit_path_label(path: &str, required_prefix: usize, width: usize) -> String {
+    fit_path_label_with(PATH_FIT, path, required_prefix, width)
+}
+
+pub(crate) fn fit_path_label_with(
+    strategy: PathFit,
+    path: &str,
+    required_prefix: usize,
+    width: usize,
+) -> String {
+    if UnicodeWidthStr::width(path) <= width {
+        return path.to_owned();
+    }
+    if strategy == PathFit::TailOnly {
+        return truncate_start(path, width);
+    }
+    let segments = path.split('/').collect::<Vec<_>>();
+    let head_count = required_prefix.max(1);
+    if segments.len() > head_count.saturating_add(1) {
+        let head = segments[..head_count].join("/");
+        for keep in (1..segments.len().saturating_sub(head_count)).rev() {
+            let tail = segments[segments.len().saturating_sub(keep)..].join("/");
+            let candidate = format!("{head}/…/{tail}");
+            if UnicodeWidthStr::width(candidate.as_str()) <= width {
+                return candidate;
+            }
+        }
+    }
+    if segments.len() > 1 {
+        let candidate = format!("…/{}", file_name(path));
+        if UnicodeWidthStr::width(candidate.as_str()) <= width {
+            return candidate;
+        }
+    }
+    truncate_start(path, width)
 }
 
 /// Produces the complete, width-bounded physical rows for one inline thread card.
@@ -931,10 +1171,19 @@ fn metadata_row(
     let style = theme.style(Tone::Attention);
     let mut spans = vec![state_gutter(selected, None, theme)];
     spans.push(Span::styled(
-        fit_width(text, available_width.saturating_sub(3)),
+        fit_width(&patch_note(text), available_width.saturating_sub(3)),
         style,
     ));
     Line::from(spans)
+}
+
+/// Restates an in-hunk patch note as a review fact rather than patch syntax.
+fn patch_note(text: &str) -> String {
+    match text.strip_prefix("\\ ") {
+        Some("No newline at end of file") => "no newline at EOF".to_owned(),
+        Some(rest) => rest.to_owned(),
+        None => text.to_owned(),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1247,11 +1496,14 @@ fn merge_syntax_style(base: Style, source: TokenStyle, theme: SemanticTheme) -> 
 #[cfg(test)]
 mod tests {
     use super::{
-        chunk_graphemes, expand_tabs, line_number_width, numbered_lines, search_range,
-        split_hunk_lines, split_rows, stack_hunk_lines, thread_card_rows,
+        PATH_FIT, PathFit, chunk_graphemes, expand_tabs, file_boundary, file_change_notes,
+        fit_path_label, fit_path_label_with, line_number_width, numbered_lines, search_range,
+        split_hunk_lines, split_rows, stack_hunk_lines, thread_card_rows, unique_prefix_segments,
     };
     use crate::anchor::{Anchor, HunkLocation};
-    use crate::diff::{DiffLine, DiffLineKind, HunkCoordinates, HunkRange};
+    use crate::diff::{
+        DiffDocument, DiffLine, DiffLineKind, EDGE_FIXTURE, HunkCoordinates, HunkRange, Magnitude,
+    };
     use crate::renderer::SemanticTheme;
     use crate::semantic::{ThreadCard, ThreadState as SemanticThreadState};
     use crate::syntax::{HunkSyntax, SyntaxHighlighter};
@@ -1269,6 +1521,122 @@ mod tests {
 
     fn hunk_syntax(lines: &[DiffLine], extension: &str) -> HunkSyntax {
         SyntaxHighlighter::default().highlight_hunk(Some(extension), lines)
+    }
+
+    fn edge_notes(path: &str) -> Vec<String> {
+        let document = DiffDocument::parse(EDGE_FIXTURE);
+        let file = document
+            .files
+            .iter()
+            .find(|file| file.path == path)
+            .unwrap_or_else(|| panic!("{path} is part of the edge fixture"));
+        file_change_notes(file)
+    }
+
+    #[test]
+    fn semantic_file_facts_replace_git_transport_headers() {
+        assert_eq!(edge_notes("src/lib.rs"), Vec::<String>::new());
+        assert_eq!(edge_notes("docs/added.md"), ["new file"]);
+        assert_eq!(edge_notes("docs/removed.md"), ["deleted file"]);
+        assert_eq!(edge_notes("assets/logo.png"), ["binary"]);
+        assert_eq!(edge_notes("scripts/review.sh"), ["mode 100644 → 100755"]);
+        assert_eq!(
+            edge_notes("src/new_name.rs"),
+            ["rename 92% · src/old_name.rs → src/new_name.rs"]
+        );
+    }
+
+    #[test]
+    fn file_boundaries_keep_magnitude_and_move_notes_to_their_own_row_when_narrow() {
+        let magnitude = Magnitude {
+            additions: 3,
+            deletions: 1,
+        };
+        let notes = edge_notes("src/new_name.rs");
+
+        let wide = file_boundary("F", "src/new_name.rs", 0, &notes, magnitude, 80);
+        assert_eq!(wide.rows(), 1);
+        assert!(wide.primary.starts_with("F src/new_name.rs  rename 92%"));
+        assert!(wide.primary.ends_with("+3 -1"));
+        assert_eq!(UnicodeWidthStr::width(wide.primary.as_str()), 80);
+
+        let narrow = file_boundary("F", "src/new_name.rs", 0, &notes, magnitude, 48);
+        assert_eq!(narrow.rows(), 2);
+        assert!(narrow.primary.starts_with("F src/new_name.rs"));
+        assert!(narrow.primary.ends_with("+3 -1"));
+        let detail = narrow.detail.expect("the rename survives on its own row");
+        assert!(detail.contains("rename 92%"));
+        assert!(detail.contains("src/old_name.rs"));
+
+        // The magnitude is never the first thing given up.
+        let tiny = file_boundary(
+            "F",
+            "src/very/deep/module/handler.rs",
+            0,
+            &[],
+            magnitude,
+            24,
+        );
+        assert!(tiny.primary.ends_with("+3 -1"));
+        assert_eq!(UnicodeWidthStr::width(tiny.primary.as_str()), 24);
+    }
+
+    #[test]
+    fn path_labels_keep_the_filename_and_the_leading_segment() {
+        assert_eq!(
+            fit_path_label("docs/design/limits/boundaries.md", 0, 40),
+            "docs/design/limits/boundaries.md"
+        );
+        assert_eq!(
+            fit_path_label("docs/design/limits/boundaries.md", 0, 24),
+            "docs/…/boundaries.md"
+        );
+        assert_eq!(
+            fit_path_label("docs/design/limits/boundaries.md", 0, 28),
+            "docs/…/limits/boundaries.md"
+        );
+        // With no room for any prefix the filename still survives intact.
+        assert_eq!(
+            fit_path_label("docs/design/limits/boundaries.md", 0, 15),
+            "…/boundaries.md"
+        );
+    }
+
+    #[test]
+    fn path_shortening_is_selected_in_one_place() {
+        let path = "docs/design/limits/boundaries.md";
+        assert_eq!(
+            fit_path_label(path, 0, 24),
+            fit_path_label_with(PATH_FIT, path, 0, 24)
+        );
+        // The strategies are genuinely different, so swapping PATH_FIT is a
+        // real switch rather than a decorative one.
+        assert_ne!(
+            fit_path_label_with(PathFit::MiddleElision, path, 0, 24),
+            fit_path_label_with(PathFit::TailOnly, path, 0, 24)
+        );
+        assert_eq!(
+            fit_path_label_with(PathFit::TailOnly, path, 0, 24),
+            "…gn/limits/boundaries.md".to_owned()
+        );
+    }
+
+    #[test]
+    fn same_filename_in_different_directories_stays_distinguishable() {
+        let paths = [
+            "src/alpha/deeply/nested/mod.rs",
+            "src/beta/deeply/nested/mod.rs",
+        ];
+        let prefix = |path: &str| unique_prefix_segments(path, paths.iter().copied());
+        // "src" is shared, so both labels must keep two segments.
+        assert_eq!(prefix(paths[0]), 2);
+
+        let alpha = fit_path_label(paths[0], prefix(paths[0]), 20);
+        let beta = fit_path_label(paths[1], prefix(paths[1]), 20);
+        assert_ne!(alpha, beta);
+        assert!(alpha.ends_with("mod.rs") && beta.ends_with("mod.rs"));
+        assert!(UnicodeWidthStr::width(alpha.as_str()) <= 20);
+        assert!(UnicodeWidthStr::width(beta.as_str()) <= 20);
     }
 
     #[test]
@@ -1501,7 +1869,8 @@ mod tests {
         assert!(rendered[0].contains(" │  5 +first"));
         assert!(rendered[1].contains(" │  6 +second"));
         assert!(!rendered[0].contains(" 0 "));
-        assert_eq!(rendered[2].matches("\\ No newline").count(), 1);
+        assert!(!rendered[2].contains('\\'));
+        assert_eq!(rendered[2].matches("no newline at EOF").count(), 1);
         assert_eq!(UnicodeWidthStr::width(rendered[2].as_str()), 48);
 
         let removed = [line(DiffLineKind::Removed, "gone")];

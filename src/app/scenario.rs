@@ -116,7 +116,7 @@ fn review_geometry(model: &Model) -> (ReviewBody, LayoutPolicy, ReviewRowMap) {
         panic!("scenario is not displaying the review body");
     };
     let rows = presentation::review_row_map(&body, body.viewport.presentation_width, view.layout);
-    (body, view.layout, rows)
+    (*body, view.layout, rows)
 }
 
 fn threads() -> ThreadState {

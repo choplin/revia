@@ -8,7 +8,7 @@ use crate::{
     },
     symbols,
     syntax::SyntaxHighlighter,
-    ui::{FocusArea, LayoutMode, ShellSize, truncate_end, truncate_start},
+    ui::{FocusArea, LayoutMode, ShellSize, truncate_end},
 };
 use ratatui::{
     Frame,
@@ -31,24 +31,32 @@ pub(crate) struct SemanticTheme {
     colors_enabled: bool,
 }
 
-fn sticky_context_text(context: &StickyReviewContext, width: u16) -> String {
-    let file = format!(
-        "{} {}/{} {}",
-        symbols::FILE,
-        context.file_index + 1,
-        context.file_count,
-        context.file
-    );
-    let value = match (context.hunk_index, context.hunk_header.as_deref()) {
-        (Some(index), Some(header)) => format!(
-            "{file}  •  hunk {}/{} {header}",
-            index + 1,
-            context.hunk_count
+/// Keeps the current file and hunk identity, and that file's magnitude, visible
+/// while the diff scrolls past its own boundary rows.
+///
+/// The file and the hunk get a row each: sharing one row forced a long hunk
+/// header to compete with the path, and both were clipped.
+fn sticky_context_lines(context: &StickyReviewContext, width: u16) -> [String; 2] {
+    let file = presentation::right_aligned_row(
+        &format!(
+            "{} {}/{} ",
+            symbols::FILE,
+            context.file_index + 1,
+            context.file_count
         ),
-        (Some(index), None) => format!("{file}  •  hunk {}/{}", index + 1, context.hunk_count),
-        (None, _) => file,
+        &context.file,
+        &presentation::format_magnitude(context.magnitude),
+        usize::from(width),
+    );
+    let hunk = match (context.hunk_index, context.hunk_header.as_deref()) {
+        (Some(index), Some(header)) => {
+            format!("   hunk {}/{}  {header}", index + 1, context.hunk_count)
+        }
+        (Some(index), None) => format!("   hunk {}/{}", index + 1, context.hunk_count),
+        // A file with no hunks still has something worth keeping in view.
+        (None, _) => format!("   {}", context.notes.join(" · ")),
     };
-    truncate_end(&value, usize::from(width))
+    [file, truncate_end(&hunk, usize::from(width))]
 }
 
 #[cfg(test)]
@@ -250,7 +258,7 @@ impl Renderer {
         let areas = ShellAreas::resolve(frame.area(), view.file_rail.is_some());
 
         frame.render_widget(
-            Paragraph::new(header_text(view, areas.size))
+            Paragraph::new(header_text(view, areas.header.width, areas.size))
                 .style(Style::default().add_modifier(Modifier::BOLD)),
             areas.header,
         );
@@ -273,20 +281,30 @@ impl Renderer {
                     } else {
                         " "
                     };
-                    let suffix = format!(" {}h/{}t", file.hunk_count, file.thread_count);
+                    // The rail answers "which file, and what kind of change".
+                    // Exact additions and deletions belong on the file
+                    // boundary, where there is room for them.
+                    let change = presentation::change_direction(file.magnitude);
+                    let prefix = format!("{selection} {marker} ");
                     let path_width = inner_width
-                        .saturating_sub(UnicodeWidthStr::width(marker))
-                        .saturating_sub(UnicodeWidthStr::width(selection))
-                        .saturating_sub(UnicodeWidthStr::width(suffix.as_str()))
+                        .saturating_sub(UnicodeWidthStr::width(prefix.as_str()))
+                        .saturating_sub(UnicodeWidthStr::width(change))
                         .saturating_sub(2);
-                    let path = truncate_start(&file.path, path_width);
+                    let path = presentation::fit_path_label(
+                        &file.path,
+                        presentation::unique_prefix_segments(
+                            &file.path,
+                            rail.items.iter().map(|item| item.path.as_str()),
+                        ),
+                        path_width,
+                    );
                     let style = match file.attention {
                         FileAttention::NeedsAttention => self.semantic_theme.style(Tone::Attention),
                         FileAttention::Resolved => self.semantic_theme.style(Tone::MutedResolved),
                         FileAttention::Open | FileAttention::None => Style::default(),
                     };
                     ListItem::new(Line::styled(
-                        format!("{selection} {marker} {path}{suffix}"),
+                        presentation::right_aligned_row(&prefix, &path, change, inner_width),
                         style,
                     ))
                 })
@@ -365,18 +383,27 @@ impl Renderer {
         };
         let content = if let Body::Review(review) = &view.body {
             if let Some(context) = &review.viewport.sticky_context {
-                let [sticky, content] =
-                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+                let [file_row, hunk_row, content] = Layout::vertical([
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                ])
+                .areas(inner);
+                let [file, hunk] = sticky_context_lines(context, body_inner_width);
+                // The file row follows review focus; the hunk row is secondary
+                // and stays muted either way.
+                let file_tone = if view.layout.focus == FocusArea::Review {
+                    Tone::FocusSelection
+                } else {
+                    Tone::MutedResolved
+                };
                 frame.render_widget(
-                    Paragraph::new(sticky_context_text(context, body_inner_width)).style(
-                        self.semantic_theme
-                            .style(if view.layout.focus == FocusArea::Review {
-                                Tone::FocusSelection
-                            } else {
-                                Tone::MutedResolved
-                            }),
-                    ),
-                    sticky,
+                    Paragraph::new(file).style(self.semantic_theme.style(file_tone)),
+                    file_row,
+                );
+                frame.render_widget(
+                    Paragraph::new(hunk).style(self.semantic_theme.style(Tone::MutedResolved)),
+                    hunk_row,
                 );
                 content
             } else {
@@ -512,23 +539,29 @@ impl Renderer {
         review: &ReviewBody,
         available_width: u16,
     ) -> Vec<Line<'static>> {
-        let path_width = usize::from(available_width).saturating_sub(6);
         let path_match = matches!(
             review.search_target.as_ref(),
             Some(DiffSearchTarget::FilePath { path }) if path == &file.path
         );
+        let boundary = presentation::file_boundary(
+            if path_match {
+                symbols::SEARCH
+            } else {
+                symbols::FILE
+            },
+            &file.path,
+            presentation::unique_prefix_segments(
+                &file.path,
+                review.files.iter().map(|file| file.path.as_str()),
+            ),
+            &file.notes,
+            file.magnitude,
+            available_width,
+        );
         let mut lines = vec![
             Line::raw(""),
             Line::styled(
-                format!(
-                    "{} {}",
-                    if path_match {
-                        symbols::SEARCH
-                    } else {
-                        symbols::FILE
-                    },
-                    truncate_start(&file.path, path_width)
-                ),
+                boundary.primary,
                 if path_match {
                     self.semantic_theme.selection()
                 } else {
@@ -537,15 +570,9 @@ impl Renderer {
             ),
         ];
         lines.extend(
-            file.metadata
-                .iter()
-                .filter(|line| presentation::show_file_metadata(line))
-                .map(|line| {
-                    Line::styled(
-                        truncate_end(&format!("· {line}"), usize::from(available_width)),
-                        self.semantic_theme.style(Tone::MutedResolved),
-                    )
-                }),
+            boundary
+                .detail
+                .map(|detail| Line::styled(detail, self.semantic_theme.style(Tone::MutedResolved))),
         );
         lines
     }
@@ -1013,28 +1040,42 @@ fn rollup_text(rollup: &RollupBody, available_width: u16, theme: SemanticTheme) 
     Text::from(lines)
 }
 
-fn header_text(view: &View, size: ShellSize) -> String {
-    match size {
-        ShellSize::Wide => format!(
-            "revia  •  Filter: {}  •  {} files  •  {} need you  •  {} open  •  {} resolved",
-            view.header.active_filter,
-            view.header.file_count,
-            view.header.needs_attention,
-            view.header.open,
-            view.header.resolved
-        ),
-        ShellSize::Medium => format!(
-            "revia  •  Filter: {}  •  {} files  •  {} need you  •  {} open",
-            view.header.active_filter,
-            view.header.file_count,
-            view.header.needs_attention,
-            view.header.open
-        ),
-        ShellSize::Narrow => format!(
-            "revia • F:{} • {} files",
-            view.header.active_filter, view.header.file_count
-        ),
-    }
+/// Cells the comparison label keeps before the active filter is dropped from
+/// the changeset header.
+const COMPARISON_FLOOR: usize = 12;
+
+/// The changeset header: comparison identity, file count, and total magnitude.
+///
+/// Every width keeps all three. The comparison label is shortened and then the
+/// active filter is dropped before any number is given up.
+fn header_text(view: &View, width: u16, size: ShellSize) -> String {
+    let header = &view.header;
+    let magnitude = presentation::format_magnitude(header.magnitude);
+    let (files, separator) = match size {
+        ShellSize::Narrow => (format!("{}f", header.file_count), " "),
+        _ => (format!("{} files", header.file_count), "  "),
+    };
+    let facts = format!("{files}{separator}{magnitude}");
+    let width = usize::from(width);
+    let separator_width = UnicodeWidthStr::width(separator);
+    let comparison_floor = UnicodeWidthStr::width(header.comparison.as_str()).min(COMPARISON_FLOOR);
+    let filter = format!("{separator}{}", header.active_filter);
+    let filter = if comparison_floor
+        .saturating_add(separator_width)
+        .saturating_add(UnicodeWidthStr::width(facts.as_str()))
+        .saturating_add(UnicodeWidthStr::width(filter.as_str()))
+        <= width
+    {
+        filter
+    } else {
+        String::new()
+    };
+    let comparison_width = width
+        .saturating_sub(UnicodeWidthStr::width(facts.as_str()))
+        .saturating_sub(UnicodeWidthStr::width(filter.as_str()))
+        .saturating_sub(separator_width);
+    let comparison = truncate_end(&header.comparison, comparison_width);
+    truncate_end(&format!("{comparison}{separator}{facts}{filter}"), width)
 }
 
 fn region_block<'a>(
@@ -1239,7 +1280,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(split.contains("1 need you"));
+        assert!(split.contains("2 files  +2 -2"));
         let semantic = crate::app::view(&model);
         let Body::Review(review) = semantic.body else {
             panic!("review body")
@@ -1419,7 +1460,7 @@ mod tests {
 
         let buffer = render(&renderer, &mut model, 48, 20);
         let rendered = rows(&buffer).join("\n");
-        assert!(rendered.contains("F:Needs attention"));
+        assert!(rendered.contains("Needs attention"));
         assert!(rendered.contains("No review targets match Filter:"));
         assert!(rendered.contains("Git diff is still loaded"));
         assert!(rendered.contains("Press A for All changes"));
@@ -1474,7 +1515,10 @@ mod tests {
         let mut model = model_with_diff(RESPONSIVE_DIFF);
 
         let wide = rows(&render(&renderer, &mut model, 120, 24));
-        assert!(wide[0].contains("resolved"));
+        assert_eq!(
+            wide[0].trim_end(),
+            "working tree  2 files  +2 -2  All changes"
+        );
         assert!(wide.iter().any(|row| row.contains("Files")));
         assert!(wide.iter().any(|row| row.contains("Diff")));
         assert!(wide[22].contains("Context: Diff"));
@@ -1487,8 +1531,10 @@ mod tests {
         assert_eq!(wide_areas.contextual_keys, Rect::new(0, 23, 120, 1));
 
         let medium = rows(&render(&renderer, &mut model, 88, 20));
-        assert!(medium[0].contains("open"));
-        assert!(!medium[0].contains("resolved"));
+        assert_eq!(
+            medium[0].trim_end(),
+            "working tree  2 files  +2 -2  All changes"
+        );
         assert!(medium.iter().any(|row| row.contains("Files")));
         assert!(medium.iter().any(|row| row.contains("-old_navigation")));
         let medium_areas = ShellAreas::resolve(Rect::new(0, 0, 88, 20), true);
@@ -1498,7 +1544,7 @@ mod tests {
         assert_eq!(medium_areas.contextual_keys.y, 19);
 
         let narrow = rows(&render(&renderer, &mut model, 64, 16));
-        assert_eq!(narrow[0].trim_end(), "revia • F:All changes • 2 files");
+        assert_eq!(narrow[0].trim_end(), "working tree 2f +2 -2 All changes");
         assert!(!narrow.iter().any(|row| row.contains(" Files ")));
         assert!(
             narrow
@@ -1680,14 +1726,16 @@ mod tests {
                 );
             }
 
-            let selected_box = rendered_rows
-                .iter()
-                .position(|row| row.contains("@@ -1,2 +1,2 @@"))
-                .expect("selected hunk box is visible");
-            let unselected_box = rendered_rows
-                .iter()
-                .position(|row| row.contains("@@ -10,2 +10,2 @@"))
-                .expect("unselected hunk box is visible");
+            // The sticky position row repeats the current hunk header, so a box
+            // row has to be identified by its border, not by the header alone.
+            let box_row = |header: &str| {
+                rendered_rows
+                    .iter()
+                    .position(|row| row.contains(header) && row.contains('╭'))
+                    .unwrap_or_else(|| panic!("{layout:?}: hunk box {header:?} is visible"))
+            };
+            let selected_box = box_row("@@ -1,2 +1,2 @@");
+            let unselected_box = box_row("@@ -10,2 +10,2 @@");
             assert!(
                 (0..buffer.area.width).any(|x| buffer[(x, selected_box as u16)].fg == Color::Cyan)
             );
@@ -1829,7 +1877,11 @@ mod tests {
         );
         assert!(wide.iter().any(|row| row.contains("100  next")));
         assert!(wide.iter().any(|row| row.contains("│ 200  next")));
-        assert!(wide.iter().any(|row| row.contains("· index 111..222")));
+        assert!(!wide.iter().any(|row| row.contains("index 111..222")));
+        assert!(
+            wide.iter()
+                .any(|row| row.contains("src/readable.rs") && row.contains("+2 -1"))
+        );
         assert!(wide.iter().any(|row| row.contains("╭─ @@ -8,3 +18,3 @@")));
         assert!(wide.iter().any(|row| row.contains("╰──")));
 
@@ -2353,6 +2405,227 @@ mod tests {
         assert!(end_thumb > top_thumb);
         assert_eq!(end[(79, 11)].symbol(), symbols::SCROLL_THUMB);
         assert!(rows(&end)[1].contains("󰈔 1/1 src/readable.rs"));
+    }
+
+    fn edge_fixture_model() -> Model {
+        Model::new(
+            DiffRequest {
+                target: DiffTarget::Range("main...HEAD".into()),
+                context_lines: 3,
+            },
+            LoadedDiff {
+                text: crate::diff::EDGE_FIXTURE.into(),
+                document: DiffDocument::parse(crate::diff::EDGE_FIXTURE),
+            },
+            ThreadState::default(),
+        )
+    }
+
+    #[test]
+    fn opening_frame_states_the_comparison_and_its_total_magnitude_at_every_width() {
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::no_color(),
+            ..Renderer::default()
+        };
+        let mut model = edge_fixture_model();
+
+        for (width, height) in [(120u16, 30u16), (80, 24), (48, 20)] {
+            let header = rows(&render(&renderer, &mut model, width, height))[0].clone();
+            assert!(header.contains("main...HEAD"), "{width}: {header}");
+            assert!(header.contains("+6 -4"), "{width}: {header}");
+            assert!(
+                header.contains("8 files") || header.contains("8f"),
+                "{width}: {header}"
+            );
+        }
+    }
+
+    #[test]
+    fn file_boundaries_carry_magnitude_and_semantic_facts_instead_of_transport_rows() {
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::no_color(),
+            ..Renderer::default()
+        };
+        let mut model = edge_fixture_model();
+        crate::app::update(&mut model, review::Event::ToggleSidebar);
+        crate::app::update(&mut model, review::Event::JumpToDiffEdge { end: false });
+
+        // The fixture is taller than any supported terminal, so walk it by file
+        // and collect every boundary the reviewer would actually pass. Rows 0
+        // and 1 are the changeset header and the sticky position row, which are
+        // asserted by their own tests.
+        let mut seen = Vec::new();
+        for _ in 0..model.review.session().diff().document.files.len() {
+            seen.extend(
+                rows(&render(&renderer, &mut model, 120, 30))
+                    .into_iter()
+                    .skip(2),
+            );
+            crate::app::update(&mut model, review::Event::MoveFile(1));
+        }
+        let rendered = seen.join("\n");
+
+        for transport in ["diff --git", "index 6735744", "--- a/", "+++ b/"] {
+            assert!(
+                !rendered.contains(transport),
+                "{transport} is still visible"
+            );
+        }
+        let boundary = |path: &str| {
+            seen.iter()
+                .find(|row| row.contains(path) && row.contains('+') && row.contains('-'))
+                .unwrap_or_else(|| panic!("{path} has a visible boundary row:\n{rendered}"))
+                .clone()
+        };
+        assert!(boundary("src/lib.rs").contains("+2 -2"));
+        assert!(boundary("docs/added.md").contains("new file"));
+        assert!(boundary("docs/added.md").contains("+1 -0"));
+        assert!(boundary("docs/removed.md").contains("deleted file"));
+        assert!(boundary("assets/logo.png").contains("binary"));
+        // A metadata-only change is still a reviewable file with a magnitude.
+        assert!(boundary("assets/logo.png").contains("+0 -0"));
+        assert!(boundary("scripts/review.sh").contains("mode 100644 → 100755"));
+        assert!(boundary("scripts/review.sh").contains("+0 -0"));
+        assert!(boundary("src/new_name.rs").contains("rename 92%"));
+        assert!(boundary("src/new_name.rs").contains("src/old_name.rs"));
+        assert!(rendered.contains("no newline at EOF"));
+        assert!(!rendered.contains("\\ No newline"));
+    }
+
+    #[test]
+    fn sticky_position_keeps_file_identity_and_magnitude_across_scrolling_and_jumps() {
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::no_color(),
+            ..Renderer::default()
+        };
+        let mut model = model_with_diff(READABLE_DIFF);
+        crate::app::update(&mut model, review::Event::ToggleSidebar);
+
+        // The sticky block is two rows: the file, then the hunk.
+        let sticky = |model: &mut Model, layout: (u16, u16)| {
+            let rendered = rows(&render(&renderer, model, layout.0, layout.1));
+            (rendered[1].clone(), rendered[2].clone())
+        };
+
+        let (file, hunk) = sticky(&mut model, (80, 10));
+        assert!(file.contains("src/readable.rs"), "{file}");
+        assert!(file.contains("+2 -1"), "{file}");
+        assert!(hunk.contains("hunk 1/2"), "{hunk}");
+        // The whole hunk header survives now that it owns its row.
+        assert!(hunk.contains("@@ -8,3 +18,3 @@ fn first()"), "{hunk}");
+
+        crate::app::update(&mut model, review::Event::JumpToDiffEdge { end: true });
+        let (file, hunk) = sticky(&mut model, (80, 10));
+        assert!(file.contains("+2 -1"), "{file}");
+        assert!(hunk.contains("hunk 2/2"), "{hunk}");
+
+        crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Split));
+        let (file, hunk) = sticky(&mut model, (80, 10));
+        assert!(file.contains("+2 -1"), "{file}");
+        assert!(hunk.contains("hunk 2/2"), "{hunk}");
+
+        crate::app::update(&mut model, review::Event::JumpToDiffEdge { end: false });
+        let (file, hunk) = sticky(&mut model, (80, 10));
+        assert!(file.contains("+2 -1"), "{file}");
+        assert!(hunk.contains("hunk 1/2"), "{hunk}");
+
+        // Narrowing removes the rail, not the reviewer's sense of position.
+        let (file, hunk) = sticky(&mut model, (48, 10));
+        assert!(file.contains("readable.rs"), "{file}");
+        assert!(file.contains("+2 -1"), "{file}");
+        assert!(hunk.contains("hunk 1/2"), "{hunk}");
+    }
+
+    #[test]
+    fn a_file_without_hunks_keeps_its_semantic_facts_on_the_sticky_hunk_row() {
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::no_color(),
+            ..Renderer::default()
+        };
+        let mut model = edge_fixture_model();
+        crate::app::update(&mut model, review::Event::ToggleSidebar);
+
+        // assets/logo.png is binary: it has no hunk to name, so the second
+        // sticky row must carry the file fact rather than go blank.
+        let rendered = rows(&render(&renderer, &mut model, 80, 12));
+        assert!(rendered[1].contains("assets/logo.png"), "{:?}", rendered[1]);
+        assert!(rendered[2].contains("binary"), "{:?}", rendered[2]);
+    }
+
+    #[test]
+    fn the_file_rail_shows_change_direction_and_unique_paths() {
+        let renderer = Renderer {
+            semantic_theme: SemanticTheme::no_color(),
+            ..Renderer::default()
+        };
+        let mut model = edge_fixture_model();
+
+        // Each rendered row spans the whole terminal, so the rail has to be
+        // sliced out of it before asserting on what the rail alone shows.
+        let rail_width = ShellAreas::resolve(Rect::new(0, 0, 120, 30), true)
+            .navigation_rail
+            .expect("the wide shell allocates a rail")
+            .width;
+        let rendered = rows(&render(&renderer, &mut model, 120, 30))
+            .into_iter()
+            .map(|row| {
+                row.chars()
+                    .take(usize::from(rail_width))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let rail = |needle: &str| {
+            rendered
+                .iter()
+                .find(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("the rail lists {needle}: {rendered:#?}"))
+                .clone()
+        };
+        // The rail carries the direction of the change; exact counts stay on
+        // the file boundary, so the path keeps the width.
+        let ends_with = |row: String, marker: &str| {
+            row.trim_end()
+                .trim_end_matches('│')
+                .trim_end()
+                .ends_with(marker)
+        };
+        assert!(ends_with(rail("src/lib.rs"), symbols::CHANGE_BOTH));
+        assert!(ends_with(rail("docs/added.md"), symbols::CHANGE_ADDED));
+        assert!(ends_with(rail("docs/removed.md"), symbols::CHANGE_REMOVED));
+        // A metadata-only change has no direction to report.
+        for quiet in ["assets/logo.png", "scripts/review.sh"] {
+            let row = rail(quiet);
+            for marker in [
+                symbols::CHANGE_ADDED,
+                symbols::CHANGE_REMOVED,
+                symbols::CHANGE_BOTH,
+            ] {
+                assert!(!row.contains(marker), "{row}");
+            }
+        }
+        for row in &rendered {
+            assert!(!row.contains("h/0t"), "hunk and thread counts are gone");
+        }
+        // Two files named mod.rs must not collapse to the same rail label.
+        assert_ne!(rail("alpha").trim(), rail("beta").trim());
+
+        // Every marker must occupy exactly one cell, or the entry overflows
+        // the rail and pushes its right border out.
+        for marker in [
+            symbols::CHANGE_ADDED,
+            symbols::CHANGE_REMOVED,
+            symbols::CHANGE_BOTH,
+            symbols::CHANGE_NONE,
+        ] {
+            assert_eq!(
+                unicode_width::UnicodeWidthStr::width(marker),
+                1,
+                "{marker:?}"
+            );
+        }
+        for row in rendered.iter().filter(|row| row.starts_with('│')) {
+            assert!(row.ends_with('│'), "the rail border moved: {row:?}");
+        }
     }
 
     #[test]

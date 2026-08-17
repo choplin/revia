@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     anchor::HunkLocation,
-    diff::{DiffLine, HunkCoordinates},
+    diff::{DiffLine, HunkCoordinates, Magnitude},
     thread::ThreadId,
     ui::{FocusArea, LayoutMode},
 };
@@ -17,13 +17,16 @@ pub struct View {
     pub layout: LayoutPolicy,
 }
 
+/// The opening frame: which comparison is under review and how large it is.
+///
+/// Discussion aggregation deliberately lives elsewhere; magnitude must not be
+/// displaced by collaboration counters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
+    pub comparison: String,
     pub file_count: usize,
+    pub magnitude: Magnitude,
     pub active_filter: String,
-    pub needs_attention: usize,
-    pub open: usize,
-    pub resolved: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,8 +38,7 @@ pub struct FileRail {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileItem {
     pub path: String,
-    pub hunk_count: usize,
-    pub thread_count: usize,
+    pub magnitude: Magnitude,
     pub attention: FileAttention,
 }
 
@@ -50,7 +52,7 @@ pub enum FileAttention {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Body {
-    Review(ReviewBody),
+    Review(Box<ReviewBody>),
     Rollup(RollupBody),
 }
 
@@ -124,6 +126,10 @@ pub struct StickyReviewContext {
     pub file: String,
     pub file_index: usize,
     pub file_count: usize,
+    pub magnitude: Magnitude,
+    /// Shown on the hunk row for files that have no hunks to name, so the
+    /// second sticky row never becomes blank chrome.
+    pub notes: Vec<String>,
     pub hunk_header: Option<String>,
     pub hunk_index: Option<usize>,
     pub hunk_count: usize,
@@ -134,7 +140,10 @@ pub struct ReviewFile {
     pub path: String,
     pub selected: bool,
     pub extension: Option<String>,
-    pub metadata: Vec<String>,
+    pub magnitude: Magnitude,
+    /// Semantic file-change facts (rename, mode, binary, new/deleted), already
+    /// reduced from Git's transport headers.
+    pub notes: Vec<String>,
     pub hunks: Vec<ReviewHunk>,
 }
 

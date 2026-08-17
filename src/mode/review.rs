@@ -172,6 +172,11 @@ impl Model {
         &self.session
     }
 
+    /// The comparison identity shown in the changeset header.
+    pub fn comparison(&self) -> String {
+        self.request.target.comparison()
+    }
+
     pub fn focus(&self) -> FocusArea {
         self.view.focus
     }
@@ -602,7 +607,7 @@ impl Model {
     }
 
     fn visible_rows_for(&self, rows: &ReviewRowMap) -> usize {
-        let sticky_rows = usize::from(rows.has_sticky_context());
+        let sticky_rows = rows.sticky_rows();
         usize::from(self.viewport_rows)
             .saturating_sub(sticky_rows)
             .max(1)
@@ -2056,32 +2061,9 @@ pub fn view(model: &Model, input: ViewInput<'_>) -> View {
                 } else {
                     FileAttention::Resolved
                 };
-                let hunk_count = file
-                    .hunks
-                    .iter()
-                    .filter(|hunk| {
-                        model.hunk_matches_filter(
-                            &HunkLocation::new(&file.path, &hunk.header),
-                            input.threads,
-                        )
-                    })
-                    .count();
-                let thread_count = file
-                    .hunks
-                    .iter()
-                    .map(|hunk| {
-                        model
-                            .visible_threads_at(
-                                &HunkLocation::new(&file.path, &hunk.header),
-                                input.threads,
-                            )
-                            .len()
-                    })
-                    .sum();
                 Some(FileItem {
                     path: file.path.clone(),
-                    hunk_count,
-                    thread_count,
+                    magnitude: file.magnitude,
                     attention,
                 })
             })
@@ -2102,7 +2084,7 @@ pub fn view(model: &Model, input: ViewInput<'_>) -> View {
             rows.window_sections(scroll, scroll.saturating_add(visible_rows)),
         ),
     };
-    let body = Body::Review(review);
+    let body = Body::Review(Box::new(review));
     View {
         body,
         file_rail,
@@ -2192,7 +2174,8 @@ fn review_body(model: &Model, threads: &Threads) -> ReviewBody {
                         path: file.path.clone(),
                         selected: file_index == model.session.cursor().selected_file(),
                         extension: file.extension().map(str::to_owned),
-                        metadata: file.metadata.clone(),
+                        magnitude: file.magnitude,
+                        notes: crate::presentation::file_change_notes(file),
                         hunks,
                     }
                 })

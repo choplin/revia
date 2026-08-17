@@ -44,6 +44,44 @@ impl DiffTarget {
             Self::Range(range) => format!("range {range}"),
         }
     }
+
+    /// The comparison identity shown in the changeset header.
+    ///
+    /// This answers "which comparison am I reviewing" in the shortest form the
+    /// user themselves selected, so a revision range stays recognisable instead
+    /// of being restated as prose.
+    pub fn comparison(&self) -> String {
+        match self {
+            Self::WorkingTree => "working tree".into(),
+            Self::Staged => "staged".into(),
+            Self::Commit(revision) => revision.clone(),
+            Self::Range(range) => range.clone(),
+        }
+    }
+}
+
+/// Additions and deletions counted from the patch body.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Magnitude {
+    pub additions: usize,
+    pub deletions: usize,
+}
+
+impl Magnitude {
+    pub fn combined(self, other: Self) -> Self {
+        Self {
+            additions: self.additions.saturating_add(other.additions),
+            deletions: self.deletions.saturating_add(other.deletions),
+        }
+    }
+
+    fn count(&mut self, kind: DiffLineKind) {
+        match kind {
+            DiffLineKind::Added => self.additions = self.additions.saturating_add(1),
+            DiffLineKind::Removed => self.deletions = self.deletions.saturating_add(1),
+            DiffLineKind::Context | DiffLineKind::Meta => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,9 +145,7 @@ impl DiffDocument {
                     coordinates: HunkCoordinates::parse(line),
                     lines: Arc::new(Vec::new()),
                 });
-            } else if let Some(hunk) = file.hunks.last_mut() {
-                Arc::make_mut(&mut hunk.lines).push(DiffLine::from_raw(line));
-            } else {
+            } else if !file.absorb_source_line(line) {
                 file.absorb_metadata(line);
             }
         }
@@ -120,13 +156,21 @@ impl DiffDocument {
 
         Self { files }
     }
+
+    /// Total additions and deletions across every file in the changeset.
+    pub fn magnitude(&self) -> Magnitude {
+        self.files.iter().fold(Magnitude::default(), |total, file| {
+            total.combined(file.magnitude)
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffFile {
     pub path: String,
     pub previous_path: Option<String>,
-    pub metadata: Vec<String>,
+    pub change: FileChange,
+    pub magnitude: Magnitude,
     pub hunks: Vec<DiffHunk>,
 }
 
@@ -147,9 +191,21 @@ impl DiffFile {
         Self {
             path,
             previous_path,
-            metadata: vec![header.to_owned()],
+            change: FileChange::default(),
+            magnitude: Magnitude::default(),
             hunks: Vec::new(),
         }
+    }
+
+    fn absorb_source_line(&mut self, line: &str) -> bool {
+        let parsed = DiffLine::from_raw(line);
+        let kind = parsed.kind;
+        let Some(hunk) = self.hunks.last_mut() else {
+            return false;
+        };
+        Arc::make_mut(&mut hunk.lines).push(parsed);
+        self.magnitude.count(kind);
+        true
     }
 
     fn absorb_metadata(&mut self, line: &str) {
@@ -161,7 +217,7 @@ impl DiffFile {
         } else if let Some(path) = line.strip_prefix("--- ") {
             self.previous_path = Some(normalize_patch_path(path));
         }
-        self.metadata.push(line.to_owned());
+        self.change.absorb(line);
     }
 
     pub fn extension(&self) -> Option<&str> {
@@ -169,6 +225,64 @@ impl DiffFile {
             .extension()
             .and_then(|extension| extension.to_str())
     }
+}
+
+/// What the patch header says happened to a file, independent of its content.
+///
+/// Git states this through transport plumbing that reviewers should not have to
+/// read. Parsing it once here lets every surface present the review fact
+/// (renamed, deleted, binary, mode changed) instead of the raw header rows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileChange {
+    pub status: FileStatus,
+    pub moved: Option<PathMove>,
+    pub mode: Option<ModeChange>,
+    pub binary: bool,
+}
+
+impl FileChange {
+    fn absorb(&mut self, line: &str) {
+        if line.starts_with("new file mode ") {
+            self.status = FileStatus::Added;
+        } else if line.starts_with("deleted file mode ") {
+            self.status = FileStatus::Deleted;
+        } else if let Some(mode) = line.strip_prefix("old mode ") {
+            self.mode.get_or_insert_with(ModeChange::default).old = mode.trim().to_owned();
+        } else if let Some(mode) = line.strip_prefix("new mode ") {
+            self.mode.get_or_insert_with(ModeChange::default).new = mode.trim().to_owned();
+        } else if let Some(value) = line.strip_prefix("similarity index ") {
+            let similarity = value.trim().trim_end_matches('%').parse().ok();
+            self.moved.get_or_insert_with(PathMove::default).similarity = similarity;
+        } else if line.starts_with("rename from ") || line.starts_with("rename to ") {
+            self.moved.get_or_insert_with(PathMove::default);
+        } else if line.starts_with("copy from ") || line.starts_with("copy to ") {
+            self.moved.get_or_insert_with(PathMove::default).copied = true;
+        } else if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
+            self.binary = true;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FileStatus {
+    #[default]
+    Modified,
+    Added,
+    Deleted,
+}
+
+/// A rename or copy. The old and new paths already live on the `DiffFile`, so
+/// only the facts Git states separately are recorded here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PathMove {
+    pub copied: bool,
+    pub similarity: Option<u8>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModeChange {
+    pub old: String,
+    pub new: String,
 }
 
 fn strip_git_prefix(path: &str) -> String {
@@ -254,9 +368,21 @@ pub enum DiffLineKind {
     Meta,
 }
 
+/// The checked-in edge fixture from the diff-viewer presentation baseline.
+///
+/// It is real `git diff` output so tests exercise rename, mode, binary,
+/// deleted, new-file, missing-newline, and repeated-filename cases without
+/// mocking the parser's input.
+#[cfg(test)]
+pub(crate) const EDGE_FIXTURE: &str =
+    include_str!("../tests/fixtures/diff_viewer_baseline_edges.patch");
+
 #[cfg(test)]
 mod tests {
-    use super::{DiffDocument, DiffLineKind, DiffRequest, DiffTarget, HunkCoordinates, HunkRange};
+    use super::{
+        DiffDocument, DiffLineKind, DiffRequest, DiffTarget, EDGE_FIXTURE, FileStatus,
+        HunkCoordinates, HunkRange, Magnitude, ModeChange, PathMove,
+    };
 
     #[test]
     fn working_tree_uses_git_diff_with_requested_context() {
@@ -344,5 +470,75 @@ mod tests {
 
         assert_eq!(document.files[0].path, "old-a.rs");
         assert_eq!(document.files[1].path, "old-b.rs");
+    }
+
+    #[test]
+    fn counts_per_file_and_changeset_magnitude_from_the_patch_body() {
+        let document = DiffDocument::parse(EDGE_FIXTURE);
+        let magnitude = |path: &str| {
+            document
+                .files
+                .iter()
+                .find(|file| file.path == path)
+                .unwrap_or_else(|| panic!("{path} is part of the edge fixture"))
+                .magnitude
+        };
+
+        assert_eq!(magnitude("src/lib.rs").additions, 2);
+        assert_eq!(magnitude("src/lib.rs").deletions, 2);
+        assert_eq!(magnitude("docs/added.md").additions, 1);
+        assert_eq!(magnitude("docs/added.md").deletions, 0);
+        assert_eq!(magnitude("docs/removed.md").deletions, 1);
+        // A metadata-only change carries no source lines at all.
+        assert_eq!(magnitude("scripts/review.sh"), Magnitude::default());
+        assert_eq!(magnitude("assets/logo.png"), Magnitude::default());
+        assert_eq!(
+            document.magnitude(),
+            Magnitude {
+                additions: 6,
+                deletions: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn classifies_semantic_file_changes_without_retaining_transport_headers() {
+        let document = DiffDocument::parse(EDGE_FIXTURE);
+        let change = |path: &str| {
+            document
+                .files
+                .iter()
+                .find(|file| file.path == path)
+                .unwrap_or_else(|| panic!("{path} is part of the edge fixture"))
+                .change
+                .clone()
+        };
+
+        assert_eq!(change("docs/added.md").status, FileStatus::Added);
+        assert_eq!(change("docs/removed.md").status, FileStatus::Deleted);
+        assert_eq!(change("src/lib.rs").status, FileStatus::Modified);
+        assert!(change("assets/logo.png").binary);
+        assert!(!change("src/lib.rs").binary);
+        assert_eq!(
+            change("scripts/review.sh").mode,
+            Some(ModeChange {
+                old: "100644".into(),
+                new: "100755".into(),
+            })
+        );
+        assert_eq!(
+            change("src/new_name.rs").moved,
+            Some(PathMove {
+                copied: false,
+                similarity: Some(92),
+            })
+        );
+
+        let renamed = document
+            .files
+            .iter()
+            .find(|file| file.path == "src/new_name.rs")
+            .expect("the renamed file is part of the edge fixture");
+        assert_eq!(renamed.previous_path.as_deref(), Some("src/old_name.rs"));
     }
 }

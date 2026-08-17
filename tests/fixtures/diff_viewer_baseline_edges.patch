@@ -1,0 +1,62 @@
+diff --git a/assets/logo.png b/assets/logo.png
+index 6735744..9d620d4 100644
+Binary files a/assets/logo.png and b/assets/logo.png differ
+diff --git a/docs/added.md b/docs/added.md
+new file mode 100644
+index 0000000..637b664
+--- /dev/null
++++ b/docs/added.md
+@@ -0,0 +1 @@
++new guidance
+diff --git a/docs/removed.md b/docs/removed.md
+deleted file mode 100644
+index 4dd21bb..0000000
+--- a/docs/removed.md
++++ /dev/null
+@@ -1 +0,0 @@
+-legacy notes
+diff --git a/scripts/review.sh b/scripts/review.sh
+old mode 100644
+new mode 100755
+diff --git a/src/alpha/mod.rs b/src/alpha/mod.rs
+index 6eeb60a..ec03205 100644
+--- a/src/alpha/mod.rs
++++ b/src/alpha/mod.rs
+@@ -1 +1,2 @@
+ pub mod alpha;
++pub mod alpha_extra;
+diff --git a/src/beta/mod.rs b/src/beta/mod.rs
+index 88f9b22..306caff 100644
+--- a/src/beta/mod.rs
++++ b/src/beta/mod.rs
+@@ -1 +1,2 @@
+ pub mod beta;
++pub mod beta_extra;
+diff --git a/src/lib.rs b/src/lib.rs
+index c5869d6..cf6b15f 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,4 +1,4 @@
+ fn value() -> u8 {
+-    let timeout = 30;
++    let timeout = 60;
+     timeout
+-}
++}
+\ No newline at end of file
+diff --git a/src/old_name.rs b/src/new_name.rs
+similarity index 92%
+rename from src/old_name.rs
+rename to src/new_name.rs
+index 5cb819d..d40dd69 100644
+--- a/src/old_name.rs
++++ b/src/new_name.rs
+@@ -2,7 +2,7 @@ pub fn helper() -> u8 {
+     1
+ }
+ pub fn second() -> u8 {
+-    2
++    22
+ }
+ pub fn third() -> u8 {
+     3

@@ -531,7 +531,9 @@ pub fn view(model: &Model) -> semantic::View {
     let global = global::view(
         &model.global,
         global::ViewInput {
+            comparison: model.review.comparison(),
             file_count: model.review.session().diff().document.files.len(),
+            magnitude: model.review.session().diff().document.magnitude(),
             active_filter: model.review.filter().label(),
             context,
             target,

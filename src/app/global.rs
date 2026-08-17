@@ -3,7 +3,7 @@ use crate::{
     input::{BindingResolution, Key, KeyboardProtocol, PhysicalInput},
     mode::ActiveMode,
     semantic::{ContextualKeys, CurrentContext, Footer, Header, SurfaceContext},
-    thread::{Resolution, ThreadState},
+    thread::ThreadState,
     ui::{truncate_end, truncate_start},
 };
 use unicode_width::UnicodeWidthStr;
@@ -121,7 +121,9 @@ pub fn update(model: &mut Model, event: Event) -> Update {
 }
 
 pub struct ViewInput {
+    pub comparison: String,
     pub file_count: usize,
+    pub magnitude: crate::diff::Magnitude,
     pub active_filter: &'static str,
     pub context: SurfaceContext,
     pub target: Option<String>,
@@ -136,23 +138,12 @@ pub struct View {
 }
 
 pub fn view(model: &Model, input: ViewInput) -> View {
-    let threads = model.threads.threads();
-    let needs_attention = threads
-        .iter()
-        .filter(|thread| thread.needs_attention)
-        .count();
-    let open = threads
-        .iter()
-        .filter(|thread| matches!(thread.resolution, Resolution::Open))
-        .count();
-    let resolved = threads.len().saturating_sub(open);
     View {
         header: Header {
+            comparison: input.comparison,
             file_count: input.file_count,
+            magnitude: input.magnitude,
             active_filter: input.active_filter.into(),
-            needs_attention,
-            open,
-            resolved,
         },
         footer: Footer {
             current_context: CurrentContext {
