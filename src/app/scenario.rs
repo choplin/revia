@@ -9,7 +9,7 @@ use crate::{
     input::{BindingResolution, Key, KeyPhase, PhysicalInput},
     mode::{composer, help, review, rollup},
     presentation::{self, ReviewRowMap},
-    semantic::{Body, DiffSearchTarget, LayoutPolicy, Overlay, ReviewBody},
+    semantic::{Body, DiffSearchTarget, FileRailRowKind, LayoutPolicy, Overlay, ReviewBody},
     thread::{
         Participant, ParticipantKind, Resolution, ThreadChange, ThreadId, ThreadState,
         ThreadSuccess,
@@ -187,17 +187,84 @@ fn the_file_rail_scopes_vertical_keys_and_leaves_global_keys_alone() {
     assert_eq!(scenario.model.review.focus(), FocusArea::Files);
 
     // j/k address whole files here rather than scrolling the diff.
-    assert_eq!(rail_selection(&scenario), Some(0));
-    scenario.when_input(input(Key::Char('j')));
     assert_eq!(rail_selection(&scenario), Some(1));
+    scenario.when_input(input(Key::Char('j')));
+    assert_eq!(rail_selection(&scenario), Some(2));
     scenario.when_input(input(Key::Char('k')));
-    assert_eq!(rail_selection(&scenario), Some(0));
+    assert_eq!(rail_selection(&scenario), Some(1));
 
     // Keys the scoped layer does not claim keep their global meaning, and
     // hiding the rail cannot leave focus stranded on it.
     scenario.when_input(input(Key::Char('s')));
     assert_eq!(scenario.model.review.focus(), FocusArea::Review);
     assert!(super::view(&scenario.model).file_rail.is_none());
+}
+
+#[test]
+fn file_rail_matches_lazygit_tree_navigation_and_directory_controls() {
+    let mut scenario = Scenario::given(NESTED_FILES, ThreadState::default());
+    scenario.when_input(input(Key::Tab));
+
+    let rail = super::view(&scenario.model).file_rail.unwrap();
+    assert_eq!(rail.rows.len(), 6);
+    assert_eq!(rail.selected, Some(3));
+    assert_eq!(rail.rows[0].path, "/");
+    assert_eq!(rail.rows[1].path, "src");
+    assert_eq!(rail.rows[2].path, "src/app");
+    assert_eq!(rail.rows[3].path, "src/app/a.rs");
+
+    // Directories are real list targets, but selecting one does not move the
+    // review cursor away from the currently previewed file.
+    scenario.when_input(input(Key::Char('k')));
+    assert_eq!(scenario.model.review.session().cursor().selected_file(), 0);
+    scenario.when_input(input(Key::Enter));
+    let rail = super::view(&scenario.model).file_rail.unwrap();
+    assert_eq!(rail.selected, Some(2));
+    assert_eq!(rail.rows.len(), 4);
+    assert!(matches!(
+        rail.rows[2].kind,
+        FileRailRowKind::Directory { collapsed: true }
+    ));
+
+    scenario.when_input(input(Key::Char('j')));
+    assert_eq!(scenario.model.review.session().cursor().selected_file(), 2);
+
+    scenario.when_input(input(Key::Char('`')));
+    let rail = super::view(&scenario.model).file_rail.unwrap();
+    assert!(!rail.tree);
+    assert_eq!(rail.rows[0].label, "src/app/a.rs");
+    assert_eq!(rail.rows.len(), 3);
+
+    for key in [Key::Char('h'), Key::Char('l')] {
+        scenario.when_input(input(key));
+        assert_eq!(scenario.model.review.focus(), FocusArea::Files);
+    }
+
+    scenario.when_input(input(Key::Home));
+    assert_eq!(scenario.model.review.session().cursor().selected_file(), 0);
+    scenario.when_input(input(Key::Enter));
+    assert_eq!(scenario.model.review.focus(), FocusArea::Review);
+}
+
+#[test]
+fn file_rail_expand_and_collapse_all_use_lazygit_keys() {
+    let mut scenario = Scenario::given(NESTED_FILES, ThreadState::default());
+    scenario.when_input(input(Key::Tab));
+
+    scenario.when_input(input(Key::Char('-')));
+    let rail = super::view(&scenario.model).file_rail.unwrap();
+    assert!(rail.tree);
+    assert_eq!(rail.rows.len(), 1);
+    assert_eq!(rail.rows[0].path, "/");
+
+    scenario.when_input(input(Key::Char('=')));
+    let rail = super::view(&scenario.model).file_rail.unwrap();
+    assert_eq!(rail.rows.len(), 6);
+    assert!(
+        rail.rows
+            .iter()
+            .all(|row| !matches!(row.kind, FileRailRowKind::Directory { collapsed: true }))
+    );
 }
 
 #[test]
@@ -231,7 +298,7 @@ fn shared_navigation_acts_from_the_rail_without_taking_its_focus() {
     assert_ne!(rail_selection(&scenario), before);
     assert_eq!(scenario.model.review.focus(), FocusArea::Files);
     scenario.when_input(input(Key::Char(',')));
-    assert_eq!(rail_selection(&scenario), before);
+    assert_eq!(rail_selection(&scenario), Some(0));
     assert_eq!(scenario.model.review.focus(), FocusArea::Files);
 }
 
@@ -273,6 +340,11 @@ fn a_shell_too_narrow_to_draw_the_rail_keeps_focus_off_it() {
 
 const RAW: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
 const TWO_FILES: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-old_b\n+new_b\n";
+const NESTED_FILES: &str = concat!(
+    "diff --git a/src/app/a.rs b/src/app/a.rs\n--- a/src/app/a.rs\n+++ b/src/app/a.rs\n@@ -1 +1 @@\n-old\n+new\n",
+    "diff --git a/src/app/b.rs b/src/app/b.rs\n--- a/src/app/b.rs\n+++ b/src/app/b.rs\n@@ -1 +1 @@\n-old\n+new\n",
+    "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new\n",
+);
 const FILTER_DIFF: &str = concat!(
     "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n",
     "@@ -1 +1 @@ first\n-old_a1\n+new_a1\n",
@@ -1071,7 +1143,7 @@ fn hunkless_file_jump_reveals_its_header_and_hunk_navigation_continues() {
             .file_rail
             .as_ref()
             .and_then(|rail| rail.selected),
-        Some(1)
+        Some(2)
     );
 
     scenario.when_event(review::Event::MoveHunk(1));
@@ -1508,7 +1580,7 @@ fn one_review_cursor_drives_file_hunk_thread_and_diff_targets() {
     let view = super::view(&scenario.model);
     assert_eq!(
         view.file_rail.as_ref().and_then(|rail| rail.selected),
-        Some(1)
+        Some(2)
     );
     assert_eq!(scenario.model.review.focus(), FocusArea::Review);
     assert!(

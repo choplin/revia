@@ -7,21 +7,20 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 use urushi::{
     Align, BlockStyle, BlockTitle, Border, Canvas, CanvasContext, CanvasItem, CellContribution,
-    Composition, Length, List, ListItem, ListItemPresentation, ListPosition, ListPresentation,
-    Overflow, Position, PositionedCell, Projection, ProjectionBoundary, Scrollbar, ScrollbarGlyphs,
-    ScrollbarOrientation, ScrollbarPresentation, StyledText, TextStyle, VerticalAlign, View,
-    Viewport,
+    Composition, Length, Overflow, Position, PositionedCell, Projection, ProjectionBoundary,
+    Scrollbar, ScrollbarGlyphs, ScrollbarOrientation, ScrollbarPresentation, StyledText, TextStyle,
+    VerticalAlign, View, Viewport,
 };
 use urushi_tui_app::SurfaceSize;
 
 use crate::{
-    presentation,
+    diff::FileStatus,
     renderer::{self, Renderer, SemanticTheme},
     semantic::{
-        Body, FileAttention, Overlay, ReviewBody, RollupBody, ThreadState, Tone,
+        Body, FileRailRow, FileRailRowKind, Overlay, ReviewBody, RollupBody, ThreadState, Tone,
         View as SemanticView,
     },
-    styled_text::{Document, Line, Span},
+    styled_text::{Document, Line, Span, patch_style},
     symbols,
     ui::{FocusArea, ShellSize, truncate_end},
 };
@@ -65,7 +64,7 @@ impl UrushiRenderer {
             (Some(rail), Some(rail_width)) => View::row(
                 VerticalAlign::Top,
                 [
-                    self.file_rail_view(semantic, rail, rail_width, theme),
+                    self.file_rail_view(semantic, rail, rail_width, rows.saturating_sub(3), theme),
                     fill_box(self.body_view(semantic, theme, width.saturating_sub(rail_width))),
                 ],
             ),
@@ -99,28 +98,35 @@ impl UrushiRenderer {
         semantic: &SemanticView,
         rail: &crate::semantic::FileRail,
         width: u16,
+        height: usize,
         theme: SemanticTheme,
     ) -> View {
         let inner_width = usize::from(width.saturating_sub(2));
         let focused = semantic.layout.focus == FocusArea::Files;
-        let list = file_list(rail);
-        let items = ListItemPresentation::new(|row: &FileListRow, position| {
-            file_list_label(row, position, inner_width)
-        })
-        .item_style(|row, _, _| {
-            Some(match &row.kind {
-                FileListKind::Directory => theme.directory(),
-                FileListKind::File {
-                    attention,
-                    selected,
-                    ..
-                } => theme.file_item(*attention, *selected, focused),
-            })
-        });
-        let content = ListPresentation::new(TextStyle::new(), TextStyle::new())
-            .enumerator(file_list_enumerator)
-            .nesting_indent(FILE_LIST_INDENT)
-            .compose_with(&list, &items);
+        let content = View::styled_text(
+            Document::from(
+                rail.rows
+                    .iter()
+                    .enumerate()
+                    .map(|(index, row)| {
+                        file_list_line(row, inner_width, rail.selected == Some(index), theme)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .into_styled_text(),
+        );
+        let visible_rows = height.saturating_sub(2).max(1);
+        let scroll = rail
+            .selected
+            .map(|selected| selected.saturating_sub(visible_rows.saturating_sub(1)))
+            .unwrap_or(0);
+        let content = View::viewport(
+            Viewport::vertical(Projection::new(
+                cell_i64(scroll),
+                ProjectionBoundary::Preserve,
+            )),
+            content,
+        );
         let focus_label = if focused {
             Some("FILE FOCUS")
         } else {
@@ -502,128 +508,85 @@ struct PanelSpec<'a> {
     border: Border,
 }
 
-const FILE_LIST_INDENT: usize = 2;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FileListRow {
-    label: String,
-    kind: FileListKind,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum FileListKind {
-    Directory,
-    File {
-        magnitude: crate::diff::Magnitude,
-        attention: FileAttention,
-        selected: bool,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FileListBranch {
-    row: FileListRow,
-    children: Vec<FileListBranch>,
-}
-
-fn file_list(rail: &crate::semantic::FileRail) -> List<FileListRow> {
-    let mut roots = Vec::new();
-    for (index, file) in rail.items.iter().enumerate() {
-        let components = file
-            .path
-            .split('/')
-            .filter(|component| !component.is_empty())
-            .collect::<Vec<_>>();
-        let components = if components.is_empty() {
-            vec![file.path.as_str()]
-        } else {
-            components
-        };
-        insert_file_branch(&mut roots, &components, file, rail.selected == Some(index));
-    }
-    List::new().items(roots.into_iter().map(file_list_item))
-}
-
-fn insert_file_branch(
-    branches: &mut Vec<FileListBranch>,
-    components: &[&str],
-    file: &crate::semantic::FileItem,
-    selected: bool,
-) {
-    let Some((component, remaining)) = components.split_first() else {
-        return;
+#[cfg(test)]
+fn file_list_label(row: &FileRailRow, width: usize) -> String {
+    const INDENT: usize = 2;
+    let indentation = " ".repeat(row.depth.saturating_mul(INDENT));
+    let available = width.saturating_sub(UnicodeWidthStr::width(indentation.as_str()));
+    let (prefix, label) = match row.kind {
+        FileRailRowKind::Directory { collapsed } => (
+            format!("{} {} ", if collapsed { "▶" } else { "▼" }, symbols::FOLDER),
+            row.label.clone(),
+        ),
+        FileRailRowKind::File { ref change, .. } => (
+            format!(
+                " {} {} ",
+                file_change_icon(change),
+                symbols::file_type(&row.path).glyph
+            ),
+            row.label.clone(),
+        ),
     };
-    if remaining.is_empty() {
-        branches.push(FileListBranch {
-            row: FileListRow {
-                label: (*component).to_owned(),
-                kind: FileListKind::File {
-                    magnitude: file.magnitude,
-                    attention: file.attention,
-                    selected,
-                },
-            },
-            children: Vec::new(),
-        });
-        return;
-    }
-
-    let directory = branches
-        .iter()
-        .position(|branch| {
-            branch.row.label == *component && matches!(branch.row.kind, FileListKind::Directory)
-        })
-        .unwrap_or_else(|| {
-            branches.push(FileListBranch {
-                row: FileListRow {
-                    label: (*component).to_owned(),
-                    kind: FileListKind::Directory,
-                },
-                children: Vec::new(),
-            });
-            branches.len() - 1
-        });
-    insert_file_branch(&mut branches[directory].children, remaining, file, selected);
+    let label_width = available.saturating_sub(UnicodeWidthStr::width(prefix.as_str()));
+    format!("{indentation}{prefix}{}", truncate_end(&label, label_width))
 }
 
-fn file_list_item(branch: FileListBranch) -> ListItem<FileListRow> {
-    ListItem::new(branch.row).items(branch.children.into_iter().map(file_list_item))
-}
+fn file_list_line(row: &FileRailRow, width: usize, selected: bool, theme: SemanticTheme) -> Line {
+    const INDENT: usize = 2;
+    let indentation = " ".repeat(row.depth.saturating_mul(INDENT));
+    let available = width.saturating_sub(UnicodeWidthStr::width(indentation.as_str()));
+    let selection = selected.then(|| theme.file_selection());
+    let styled = |base: TextStyle| match &selection {
+        Some(overlay) => patch_style(base, overlay),
+        None => base,
+    };
+    let plain = styled(TextStyle::new());
 
-fn file_list_label(row: &FileListRow, position: ListPosition, width: usize) -> String {
-    let available = width.saturating_sub(position.depth().saturating_mul(FILE_LIST_INDENT));
-    match &row.kind {
-        FileListKind::Directory => truncate_end(&format!("▾ {}/", row.label), available),
-        FileListKind::File {
-            magnitude,
-            attention,
-            selected,
-        } => {
-            let marker = match attention {
-                FileAttention::NeedsAttention => symbols::NEEDS_ATTENTION,
-                FileAttention::Open => symbols::OPEN,
-                FileAttention::Resolved => symbols::RESOLVED,
-                FileAttention::None => " ",
-            };
-            let selection = if *selected { symbols::NEXT } else { " " };
-            let change = presentation::change_direction(*magnitude);
-            let prefix = format!("{selection} {marker} ");
-            let label_width = available
-                .saturating_sub(UnicodeWidthStr::width(prefix.as_str()))
-                .saturating_sub(UnicodeWidthStr::width(change))
-                .saturating_sub(2);
-            presentation::right_aligned_row(
-                &prefix,
-                &truncate_end(&row.label, label_width),
-                change,
-                available,
-            )
+    let mut spans = vec![Span::styled(indentation, plain.clone())];
+    match row.kind {
+        FileRailRowKind::Directory { collapsed } => {
+            let prefix = format!("{} {} ", if collapsed { "▶" } else { "▼" }, symbols::FOLDER);
+            let label_width = available.saturating_sub(UnicodeWidthStr::width(prefix.as_str()));
+            spans.extend([
+                Span::styled(if collapsed { "▶ " } else { "▼ " }, plain.clone()),
+                Span::styled(
+                    symbols::FOLDER,
+                    styled(theme.file_icon(urushi::Color::Rgb(0x87, 0x87, 0x87))),
+                ),
+                Span::styled(" ", plain.clone()),
+                Span::styled(truncate_end(&row.label, label_width), plain),
+            ]);
+        }
+        FileRailRowKind::File { ref change, .. } => {
+            let icon = symbols::file_type(&row.path);
+            let prefix = format!(" {} {} ", file_change_icon(change), icon.glyph);
+            let label_width = available.saturating_sub(UnicodeWidthStr::width(prefix.as_str()));
+            spans.extend([
+                Span::styled(" ", plain.clone()),
+                Span::styled(file_change_icon(change), styled(theme.file_status())),
+                Span::styled(" ", plain.clone()),
+                Span::styled(icon.glyph, styled(theme.file_icon(icon.color))),
+                Span::styled(" ", plain.clone()),
+                Span::styled(truncate_end(&row.label, label_width), plain),
+            ]);
         }
     }
+    Line::from(spans)
 }
 
-fn file_list_enumerator(_: ListPosition) -> String {
-    String::new()
+fn file_change_icon(change: &crate::diff::FileChange) -> &'static str {
+    if let Some(moved) = &change.moved {
+        return if moved.copied {
+            symbols::CHANGE_COPIED
+        } else {
+            symbols::CHANGE_RENAMED
+        };
+    }
+    match change.status {
+        FileStatus::Modified => symbols::CHANGE_BOTH,
+        FileStatus::Added => symbols::CHANGE_ADDED,
+        FileStatus::Deleted => symbols::CHANGE_REMOVED,
+    }
 }
 
 fn titled_panel(spec: PanelSpec<'_>, theme: SemanticTheme, content: View) -> View {
@@ -726,10 +689,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        diff::Magnitude,
+        diff::{FileChange, Magnitude},
         semantic::{
-            ContextualKeys, CurrentContext, FileItem, FileRail, Footer, Header, LayoutPolicy,
-            ReviewViewport,
+            ContextualKeys, CurrentContext, FileAttention, FileRail, FileRailRow, FileRailRowKind,
+            Footer, Header, LayoutPolicy, ReviewViewport,
         },
         ui::LayoutMode,
     };
@@ -795,15 +758,25 @@ mod tests {
                 active_filter: "all".into(),
             },
             file_rail: Some(FileRail {
-                selected: Some(0),
-                items: vec![FileItem {
-                    path: "src/main.rs".into(),
-                    magnitude: Magnitude {
-                        additions: 2,
-                        deletions: 1,
+                selected: Some(1),
+                tree: true,
+                rows: vec![
+                    FileRailRow {
+                        label: "src".into(),
+                        path: "src".into(),
+                        depth: 0,
+                        kind: FileRailRowKind::Directory { collapsed: false },
                     },
-                    attention: FileAttention::Open,
-                }],
+                    FileRailRow {
+                        label: "main.rs".into(),
+                        path: "src/main.rs".into(),
+                        depth: 1,
+                        kind: FileRailRowKind::File {
+                            change: FileChange::default(),
+                            attention: FileAttention::Open,
+                        },
+                    },
+                ],
             }),
             body: Body::Review(Box::new(ReviewBody {
                 scroll: 0,
@@ -842,48 +815,113 @@ mod tests {
         assert_eq!(resolved.size().width(), 120);
         assert_eq!(resolved.size().height(), 24);
         assert!(text.contains("working tree"));
-        assert!(text.contains("▾ src/"));
+        assert!(text.contains("▼  src"));
         assert!(text.contains("main.rs"));
         assert!(text.contains("Nothing to review"));
         assert!(text.contains("Keys: q quit"));
     }
 
     #[test]
-    fn file_list_indents_shared_directories_without_changing_file_order() {
-        let rail = FileRail {
-            selected: Some(1),
-            items: vec![
-                FileItem {
-                    path: "src/app/mod.rs".into(),
-                    magnitude: Magnitude::default(),
-                    attention: FileAttention::None,
-                },
-                FileItem {
-                    path: "src/app/view.rs".into(),
-                    magnitude: Magnitude::default(),
-                    attention: FileAttention::Open,
-                },
-                FileItem {
-                    path: "README.md".into(),
-                    magnitude: Magnitude::default(),
-                    attention: FileAttention::None,
-                },
-            ],
+    fn file_list_labels_distinguish_open_and_collapsed_directories() {
+        let open = FileRailRow {
+            label: "src".into(),
+            path: "src".into(),
+            depth: 1,
+            kind: FileRailRowKind::Directory { collapsed: false },
+        };
+        let collapsed = FileRailRow {
+            kind: FileRailRowKind::Directory { collapsed: true },
+            ..open.clone()
         };
 
-        let list = file_list(&rail);
-        assert_eq!(list.item_nodes().len(), 2);
-        assert_eq!(list.item_nodes()[0].value().label, "src");
-        let app = &list.item_nodes()[0].item_nodes()[0];
-        assert_eq!(app.value().label, "app");
-        assert_eq!(app.item_nodes().len(), 2);
-        assert_eq!(app.item_nodes()[0].value().label, "mod.rs");
-        assert_eq!(app.item_nodes()[1].value().label, "view.rs");
-        assert!(matches!(
-            app.item_nodes()[1].value().kind,
-            FileListKind::File { selected: true, .. }
-        ));
-        assert_eq!(list.item_nodes()[1].value().label, "README.md");
+        assert_eq!(file_list_label(&open, 20), "  ▼  src");
+        assert_eq!(file_list_label(&collapsed, 20), "  ▶  src");
+    }
+
+    #[test]
+    fn file_and_directory_rows_match_lazygit_columns() {
+        let directory = FileRailRow {
+            label: "src".into(),
+            path: "src".into(),
+            depth: 1,
+            kind: FileRailRowKind::Directory { collapsed: false },
+        };
+        let file = FileRailRow {
+            label: "main.rs".into(),
+            path: "src/main.rs".into(),
+            depth: 1,
+            kind: FileRailRowKind::File {
+                change: FileChange::default(),
+                attention: FileAttention::None,
+            },
+        };
+        let directory = file_list_label(&directory, 30);
+        let file = file_list_label(&file, 30);
+
+        let directory_name = directory.find("src").expect("directory name");
+        let file_name = file.find("main.rs").expect("file name");
+        assert_eq!(
+            UnicodeWidthStr::width(&directory[..directory_name]) + 1,
+            UnicodeWidthStr::width(&file[..file_name])
+        );
+        assert!(file.trim_start().starts_with(symbols::CHANGE_BOTH));
+        assert!(file.contains(" main.rs"));
+    }
+
+    #[test]
+    fn file_rows_color_status_icon_and_name_independently() {
+        let row = FileRailRow {
+            label: "main.rs".into(),
+            path: "src/main.rs".into(),
+            depth: 1,
+            kind: FileRailRowKind::File {
+                change: FileChange::default(),
+                attention: FileAttention::None,
+            },
+        };
+        let theme = SemanticTheme::from_no_color(None);
+        let line = file_list_line(&row, 30, false, theme);
+
+        assert_eq!(line.spans[2].content, symbols::CHANGE_BOTH);
+        assert_eq!(
+            line.spans[2].style.get_foreground(),
+            Some(urushi::Color::RED)
+        );
+        assert_eq!(line.spans[4].content, "");
+        assert_eq!(
+            line.spans[4].style.get_foreground(),
+            Some(urushi::Color::Rgb(0xff, 0x70, 0x43))
+        );
+        assert_eq!(line.spans[6].content, "main.rs");
+        assert_eq!(line.spans[6].style.get_foreground(), None);
+    }
+
+    #[test]
+    fn selected_file_keeps_element_colors_and_adds_the_same_emphasis() {
+        let row = FileRailRow {
+            label: "README.md".into(),
+            path: "README.md".into(),
+            depth: 0,
+            kind: FileRailRowKind::File {
+                change: FileChange::default(),
+                attention: FileAttention::None,
+            },
+        };
+        let line = file_list_line(&row, 30, true, SemanticTheme::from_no_color(None));
+
+        assert_eq!(
+            line.spans[2].style.get_foreground(),
+            Some(urushi::Color::RED)
+        );
+        assert_eq!(
+            line.spans[4].style.get_foreground(),
+            Some(urushi::Color::Rgb(0x42, 0xa5, 0xf5))
+        );
+        assert!(
+            line.spans
+                .iter()
+                .all(|span| { span.style.get_attributes().contains(TextAttribute::Bold) })
+        );
     }
 
     #[test]

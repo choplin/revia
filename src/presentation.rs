@@ -394,20 +394,6 @@ pub(crate) fn format_magnitude(magnitude: Magnitude) -> String {
     format!("+{} -{}", magnitude.additions, magnitude.deletions)
 }
 
-/// The direction of a file's change as a single cell.
-///
-/// Navigation rows are too narrow to carry exact counts without crowding out
-/// the path, so they answer "what kind of change is this" and leave the
-/// magnitude itself to the file boundary.
-pub(crate) fn change_direction(magnitude: Magnitude) -> &'static str {
-    match (magnitude.additions > 0, magnitude.deletions > 0) {
-        (true, true) => symbols::CHANGE_BOTH,
-        (true, false) => symbols::CHANGE_ADDED,
-        (false, true) => symbols::CHANGE_REMOVED,
-        (false, false) => symbols::CHANGE_NONE,
-    }
-}
-
 /// The physical rows of one file boundary.
 ///
 /// Row count is width-dependent, so viewport row mapping and rendering must

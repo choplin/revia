@@ -19,9 +19,18 @@ those regions without changing the body height.
   width.
 - Below 48 columns or 8 rows, a stable too-small explanation replaces the shell.
 
-The rail is navigation over the stream, not a file-view switcher. It follows the
-single review cursor and has no independent selected file. Sticky file and hunk
-rows retain orientation while a scrollbar represents the full projected stream.
+The rail is navigation over the stream, not a file-view switcher. Its file
+selection follows the single review cursor. While the rail is focused, a
+directory may temporarily hold the list selection so LazyGit-style tree
+controls can collapse or expand it without changing the file preview. Sticky
+file and hunk rows retain orientation while a scrollbar represents the full
+projected stream.
+
+The focused rail follows LazyGit's read-only navigation subset: `j`/`k` move
+through visible files and directories, `Enter` opens a file or toggles a
+directory, `` ` `` switches between flat and tree layouts, `-`/`=` collapse or
+expand all directories, `,`/`.` move by page, and `Home`/`End` or `</>` jump to
+the list edges. Mutating working-tree commands are intentionally absent.
 
 ## Semantic navigation
 
@@ -79,4 +88,3 @@ to leak into review. Input precedence and mode ownership are described in
 
 The exact row and responsive-display rules are in
 [`design/diff-presentation.md`](design/diff-presentation.md).
-

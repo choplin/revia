@@ -2,10 +2,11 @@
 
 ## Rule
 
-The review cursor is the only selection model. The file rail follows it, hunk
-and file jumps update it, and inline thread selection extends it. Focus scopes
-keys to the stream, rail, or selected thread but does not create another file or
-hunk selection.
+The review cursor is the only file/hunk selection model. The file rail follows
+it, hunk and file jumps update it, and inline thread selection extends it. The
+focused rail may hold a transient directory target for tree navigation; this
+does not change the review cursor or the previewed file. Focus scopes keys to
+the stream, rail, or selected thread.
 
 Direct navigation places a target according to its semantic size:
 
@@ -56,8 +57,9 @@ physical coordinates.
 
 ## Rejected alternatives
 
-- Keeping separate rail and stream selections permits them to drift and makes
-  thread actions ambiguous.
+- Keeping separate file selections in the rail and stream permits them to drift
+  and makes thread actions ambiguous. A transient directory target is safe
+  because it cannot own a hunk or receive a review action.
 - Restoring a raw row number after relayout points at different content whenever
   wrapping, cards, filters, or terminal width changes row counts.
 - Centering every target wastes context for large files and hunks; top-aligning

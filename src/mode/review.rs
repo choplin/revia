@@ -7,8 +7,9 @@ use crate::{
     presentation::{self, ReviewRowMap, ViewportAnchor},
     review::{ReviewCursor, ReviewSession},
     semantic::{
-        Body, DiffSearchTarget, FileAttention, FileItem, FileRail, LayoutPolicy, ReviewBody,
-        ReviewFile, ReviewHunk, ReviewViewport, ThreadCard, ThreadState as SemanticThreadState,
+        Body, DiffSearchTarget, FileAttention, FileRail, FileRailRow, FileRailRowKind,
+        LayoutPolicy, ReviewBody, ReviewFile, ReviewHunk, ReviewViewport, ThreadCard,
+        ThreadState as SemanticThreadState,
     },
     thread::{
         Resolution, ReviewThread, ThreadChange, ThreadId, ThreadOperation, ThreadState as Threads,
@@ -32,6 +33,9 @@ pub struct Model {
     viewport_columns: u16,
     search: Option<SearchState>,
     expanded_threads: BTreeSet<ThreadId>,
+    file_tree: bool,
+    collapsed_directories: BTreeSet<String>,
+    file_rail_target: Option<FileRailTarget>,
     filter: ReviewFilter,
     projection_revision: u64,
     row_map_cache: RefCell<Option<RowMapCache>>,
@@ -138,6 +142,114 @@ struct SearchGeometry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum FileRailTarget {
+    Directory(String),
+    File(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileRailNode {
+    label: String,
+    path: String,
+    depth: usize,
+    file_index: Option<usize>,
+    children: Vec<FileRailNode>,
+}
+
+impl FileRailNode {
+    fn directory(label: String, path: String) -> Self {
+        Self {
+            label,
+            path,
+            depth: 0,
+            file_index: None,
+            children: Vec::new(),
+        }
+    }
+
+    fn file(label: String, path: String, depth: usize, file_index: usize) -> Self {
+        Self {
+            label,
+            path,
+            depth,
+            file_index: Some(file_index),
+            children: Vec::new(),
+        }
+    }
+
+    fn target(&self) -> FileRailTarget {
+        if self.file_index.is_some() {
+            FileRailTarget::File(self.path.clone())
+        } else {
+            FileRailTarget::Directory(self.path.clone())
+        }
+    }
+
+    fn file_path(&self) -> Option<&str> {
+        self.file_index.map(|_| self.path.as_str())
+    }
+}
+
+fn insert_file_tree_branch(
+    branches: &mut Vec<FileRailNode>,
+    components: &[&str],
+    parent: &str,
+    file_index: usize,
+) {
+    let Some((component, remaining)) = components.split_first() else {
+        return;
+    };
+    let path = if parent.is_empty() {
+        (*component).to_owned()
+    } else {
+        format!("{parent}/{component}")
+    };
+    if remaining.is_empty() {
+        branches.push(FileRailNode::file(
+            (*component).to_owned(),
+            path,
+            0,
+            file_index,
+        ));
+        return;
+    }
+
+    let directory = branches
+        .iter()
+        .position(|branch| branch.file_index.is_none() && branch.path == path)
+        .unwrap_or_else(|| {
+            branches.push(FileRailNode::directory(
+                (*component).to_owned(),
+                path.clone(),
+            ));
+            branches.len() - 1
+        });
+    insert_file_tree_branch(
+        &mut branches[directory].children,
+        remaining,
+        &path,
+        file_index,
+    );
+}
+
+fn flatten_file_tree(
+    branches: &[FileRailNode],
+    depth: usize,
+    collapsed: &BTreeSet<String>,
+    rows: &mut Vec<FileRailNode>,
+) {
+    for branch in branches {
+        let mut row = branch.clone();
+        row.depth = depth;
+        row.children.clear();
+        rows.push(row);
+        if branch.file_index.is_none() && !collapsed.contains(&branch.path) {
+            flatten_file_tree(&branch.children, depth.saturating_add(1), collapsed, rows);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchSummary {
     pub query: String,
     pub selected: Option<usize>,
@@ -158,6 +270,9 @@ impl Model {
             viewport_columns: 120,
             search: None,
             expanded_threads: BTreeSet::new(),
+            file_tree: true,
+            collapsed_directories: BTreeSet::new(),
+            file_rail_target: None,
             filter: ReviewFilter::AllChanges,
             projection_revision: 0,
             row_map_cache: RefCell::new(None),
@@ -300,6 +415,75 @@ impl Model {
             }
         }
         files
+    }
+
+    fn file_rail_rows(&self, threads: &Threads) -> Vec<FileRailNode> {
+        let visible_files = self.visible_files(threads);
+        if !self.file_tree {
+            return visible_files
+                .into_iter()
+                .filter_map(|file_index| {
+                    let file = self.session.diff().document.files.get(file_index)?;
+                    Some(FileRailNode::file(
+                        file.path.clone(),
+                        file.path.clone(),
+                        0,
+                        file_index,
+                    ))
+                })
+                .collect();
+        }
+
+        let mut roots = Vec::new();
+        for file_index in visible_files {
+            let Some(file) = self.session.diff().document.files.get(file_index) else {
+                continue;
+            };
+            let components = file
+                .path
+                .split('/')
+                .filter(|component| !component.is_empty())
+                .collect::<Vec<_>>();
+            let components = if components.is_empty() {
+                vec![file.path.as_str()]
+            } else {
+                components
+            };
+            insert_file_tree_branch(&mut roots, &components, "", file_index);
+        }
+        if roots.len() > 1 {
+            let mut root = FileRailNode::directory("/".into(), "/".into());
+            root.children = roots;
+            roots = vec![root];
+        }
+
+        let mut rows = Vec::new();
+        flatten_file_tree(&roots, 0, &self.collapsed_directories, &mut rows);
+        rows
+    }
+
+    fn resolved_file_rail_target(&self, rows: &[FileRailNode]) -> Option<(usize, FileRailTarget)> {
+        self.file_rail_target
+            .as_ref()
+            .filter(|_| self.view.focus == FocusArea::Files)
+            .and_then(|target| {
+                rows.iter()
+                    .position(|row| row.target() == *target)
+                    .map(|position| (position, target.clone()))
+            })
+            .or_else(|| {
+                let path = &self
+                    .session
+                    .diff()
+                    .document
+                    .files
+                    .get(self.session.cursor().selected_file())?
+                    .path;
+                rows.iter()
+                    .position(|row| row.file_path() == Some(path.as_str()))
+                    .map(|position| (position, FileRailTarget::File(path.clone())))
+            })
+            .or_else(|| rows.first().map(|row| (0, row.target())))
     }
 
     fn visible_threads_at<'a>(
@@ -871,6 +1055,13 @@ pub enum Event {
     JumpToDiffEdge { end: bool },
     MoveHunk(i32),
     MoveFile(i32),
+    MoveFileRail(i32),
+    MoveFileRailPage(i32),
+    JumpToFileRailEdge { end: bool },
+    EnterFileRailTarget,
+    ToggleFileTree,
+    CollapseFileTree,
+    ExpandFileTree,
     AdjustContext(i32),
     BeginThread { always_new: bool },
     MoveThread(i32),
@@ -957,14 +1148,22 @@ pub struct Update {
     pub effects: Vec<Effect>,
 }
 
-/// Keys that mean something different while the file rail holds focus.  The
-/// rail addresses whole files, so vertical movement walks the file list instead
-/// of scrolling the diff.  Returning `None` hands the key back to the shared
-/// table.
+/// Keys that mean something different while the file rail holds focus. The
+/// bindings mirror LazyGit's list and file-tree navigation where those actions
+/// remain read-only. Returning `None` hands the key back to the shared table.
 fn file_rail_binding(key: Key) -> Option<Event> {
     match key {
-        Key::Char('j') | Key::Down => Some(Event::MoveFile(1)),
-        Key::Char('k') | Key::Up => Some(Event::MoveFile(-1)),
+        Key::Char('j') | Key::Down => Some(Event::MoveFileRail(1)),
+        Key::Char('k') | Key::Up => Some(Event::MoveFileRail(-1)),
+        Key::Char('.') | Key::PageDown => Some(Event::MoveFileRailPage(1)),
+        Key::Char(',') | Key::PageUp => Some(Event::MoveFileRailPage(-1)),
+        Key::Char('>') | Key::End => Some(Event::JumpToFileRailEdge { end: true }),
+        Key::Char('<') | Key::Home => Some(Event::JumpToFileRailEdge { end: false }),
+        Key::Enter => Some(Event::EnterFileRailTarget),
+        Key::Left | Key::Right => Some(Event::CycleFocus),
+        Key::Char('`') => Some(Event::ToggleFileTree),
+        Key::Char('-') => Some(Event::CollapseFileTree),
+        Key::Char('=') => Some(Event::ExpandFileTree),
         _ => None,
     }
 }
@@ -1335,6 +1534,97 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
                 );
             }
         }
+        Event::MoveFileRail(direction) => {
+            move_file_rail(model, direction, input.threads, &mut result);
+        }
+        Event::MoveFileRailPage(direction) => {
+            let page = usize::from(model.viewport_rows.saturating_sub(5).max(1));
+            let distance = i32::try_from(page).unwrap_or(i32::MAX);
+            move_file_rail(
+                model,
+                direction.saturating_mul(distance),
+                input.threads,
+                &mut result,
+            );
+        }
+        Event::JumpToFileRailEdge { end } => {
+            let rows = model.file_rail_rows(input.threads);
+            if let Some(row) = if end { rows.last() } else { rows.first() } {
+                select_file_rail_node(model, row, input.threads);
+                status(&mut result, if end { "files end" } else { "files start" });
+            } else {
+                status(
+                    &mut result,
+                    "cannot move files: this diff has no changed files",
+                );
+            }
+        }
+        Event::EnterFileRailTarget => {
+            let rows = model.file_rail_rows(input.threads);
+            let Some((_, target)) = model.resolved_file_rail_target(&rows) else {
+                status(
+                    &mut result,
+                    "cannot enter files: this diff has no changed files",
+                );
+                return result;
+            };
+            match target {
+                FileRailTarget::Directory(path) => {
+                    let collapsed = if model.collapsed_directories.remove(&path) {
+                        false
+                    } else {
+                        model.collapsed_directories.insert(path.clone());
+                        true
+                    };
+                    model.file_rail_target = Some(FileRailTarget::Directory(path.clone()));
+                    status(
+                        &mut result,
+                        format!(
+                            "{} directory: {path}",
+                            if collapsed { "collapsed" } else { "expanded" }
+                        ),
+                    );
+                }
+                FileRailTarget::File(path) => {
+                    model.view.focus = FocusArea::Review;
+                    status(&mut result, format!("diff focused: {path}"));
+                }
+            }
+        }
+        Event::ToggleFileTree => {
+            if model.file_tree {
+                if let Some(FileRailTarget::Directory(path)) = model.file_rail_target.as_ref() {
+                    let prefix = format!("{path}/");
+                    if let Some(file) = model
+                        .visible_files(input.threads)
+                        .into_iter()
+                        .filter_map(|index| model.session.diff().document.files.get(index))
+                        .find(|file| file.path.starts_with(&prefix))
+                    {
+                        model.file_rail_target = Some(FileRailTarget::File(file.path.clone()));
+                    }
+                }
+                model.file_tree = false;
+                status(&mut result, "files: flat view");
+            } else {
+                model.file_tree = true;
+                status(&mut result, "files: tree view");
+            }
+        }
+        Event::CollapseFileTree => {
+            model.file_tree = true;
+            model.collapsed_directories = all_file_directories(model, input.threads);
+            let rows = model.file_rail_rows(input.threads);
+            if model.resolved_file_rail_target(&rows).is_none() {
+                model.file_rail_target = rows.first().map(FileRailNode::target);
+            }
+            status(&mut result, "collapsed all file directories");
+        }
+        Event::ExpandFileTree => {
+            model.file_tree = true;
+            model.collapsed_directories.clear();
+            status(&mut result, "expanded all file directories");
+        }
         Event::AdjustContext(delta) => {
             let context = model.request.context_lines as i32 + delta;
             if context >= 0 {
@@ -1597,7 +1887,18 @@ fn move_focus(model: &mut Model, threads: &Threads, result: &mut Update) {
             return;
         }
     };
-    model.change_geometry(threads, |model| model.view.focus = next);
+    model.change_geometry(threads, |model| {
+        model.view.focus = next;
+        if next == FocusArea::Files {
+            model.file_rail_target = model
+                .session
+                .diff()
+                .document
+                .files
+                .get(model.session.cursor().selected_file())
+                .map(|file| FileRailTarget::File(file.path.clone()));
+        }
+    });
     status(
         result,
         if next == FocusArea::Files {
@@ -1606,6 +1907,70 @@ fn move_focus(model: &mut Model, threads: &Threads, result: &mut Update) {
             "diff focused"
         },
     );
+}
+
+fn move_file_rail(model: &mut Model, direction: i32, threads: &Threads, result: &mut Update) {
+    let rows = model.file_rail_rows(threads);
+    let Some((current, _)) = model.resolved_file_rail_target(&rows) else {
+        status(result, "cannot move files: this diff has no changed files");
+        return;
+    };
+    let target = if direction < 0 {
+        current.saturating_sub(direction.unsigned_abs() as usize)
+    } else {
+        current
+            .saturating_add(direction as usize)
+            .min(rows.len().saturating_sub(1))
+    };
+    let row = &rows[target];
+    select_file_rail_node(model, row, threads);
+    status(
+        result,
+        match row.file_index {
+            Some(_) => format!("file {}/{}: {}", target + 1, rows.len(), row.path),
+            None => format!("directory {}/{}: {}", target + 1, rows.len(), row.path),
+        },
+    );
+}
+
+fn select_file_rail_node(model: &mut Model, row: &FileRailNode, threads: &Threads) {
+    model.file_rail_target = Some(row.target());
+    let Some(file) = row.file_index else {
+        return;
+    };
+    if let Some((_, hunk)) = model
+        .visible_hunks(threads)
+        .into_iter()
+        .find(|(candidate, _)| *candidate == file)
+    {
+        model.session.select_hunk(file, hunk);
+    } else {
+        model.session.select_file(file);
+    }
+    model.align_selected_file_to_top(threads);
+}
+
+fn all_file_directories(model: &Model, threads: &Threads) -> BTreeSet<String> {
+    let directories = model
+        .visible_files(threads)
+        .into_iter()
+        .filter_map(|index| model.session.diff().document.files.get(index))
+        .flat_map(|file| {
+            let components = file.path.split('/').collect::<Vec<_>>();
+            (1..components.len()).map(move |end| components[..end].join("/"))
+        })
+        .collect::<BTreeSet<_>>();
+    let top_level_items = model
+        .visible_files(threads)
+        .into_iter()
+        .filter_map(|index| model.session.diff().document.files.get(index))
+        .filter_map(|file| file.path.split('/').next())
+        .collect::<BTreeSet<_>>();
+    if top_level_items.len() > 1 {
+        directories.into_iter().chain(["/".into()]).collect()
+    } else {
+        directories
+    }
 }
 
 fn scroll_status(view: &ViewState) -> String {
@@ -2030,44 +2395,60 @@ pub struct View {
 }
 
 pub fn view(model: &Model, input: ViewInput<'_>) -> View {
-    let visible_files = model.visible_files(input.threads);
-    let file_rail = model.sidebar_visible.then(|| FileRail {
-        selected: visible_files
-            .iter()
-            .position(|file| *file == model.session.cursor().selected_file()),
-        items: visible_files
-            .iter()
-            .filter_map(|file_index| {
-                let file = model.session.diff().document.files.get(*file_index)?;
-                let file_threads = file
-                    .hunks
-                    .iter()
-                    .flat_map(|hunk| {
-                        model.visible_threads_at(
-                            &HunkLocation::new(&file.path, &hunk.header),
-                            input.threads,
-                        )
+    let file_rail = model.sidebar_visible.then(|| {
+        let rows = model.file_rail_rows(input.threads);
+        let selected = model
+            .resolved_file_rail_target(&rows)
+            .map(|(position, _)| position);
+        FileRail {
+            selected,
+            tree: model.file_tree,
+            rows: rows
+                .into_iter()
+                .filter_map(|row| {
+                    let kind = if let Some(file_index) = row.file_index {
+                        let file = model.session.diff().document.files.get(file_index)?;
+                        let file_threads = file
+                            .hunks
+                            .iter()
+                            .flat_map(|hunk| {
+                                model.visible_threads_at(
+                                    &HunkLocation::new(&file.path, &hunk.header),
+                                    input.threads,
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        let attention = if file_threads.iter().any(|thread| thread.needs_attention)
+                        {
+                            FileAttention::NeedsAttention
+                        } else if file_threads
+                            .iter()
+                            .any(|thread| matches!(thread.resolution, Resolution::Open))
+                        {
+                            FileAttention::Open
+                        } else if file_threads.is_empty() {
+                            FileAttention::None
+                        } else {
+                            FileAttention::Resolved
+                        };
+                        FileRailRowKind::File {
+                            change: file.change.clone(),
+                            attention,
+                        }
+                    } else {
+                        FileRailRowKind::Directory {
+                            collapsed: model.collapsed_directories.contains(&row.path),
+                        }
+                    };
+                    Some(FileRailRow {
+                        label: row.label,
+                        path: row.path,
+                        depth: row.depth,
+                        kind,
                     })
-                    .collect::<Vec<_>>();
-                let attention = if file_threads.iter().any(|thread| thread.needs_attention) {
-                    FileAttention::NeedsAttention
-                } else if file_threads
-                    .iter()
-                    .any(|thread| matches!(thread.resolution, Resolution::Open))
-                {
-                    FileAttention::Open
-                } else if file_threads.is_empty() {
-                    FileAttention::None
-                } else {
-                    FileAttention::Resolved
-                };
-                Some(FileItem {
-                    path: file.path.clone(),
-                    magnitude: file.magnitude,
-                    attention,
                 })
-            })
-            .collect(),
+                .collect(),
+        }
     });
     let mut review = review_body(model, input.threads);
     let presentation_width = review_body_width(model.viewport_columns, model.sidebar_visible);

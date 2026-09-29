@@ -3,8 +3,8 @@ use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 use crate::{
     presentation,
     semantic::{
-        DiffSearchTarget, FileAttention, ReviewBody, ReviewWindowSection, RollupBody,
-        StickyReviewContext, ThreadState, Tone, View,
+        DiffSearchTarget, ReviewBody, ReviewWindowSection, RollupBody, StickyReviewContext,
+        ThreadState, Tone, View,
     },
     styled_text::{Document, Line, Span, patch_style},
     symbols,
@@ -94,35 +94,23 @@ impl SemanticTheme {
         }
     }
 
-    pub(crate) fn file_item(
-        self,
-        attention: FileAttention,
-        selected: bool,
-        focused: bool,
-    ) -> TextStyle {
-        if selected && focused {
-            return self.selection();
-        }
-        if selected {
-            return self.style(Tone::FocusSelection);
-        }
+    pub(crate) fn file_selection(self) -> TextStyle {
+        TextStyle::new().bold()
+    }
 
-        match attention {
-            FileAttention::NeedsAttention => self.style(Tone::Attention),
-            FileAttention::Resolved => self.style(Tone::MutedResolved),
-            FileAttention::Open if self.colors_enabled => {
-                TextStyle::new().foreground(Color::BRIGHT_BLUE)
-            }
-            FileAttention::Open | FileAttention::None => TextStyle::new(),
+    pub(crate) fn file_status(self) -> TextStyle {
+        if self.colors_enabled {
+            TextStyle::new().foreground(Color::RED)
+        } else {
+            TextStyle::new()
         }
     }
 
-    pub(crate) fn directory(self) -> TextStyle {
-        let style = TextStyle::new().bold();
+    pub(crate) fn file_icon(self, color: Color) -> TextStyle {
         if self.colors_enabled {
-            style.foreground(Color::BRIGHT_BLUE)
+            TextStyle::new().foreground(color)
         } else {
-            style
+            TextStyle::new()
         }
     }
 
@@ -818,26 +806,28 @@ mod tests {
     }
 
     #[test]
-    fn file_items_keep_status_and_focus_visually_distinct() {
+    fn file_tree_styles_match_lazygits_element_roles() {
         let theme = SemanticTheme::from_no_color(None);
 
+        assert_eq!(theme.file_status().get_foreground(), Some(Color::RED));
         assert_eq!(
             theme
-                .file_item(FileAttention::Open, false, false)
+                .file_icon(Color::Rgb(0xff, 0x70, 0x43))
                 .get_foreground(),
-            Some(Color::BRIGHT_BLUE)
+            Some(Color::Rgb(0xff, 0x70, 0x43))
         );
         assert!(
             theme
-                .file_item(FileAttention::NeedsAttention, false, false)
+                .file_selection()
                 .get_attributes()
                 .contains(TextAttribute::Bold)
         );
         assert!(
-            theme
-                .file_item(FileAttention::None, true, true)
+            !theme
+                .file_selection()
                 .get_attributes()
                 .contains(TextAttribute::Reversed)
         );
+        assert_eq!(theme.file_selection().get_foreground(), None);
     }
 }

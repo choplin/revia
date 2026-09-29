@@ -307,8 +307,8 @@ fn context_keys(
         ),
         SurfaceContext::Threads => (&["q exit", "Tab diff", "c comment", "? help"], &[]),
         SurfaceContext::Files => (
-            &["q exit", "Tab diff", "? help"],
-            &["j/k file", "s hide rail", "F filter", "A all"],
+            &["q exit", "Enter open/fold", "Tab/←/→ diff", "? help"],
+            &["j/k item", "` flat/tree", "-/= fold", "s hide rail"],
         ),
         SurfaceContext::SearchInput => (
             &["Esc cancel", "Enter keep"],

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     anchor::HunkLocation,
-    diff::{DiffLine, HunkCoordinates, Magnitude},
+    diff::{DiffLine, FileChange, HunkCoordinates, Magnitude},
     thread::ThreadId,
     ui::{FocusArea, LayoutMode},
 };
@@ -32,14 +32,27 @@ pub struct Header {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileRail {
     pub selected: Option<usize>,
-    pub items: Vec<FileItem>,
+    pub tree: bool,
+    pub rows: Vec<FileRailRow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileItem {
+pub struct FileRailRow {
+    pub label: String,
     pub path: String,
-    pub magnitude: Magnitude,
-    pub attention: FileAttention,
+    pub depth: usize,
+    pub kind: FileRailRowKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileRailRowKind {
+    Directory {
+        collapsed: bool,
+    },
+    File {
+        change: FileChange,
+        attention: FileAttention,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
