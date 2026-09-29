@@ -7,9 +7,10 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 use urushi::{
     Align, BlockStyle, BlockTitle, Border, Canvas, CanvasContext, CanvasItem, CellContribution,
-    Composition, Length, Overflow, Position, PositionedCell, Projection, ProjectionBoundary,
-    Scrollbar, ScrollbarGlyphs, ScrollbarOrientation, ScrollbarPresentation, StyledText, TextStyle,
-    VerticalAlign, View, Viewport,
+    Composition, Length, List, ListItem, ListItemPresentation, ListPosition, ListPresentation,
+    Overflow, Position, PositionedCell, Projection, ProjectionBoundary, Scrollbar, ScrollbarGlyphs,
+    ScrollbarOrientation, ScrollbarPresentation, StyledText, TextStyle, VerticalAlign, View,
+    Viewport,
 };
 use urushi_tui_app::SurfaceSize;
 
@@ -20,7 +21,7 @@ use crate::{
         Body, FileAttention, Overlay, ReviewBody, RollupBody, ThreadState, Tone,
         View as SemanticView,
     },
-    styled_text::{Document, patch_style},
+    styled_text::{Document, Line, Span},
     symbols,
     ui::{FocusArea, ShellSize, truncate_end},
 };
@@ -57,10 +58,7 @@ impl UrushiRenderer {
         let theme = self.presentation.semantic_theme();
         let size = ShellSize::for_width(width);
         let header = fixed_row(
-            View::text(
-                renderer::header_text(semantic, width, size),
-                TextStyle::new().bold(),
-            ),
+            View::text(renderer::header_text(semantic, width, size), theme.header()),
             1,
         );
         let body = match (semantic.file_rail.as_ref(), size.rail_width(width)) {
@@ -104,49 +102,25 @@ impl UrushiRenderer {
         theme: SemanticTheme,
     ) -> View {
         let inner_width = usize::from(width.saturating_sub(2));
-        let rows = rail.items.iter().enumerate().map(|(index, file)| {
-            let marker = match file.attention {
-                FileAttention::NeedsAttention => symbols::NEEDS_ATTENTION,
-                FileAttention::Open => symbols::OPEN,
-                FileAttention::Resolved => symbols::RESOLVED,
-                FileAttention::None => " ",
-            };
-            let selection = if rail.selected == Some(index) {
-                symbols::NEXT
-            } else {
-                " "
-            };
-            let change = presentation::change_direction(file.magnitude);
-            let prefix = format!("{selection} {marker} ");
-            let path_width = inner_width
-                .saturating_sub(UnicodeWidthStr::width(prefix.as_str()))
-                .saturating_sub(UnicodeWidthStr::width(change))
-                .saturating_sub(2);
-            let path = presentation::fit_path_label(
-                &file.path,
-                presentation::unique_prefix_segments(
-                    &file.path,
-                    rail.items.iter().map(|item| item.path.as_str()),
-                ),
-                path_width,
-            );
-            let mut style = match file.attention {
-                FileAttention::NeedsAttention => theme.style(Tone::Attention),
-                FileAttention::Resolved => theme.style(Tone::MutedResolved),
-                FileAttention::Open | FileAttention::None => TextStyle::new(),
-            };
-            if semantic.layout.focus == FocusArea::Files && rail.selected == Some(index) {
-                style = patch_style(style, &theme.selection());
-            }
-            fixed_row(
-                View::text(
-                    presentation::right_aligned_row(&prefix, &path, change, inner_width),
-                    style,
-                ),
-                1,
-            )
-        });
         let focused = semantic.layout.focus == FocusArea::Files;
+        let list = file_list(rail);
+        let items = ListItemPresentation::new(|row: &FileListRow, position| {
+            file_list_label(row, position, inner_width)
+        })
+        .item_style(|row, _, _| {
+            Some(match &row.kind {
+                FileListKind::Directory => theme.directory(),
+                FileListKind::File {
+                    attention,
+                    selected,
+                    ..
+                } => theme.file_item(*attention, *selected, focused),
+            })
+        });
+        let content = ListPresentation::new(TextStyle::new(), TextStyle::new())
+            .enumerator(file_list_enumerator)
+            .nesting_indent(FILE_LIST_INDENT)
+            .compose_with(&list, &items);
         let focus_label = if focused {
             Some("FILE FOCUS")
         } else {
@@ -162,7 +136,7 @@ impl UrushiRenderer {
                 border: Border::ROUNDED,
             },
             theme,
-            View::column(Align::Left, rows),
+            content,
         )
     }
 
@@ -205,14 +179,17 @@ impl UrushiRenderer {
         };
 
         let scrollbar = if review.viewport.total_rows > review.viewport.visible_rows {
-            let presentation = ScrollbarPresentation::new(TextStyle::new(), TextStyle::new())
-                .glyphs(
-                    ScrollbarOrientation::Vertical,
-                    ScrollbarGlyphs::new(symbols::SCROLL_THUMB)
-                        .track(None)
-                        .begin(None)
-                        .end(None),
-                );
+            let presentation = ScrollbarPresentation::new(
+                theme.style(Tone::FocusSelection),
+                theme.style(Tone::MutedResolved),
+            )
+            .glyphs(
+                ScrollbarOrientation::Vertical,
+                ScrollbarGlyphs::new(symbols::SCROLL_THUMB)
+                    .track(None)
+                    .begin(None)
+                    .end(None),
+            );
             presentation.compose(
                 &Scrollbar::new(
                     ScrollbarOrientation::Vertical,
@@ -279,7 +256,7 @@ impl CanvasItem for OverlayItem {
             Some(size.width()),
             Some(size.height()),
         );
-        if matches!(self.overlay, Overlay::Composer(_)) {
+        if matches!(self.overlay, Overlay::Composer(_) | Overlay::Help(_)) {
             let style = self.theme.modal_backdrop();
             let cells = (0..size.height()).flat_map(|row| {
                 let style = style.clone();
@@ -295,7 +272,7 @@ impl CanvasItem for OverlayItem {
 
         let (width_percent, requested_height) = match &self.overlay {
             Overlay::Composer(composer) => (70, usize::from(composer.height)),
-            Overlay::Help(_) => (86, 20),
+            Overlay::Help(_) => (86, 32),
             Overlay::Thread(_) => (78, 18),
         };
         let width = size
@@ -349,7 +326,7 @@ fn popup_view(overlay: &Overlay, width: usize, height: usize, theme: SemanticThe
                     cell_i64(help.scroll),
                     ProjectionBoundary::Preserve,
                 )),
-                View::text(help.lines.join("\n"), TextStyle::new()),
+                text_view(help_document(&help.lines, theme)),
             );
             let hint = fixed_row(
                 View::text(
@@ -362,7 +339,7 @@ fn popup_view(overlay: &Overlay, width: usize, height: usize, theme: SemanticThe
                 PanelSpec {
                     width: cell_u16(width),
                     height: Length::Cells(cell_u16(height)),
-                    title: "Keyboard help — Esc/? to close",
+                    title: "Keyboard help",
                     focus_label: None,
                     focused: true,
                     border: Border::DOUBLE,
@@ -434,6 +411,62 @@ fn popup_view(overlay: &Overlay, width: usize, height: usize, theme: SemanticThe
     }
 }
 
+fn help_document(lines: &[String], theme: SemanticTheme) -> Document {
+    Document::from(
+        lines
+            .iter()
+            .map(|line| {
+                if is_help_heading(line) {
+                    return Line::styled(line.clone(), theme.style(Tone::FocusSelection));
+                }
+                if let Some(context) = line.strip_prefix("Commands from: ") {
+                    return Line::from(vec![
+                        Span::styled("Commands from: ", theme.style(Tone::MutedResolved)),
+                        Span::styled(context, theme.style(Tone::Attention)),
+                    ]);
+                }
+
+                let (available, command) = if let Some(command) = line.strip_prefix("◆ ") {
+                    (true, command)
+                } else if let Some(command) = line.strip_prefix("· ") {
+                    (false, command)
+                } else {
+                    return Line::raw(line.clone());
+                };
+                let marker_style = if available {
+                    theme.style(Tone::FocusSelection)
+                } else {
+                    theme.style(Tone::MutedResolved)
+                };
+                let Some((keys, description)) = command.split_once(" — ") else {
+                    return Line::from(vec![
+                        Span::styled(if available { "◆ " } else { "· " }, marker_style),
+                        Span::styled(command, theme.style(Tone::MutedResolved)),
+                    ]);
+                };
+                let description_style = if available {
+                    TextStyle::new()
+                } else {
+                    theme.style(Tone::MutedResolved)
+                };
+                Line::from(vec![
+                    Span::styled(if available { "◆ " } else { "· " }, marker_style.clone()),
+                    Span::styled(keys, marker_style),
+                    Span::styled("  ", description_style.clone()),
+                    Span::styled(description, description_style),
+                ])
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn is_help_heading(line: &str) -> bool {
+    matches!(
+        line,
+        "Navigation" | "View" | "Review actions" | "Global / exit" | "In help"
+    )
+}
+
 fn composer_editor(composer: &crate::semantic::ComposerOverlay) -> View {
     let lines = composer.lines.iter().enumerate().map(|(row, line)| {
         let content = if row == composer.cursor_row {
@@ -469,6 +502,130 @@ struct PanelSpec<'a> {
     border: Border,
 }
 
+const FILE_LIST_INDENT: usize = 2;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileListRow {
+    label: String,
+    kind: FileListKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FileListKind {
+    Directory,
+    File {
+        magnitude: crate::diff::Magnitude,
+        attention: FileAttention,
+        selected: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileListBranch {
+    row: FileListRow,
+    children: Vec<FileListBranch>,
+}
+
+fn file_list(rail: &crate::semantic::FileRail) -> List<FileListRow> {
+    let mut roots = Vec::new();
+    for (index, file) in rail.items.iter().enumerate() {
+        let components = file
+            .path
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .collect::<Vec<_>>();
+        let components = if components.is_empty() {
+            vec![file.path.as_str()]
+        } else {
+            components
+        };
+        insert_file_branch(&mut roots, &components, file, rail.selected == Some(index));
+    }
+    List::new().items(roots.into_iter().map(file_list_item))
+}
+
+fn insert_file_branch(
+    branches: &mut Vec<FileListBranch>,
+    components: &[&str],
+    file: &crate::semantic::FileItem,
+    selected: bool,
+) {
+    let Some((component, remaining)) = components.split_first() else {
+        return;
+    };
+    if remaining.is_empty() {
+        branches.push(FileListBranch {
+            row: FileListRow {
+                label: (*component).to_owned(),
+                kind: FileListKind::File {
+                    magnitude: file.magnitude,
+                    attention: file.attention,
+                    selected,
+                },
+            },
+            children: Vec::new(),
+        });
+        return;
+    }
+
+    let directory = branches
+        .iter()
+        .position(|branch| {
+            branch.row.label == *component && matches!(branch.row.kind, FileListKind::Directory)
+        })
+        .unwrap_or_else(|| {
+            branches.push(FileListBranch {
+                row: FileListRow {
+                    label: (*component).to_owned(),
+                    kind: FileListKind::Directory,
+                },
+                children: Vec::new(),
+            });
+            branches.len() - 1
+        });
+    insert_file_branch(&mut branches[directory].children, remaining, file, selected);
+}
+
+fn file_list_item(branch: FileListBranch) -> ListItem<FileListRow> {
+    ListItem::new(branch.row).items(branch.children.into_iter().map(file_list_item))
+}
+
+fn file_list_label(row: &FileListRow, position: ListPosition, width: usize) -> String {
+    let available = width.saturating_sub(position.depth().saturating_mul(FILE_LIST_INDENT));
+    match &row.kind {
+        FileListKind::Directory => truncate_end(&format!("▾ {}/", row.label), available),
+        FileListKind::File {
+            magnitude,
+            attention,
+            selected,
+        } => {
+            let marker = match attention {
+                FileAttention::NeedsAttention => symbols::NEEDS_ATTENTION,
+                FileAttention::Open => symbols::OPEN,
+                FileAttention::Resolved => symbols::RESOLVED,
+                FileAttention::None => " ",
+            };
+            let selection = if *selected { symbols::NEXT } else { " " };
+            let change = presentation::change_direction(*magnitude);
+            let prefix = format!("{selection} {marker} ");
+            let label_width = available
+                .saturating_sub(UnicodeWidthStr::width(prefix.as_str()))
+                .saturating_sub(UnicodeWidthStr::width(change))
+                .saturating_sub(2);
+            presentation::right_aligned_row(
+                &prefix,
+                &truncate_end(&row.label, label_width),
+                change,
+                available,
+            )
+        }
+    }
+}
+
+fn file_list_enumerator(_: ListPosition) -> String {
+    String::new()
+}
+
 fn titled_panel(spec: PanelSpec<'_>, theme: SemanticTheme, content: View) -> View {
     let tone = if spec.focused {
         Tone::FocusSelection
@@ -476,8 +633,13 @@ fn titled_panel(spec: PanelSpec<'_>, theme: SemanticTheme, content: View) -> Vie
         Tone::MutedResolved
     };
     let border_style = theme.border(tone);
+    let border = if spec.focused && spec.border == Border::ROUNDED {
+        Border::THICK
+    } else {
+        spec.border
+    };
     let mut style = BlockStyle::new()
-        .border(spec.border)
+        .border(border)
         .height(spec.height)
         .overflow(Overflow::clip());
     if spec.width > 0 {
@@ -560,7 +722,7 @@ fn cell_i64(value: usize) -> i64 {
 mod tests {
     use std::sync::Arc;
 
-    use urushi::{Available, RenderSettings, render, resolve};
+    use urushi::{Available, RenderSettings, TextAttribute, render, resolve};
 
     use super::*;
     use crate::{
@@ -586,6 +748,38 @@ mod tests {
     fn composer_cursor_split_uses_terminal_columns() {
         assert_eq!(byte_at_column("a界b", 1), 1);
         assert_eq!(byte_at_column("a界b", 3), "a界".len());
+    }
+
+    #[test]
+    fn help_document_distinguishes_headings_keys_and_unavailable_commands() {
+        let document = help_document(
+            &[
+                "Navigation".into(),
+                "◆ j / k — Move by row".into(),
+                "· n / N — Move between matches".into(),
+            ],
+            SemanticTheme::no_color(),
+        );
+
+        assert!(
+            document.lines[0].spans[0]
+                .style
+                .get_attributes()
+                .contains(TextAttribute::Bold)
+        );
+        assert_eq!(document.lines[1].spans[1].content, "j / k");
+        assert!(
+            document.lines[1].spans[1]
+                .style
+                .get_attributes()
+                .contains(TextAttribute::Bold)
+        );
+        assert!(
+            document.lines[2].spans[3]
+                .style
+                .get_attributes()
+                .contains(TextAttribute::Dim)
+        );
     }
 
     #[test]
@@ -648,9 +842,48 @@ mod tests {
         assert_eq!(resolved.size().width(), 120);
         assert_eq!(resolved.size().height(), 24);
         assert!(text.contains("working tree"));
-        assert!(text.contains("src/main.rs"));
+        assert!(text.contains("▾ src/"));
+        assert!(text.contains("main.rs"));
         assert!(text.contains("Nothing to review"));
         assert!(text.contains("Keys: q quit"));
+    }
+
+    #[test]
+    fn file_list_indents_shared_directories_without_changing_file_order() {
+        let rail = FileRail {
+            selected: Some(1),
+            items: vec![
+                FileItem {
+                    path: "src/app/mod.rs".into(),
+                    magnitude: Magnitude::default(),
+                    attention: FileAttention::None,
+                },
+                FileItem {
+                    path: "src/app/view.rs".into(),
+                    magnitude: Magnitude::default(),
+                    attention: FileAttention::Open,
+                },
+                FileItem {
+                    path: "README.md".into(),
+                    magnitude: Magnitude::default(),
+                    attention: FileAttention::None,
+                },
+            ],
+        };
+
+        let list = file_list(&rail);
+        assert_eq!(list.item_nodes().len(), 2);
+        assert_eq!(list.item_nodes()[0].value().label, "src");
+        let app = &list.item_nodes()[0].item_nodes()[0];
+        assert_eq!(app.value().label, "app");
+        assert_eq!(app.item_nodes().len(), 2);
+        assert_eq!(app.item_nodes()[0].value().label, "mod.rs");
+        assert_eq!(app.item_nodes()[1].value().label, "view.rs");
+        assert!(matches!(
+            app.item_nodes()[1].value().kind,
+            FileListKind::File { selected: true, .. }
+        ));
+        assert_eq!(list.item_nodes()[1].value().label, "README.md");
     }
 
     #[test]

@@ -3,8 +3,8 @@ use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 use crate::{
     presentation,
     semantic::{
-        DiffSearchTarget, ReviewBody, ReviewWindowSection, RollupBody, StickyReviewContext,
-        ThreadState, Tone, View,
+        DiffSearchTarget, FileAttention, ReviewBody, ReviewWindowSection, RollupBody,
+        StickyReviewContext, ThreadState, Tone, View,
     },
     styled_text::{Document, Line, Span, patch_style},
     symbols,
@@ -77,12 +77,53 @@ impl SemanticTheme {
             return base;
         }
         base.foreground(match tone {
-            Tone::ChangeAdded => Color::GREEN,
-            Tone::ChangeRemoved => Color::RED,
-            Tone::FocusSelection => Color::CYAN,
-            Tone::Attention => Color::YELLOW,
+            Tone::ChangeAdded => Color::BRIGHT_GREEN,
+            Tone::ChangeRemoved => Color::BRIGHT_RED,
+            Tone::FocusSelection => Color::BRIGHT_CYAN,
+            Tone::Attention => Color::BRIGHT_YELLOW,
             Tone::MutedResolved => Color::WHITE,
         })
+    }
+
+    pub(crate) fn header(self) -> TextStyle {
+        let style = TextStyle::new().bold();
+        if self.colors_enabled {
+            style.foreground(Color::BRIGHT_CYAN)
+        } else {
+            style
+        }
+    }
+
+    pub(crate) fn file_item(
+        self,
+        attention: FileAttention,
+        selected: bool,
+        focused: bool,
+    ) -> TextStyle {
+        if selected && focused {
+            return self.selection();
+        }
+        if selected {
+            return self.style(Tone::FocusSelection);
+        }
+
+        match attention {
+            FileAttention::NeedsAttention => self.style(Tone::Attention),
+            FileAttention::Resolved => self.style(Tone::MutedResolved),
+            FileAttention::Open if self.colors_enabled => {
+                TextStyle::new().foreground(Color::BRIGHT_BLUE)
+            }
+            FileAttention::Open | FileAttention::None => TextStyle::new(),
+        }
+    }
+
+    pub(crate) fn directory(self) -> TextStyle {
+        let style = TextStyle::new().bold();
+        if self.colors_enabled {
+            style.foreground(Color::BRIGHT_BLUE)
+        } else {
+            style
+        }
     }
 
     pub(crate) fn selection(self) -> TextStyle {
@@ -94,11 +135,11 @@ impl SemanticTheme {
             return TextStyle::new();
         }
         TextStyle::new().foreground(match tone {
-            Tone::ChangeAdded => Color::GREEN,
-            Tone::ChangeRemoved => Color::RED,
-            Tone::FocusSelection => Color::CYAN,
-            Tone::Attention => Color::YELLOW,
-            Tone::MutedResolved => Color::WHITE,
+            Tone::ChangeAdded => Color::BRIGHT_GREEN,
+            Tone::ChangeRemoved => Color::BRIGHT_RED,
+            Tone::FocusSelection => Color::BRIGHT_CYAN,
+            Tone::Attention => Color::BRIGHT_YELLOW,
+            Tone::MutedResolved => Color::BRIGHT_BLACK,
         })
     }
 
@@ -259,6 +300,7 @@ impl Renderer {
                             } else {
                                 Tone::MutedResolved
                             }),
+                            is_focused,
                         );
                     }
                     rendered
@@ -474,11 +516,22 @@ fn highlight_hunk_box(
     range_start: usize,
     range_end: usize,
     style: TextStyle,
+    thick: bool,
 ) {
     for (offset, line) in lines.iter_mut().enumerate() {
         let row = window_start.saturating_add(offset);
         if row < range_start || row >= range_end {
             continue;
+        }
+        if thick {
+            let border_row = if row == range_start {
+                HunkBorderRow::Top
+            } else if row + 1 == range_end {
+                HunkBorderRow::Bottom
+            } else {
+                HunkBorderRow::Middle
+            };
+            thicken_hunk_border(line, border_row);
         }
         if row == range_start || row + 1 == range_end {
             for span in &mut line.spans {
@@ -490,6 +543,51 @@ fn highlight_hunk_box(
             }
             if let Some(border) = line.spans.last_mut() {
                 border.style = patch_style(border.style.clone(), &style);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HunkBorderRow {
+    Top,
+    Middle,
+    Bottom,
+}
+
+fn thicken_hunk_border(line: &mut Line, row: HunkBorderRow) {
+    let replace = |content: &str, left: char, horizontal: char, right: char| {
+        content
+            .chars()
+            .map(|character| match character {
+                '╭' | '╰' => left,
+                '─' => horizontal,
+                '╮' | '╯' => right,
+                other => other,
+            })
+            .collect()
+    };
+    match row {
+        HunkBorderRow::Top => {
+            for span in &mut line.spans {
+                span.content = replace(&span.content, '┏', '━', '┓');
+            }
+        }
+        HunkBorderRow::Bottom => {
+            for span in &mut line.spans {
+                span.content = replace(&span.content, '┗', '━', '┛');
+            }
+        }
+        HunkBorderRow::Middle => {
+            if let Some(border) = line.spans.first_mut()
+                && border.content == "│"
+            {
+                border.content = "┃".into();
+            }
+            if let Some(border) = line.spans.last_mut()
+                && border.content == "│"
+            {
+                border.content = "┃".into();
             }
         }
     }
@@ -684,6 +782,25 @@ mod tests {
     }
 
     #[test]
+    fn focused_hunk_uses_the_same_thick_border_weight_as_focused_panels() {
+        let style = TextStyle::new().foreground(Color::CYAN);
+        let mut lines = vec![
+            hunk_box_top(Some("header"), 20, &TextStyle::new()),
+            hunk_box_content(Line::raw("content"), 20, &TextStyle::new()),
+            hunk_box_bottom(20, &TextStyle::new()),
+        ];
+
+        highlight_hunk_box(&mut lines, 0, 0, 3, style, true);
+
+        assert!(lines[0].spans[0].content.starts_with('┏'));
+        assert!(lines[0].spans[0].content.ends_with('┓'));
+        assert_eq!(lines[1].spans.first().unwrap().content, "┃");
+        assert_eq!(lines[1].spans.last().unwrap().content, "┃");
+        assert!(lines[2].spans[0].content.starts_with('┗'));
+        assert!(lines[2].spans[0].content.ends_with('┛'));
+    }
+
+    #[test]
     fn no_color_theme_keeps_semantic_attributes_without_colors() {
         let theme = SemanticTheme::no_color();
 
@@ -697,6 +814,30 @@ mod tests {
         assert_eq!(
             theme.diff_row_style(Tone::ChangeAdded).get_background(),
             None
+        );
+    }
+
+    #[test]
+    fn file_items_keep_status_and_focus_visually_distinct() {
+        let theme = SemanticTheme::from_no_color(None);
+
+        assert_eq!(
+            theme
+                .file_item(FileAttention::Open, false, false)
+                .get_foreground(),
+            Some(Color::BRIGHT_BLUE)
+        );
+        assert!(
+            theme
+                .file_item(FileAttention::NeedsAttention, false, false)
+                .get_attributes()
+                .contains(TextAttribute::Bold)
+        );
+        assert!(
+            theme
+                .file_item(FileAttention::None, true, true)
+                .get_attributes()
+                .contains(TextAttribute::Reversed)
         );
     }
 }

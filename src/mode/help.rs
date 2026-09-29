@@ -6,7 +6,7 @@ use crate::{
     semantic::{HelpOverlay, Overlay},
 };
 
-const MAX_OVERLAY_HEIGHT: u16 = 20;
+const MAX_OVERLAY_HEIGHT: u16 = 32;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Context {
@@ -163,7 +163,7 @@ pub fn view(model: &Model) -> Overlay {
         lines,
         scroll,
         position_hint: format!(
-            "rows {first}-{last}/{total} · j/k rows · f/b pages · g/G edges · Esc/? close"
+            "{first}-{last}/{total}  j/k scroll  f/b page  g/G edges  Esc/? close"
         ),
     })
 }
@@ -178,13 +178,13 @@ fn help_text(context: Context) -> String {
     let search = marker(context == Context::SearchResults);
     let thread = marker(context == Context::Threads);
     let rail = marker(context == Context::Files);
-    let search_exit = if context == Context::SearchResults {
-        " · Esc cancels search"
-    } else {
-        ""
+    let search_exit = match context {
+        Context::SearchResults => "Cancel search",
+        Context::Threads => "Return to the diff",
+        Context::Review | Context::Files => "Quit review",
     };
     format!(
-        "◆ commands valid from {context_label}\n\nNavigation\n◆ j/k, ↑/↓ rows   f/Space, b pages   d/u half page\n◆ g/G edges        [/] hunk          ,/. file\n◆ / full-diff search {search} n/N next/previous match (wrap)\n\nView\n◆ F cycle filter   A All changes     1/2/0 layout\n◆ s file rail      {rail} j/k file (rail focus)\n◆ m headers · w wrap\n◆ =/- context      r reload (filter retained)\n\nReview actions\n◆ Tab diff/rail    t/T thread (Tab returns to the diff)\n◆ c comment · C new comment\n{thread} x/R resolve/reopen   {thread} a/o flags   {thread} e resolved fold\n◆ {{/}} attention (Git order, wrap)   v rollup\n\nGlobal / exit\n◆ ? help           q quit review{search_exit}\n  In help: Esc/? closes and returns to {context_label}"
+        "Commands from: {context_label}\n◆ available here   · unavailable in this context\n\nNavigation\n◆ j / k, ↑ / ↓ — Move by row\n◆ f / Space, b — Page down / up\n◆ d / u — Half-page down / up\n◆ g / G — Jump to first / last row\n◆ [ / ] — Previous / next hunk\n◆ , / . — Previous / next file\n◆ / — Search the full diff\n{search} n / N — Previous / next match (wraps)\n\nView\n◆ F — Cycle review filter\n◆ A — Show all changes\n◆ 1 / 2 / 0 — Split / stack / automatic layout\n◆ s — Toggle file list\n{rail} j / k — Select a file while the list is focused\n◆ m — Toggle file headers\n◆ w — Toggle line wrapping\n◆ = / - — More / less diff context\n◆ r — Reload and keep the current filter\n\nReview actions\n◆ Tab — Switch between diff and file list\n◆ t / T — Open next / previous thread\n◆ c / C — Reply / start a comment\n{thread} x / R — Resolve / reopen the selected thread\n{thread} a / o — Set attention / open flags\n{thread} e — Fold resolved comments\n◆ {{ / }} — Previous / next item needing attention\n◆ v — Open thread rollup\n\nGlobal / exit\n◆ ? — Open or close this help\n◆ q — Quit review\n◆ Esc — {search_exit}\n\nIn help\n◆ j / k — Scroll by row\n◆ f / b — Scroll by page\n◆ g / G — Jump to top / bottom\n◆ Esc / ? — Close help and return to {context_label}"
     )
 }
 
@@ -265,7 +265,7 @@ mod tests {
             };
             assert!(last.scroll > 0);
             let visible = &last.lines[last.scroll..];
-            assert!(visible.iter().any(|line| line.contains("Esc/? closes")));
+            assert!(visible.iter().any(|line| line.contains("Close help")));
         }
     }
 
@@ -301,9 +301,9 @@ mod tests {
     #[test]
     fn review_help_names_the_current_comment_view_and_wrap_commands() {
         let help = help_text(Context::Review);
-        assert!(help.contains("c comment · C new comment"));
-        assert!(help.contains("1/2/0 layout"));
-        assert!(help.contains("w wrap"));
+        assert!(help.contains("c / C — Reply / start a comment"));
+        assert!(help.contains("1 / 2 / 0 — Split / stack / automatic layout"));
+        assert!(help.contains("w — Toggle line wrapping"));
         assert!(!help.contains("Esc quit review"));
     }
 

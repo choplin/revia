@@ -716,8 +716,8 @@ fn help_marks_invocation_commands_and_returns_to_search_location() {
         panic!("help overlay is visible");
     };
     let text = help.lines.join("\n");
-    assert!(text.contains("commands valid from search results"));
-    assert!(text.contains("◆ n/N next/previous match (wrap)"));
+    assert!(text.contains("Commands from: search results"));
+    assert!(text.contains("◆ n / N — Previous / next match (wraps)"));
     assert!(text.contains("Navigation"));
     assert!(text.contains("View"));
     assert!(text.contains("Review actions"));
@@ -739,8 +739,8 @@ fn help_emphasizes_thread_commands_only_for_a_thread_target() {
         panic!("help overlay is visible");
     };
     let text = help.lines.join("\n");
-    assert!(text.contains("commands valid from diff"));
-    assert!(text.contains("· x/R resolve/reopen"));
+    assert!(text.contains("Commands from: diff"));
+    assert!(text.contains("· x / R — Resolve / reopen the selected thread"));
     scenario.when_input(input(Key::Esc));
 
     scenario.when_input(input(Key::Char('t')));
@@ -751,9 +751,9 @@ fn help_emphasizes_thread_commands_only_for_a_thread_target() {
         panic!("help overlay is visible");
     };
     let text = help.lines.join("\n");
-    assert!(text.contains("commands valid from inline thread"));
-    assert!(text.contains("◆ x/R resolve/reopen"));
-    assert!(text.contains("◆ a/o flags"));
+    assert!(text.contains("Commands from: inline thread"));
+    assert!(text.contains("◆ x / R — Resolve / reopen the selected thread"));
+    assert!(text.contains("◆ a / o — Set attention / open flags"));
 }
 
 #[test]
