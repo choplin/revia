@@ -8,7 +8,7 @@ Accepted.
 
 The initial TUI implementation concentrated review-session coordination,
 review selection, thread lifecycle mutation, filesystem persistence, split-row
-pairing, syntax highlighting, and ratatui drawing in procedural code. That
+pairing, syntax highlighting, and terminal drawing in procedural code. That
 made a change to a review action or a diff row difficult to inspect without
 also reasoning about terminal I/O and JSON writes.
 
@@ -23,16 +23,16 @@ also reasoning about terminal I/O and JSON writes.
 | Review thread collection | IDs are monotonic; messages append; a needs-attention thread may only be closed by a human; reopen clears close provenance | `thread::ThreadCollection` | Serializable `next_id` + `threads` JSON shape, unchanged from v1 |
 | Thread identifier | Thread identity is opaque in domain code while serializing as the same JSON number | `thread::ThreadId` | `#[serde(transparent)]` numeric value |
 | Thread persistence | Each successful lifecycle transition replaces one JSON file atomically in the Git common directory | `thread::ThreadStore` | Git-path and filesystem adapter |
-| Diff presentation | Removed/added runs pair only for display; one-sided lines remain visible; syntax styling never changes patch content | `presentation` | `DiffLine` to ratatui `Line` conversion |
+| Diff presentation | Removed/added runs pair only for display; one-sided lines remain visible; syntax styling never changes patch content | `presentation` | `DiffLine` to Urushi-styled presentation rows |
 | Review workflow | Resolves immutable anchors, asks the thread adapter to persist transitions, and interprets review commands | `App` | Application coordination, not concept state |
-| Terminal boundary | Raw-mode setup, event polling, key-to-command mapping, and ratatui widget layout | `main.rs` terminal adapter (pending extraction) | Crossterm and ratatui APIs |
+| Terminal boundary | Session setup, subscriptions, key-to-command mapping, and view layout | `tui_app` and `urushi_renderer` | `urushi-tui-app` and Urushi APIs |
 
 ## Decision
 
 - Make `HunkLocation`, `ReviewCursor`, `ReviewSession`, and `ThreadId` named
   domain data types. The cursor owns selection transitions; the session owns
   the relationship between a cursor and one loaded diff. Neither depends on
-  crossterm, ratatui, Git commands, or filesystem APIs.
+  terminal-framework, Git-command, or filesystem APIs.
 - Keep `ThreadCollection` free of Git and filesystem access. It owns all thread
   lifecycle rules and exposes immutable thread state. Current-diff location
   projection belongs beside the loaded review session because it requires
@@ -64,9 +64,7 @@ also reasoning about terminal I/O and JSON writes.
 - The codebase has explicit concept ownership for review location, selection,
   session state, thread lifecycle, and presentation transforms, with
   regression coverage independent of the TUI.
-- `App` remains the v1 use-case coordinator. The terminal adapter still lives
-  in `main.rs`; a future extraction of rendering must expose an intentional
-  read-only session view rather than making fields public across the crate. It
-  must preserve the documented Hunk-compatible key contract.
+- `App` remains the v1 use-case coordinator. `tui_app` adapts it to the Urushi
+  runtime, while `urushi_renderer` projects its read-only semantic view.
 - No SQL, generated artifacts, HTTP routes, or database transactions exist in
   this repository, so those checklist items are not applicable.

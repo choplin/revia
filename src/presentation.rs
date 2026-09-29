@@ -4,12 +4,9 @@
 //! parsed Git hunks to width-bounded terminal rows. Source coordinates remain
 //! attached to the parsed hunk; display rows are deliberately ephemeral.
 
-use ratatui::{
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
+use urushi::{Color, TextStyle};
 
 use crate::{
     anchor::HunkLocation,
@@ -18,6 +15,7 @@ use crate::{
     semantic::{
         DiffSearchTarget, LayoutPolicy, ReviewBody, ReviewWindowSection, StickyReviewContext, Tone,
     },
+    styled_text::{Line, Span},
     symbols,
     syntax::{HunkSyntax, SyntaxLine, TokenStyle},
     ui::{LayoutMode, fit_width, truncate_end, truncate_start},
@@ -970,7 +968,7 @@ pub(crate) fn split_hunk_lines(
     search: Option<(usize, &str)>,
     syntax: &HunkSyntax,
     theme: SemanticTheme,
-) -> Vec<Line<'static>> {
+) -> Vec<Line> {
     let available_width = usize::from(available_width);
     let state_width = 3;
     let columns_width = available_width
@@ -1023,7 +1021,7 @@ pub(crate) fn split_hunk_lines(
             let combined_evidence = merge_evidence(old_evidence, new_evidence);
             let mut spans = vec![state_gutter(selected, combined_evidence.as_ref(), theme)];
             spans.extend(old);
-            spans.push(Span::styled(SPLIT_SEPARATOR, Style::default()));
+            spans.push(Span::raw(SPLIT_SEPARATOR));
             spans.extend(new);
             Line::from(spans)
         })
@@ -1041,7 +1039,7 @@ pub(crate) fn stack_hunk_lines(
     search: Option<(usize, &str)>,
     syntax: &HunkSyntax,
     theme: SemanticTheme,
-) -> Vec<Line<'static>> {
+) -> Vec<Line> {
     let available_width = usize::from(available_width);
     let prefix_width = number_width.saturating_mul(2).saturating_add(8);
     let content_width = available_width.saturating_sub(prefix_width);
@@ -1063,7 +1061,7 @@ pub(crate) fn stack_hunk_lines(
                 &line.line.text,
                 content_width,
                 wrap,
-                base,
+                &base,
                 evidence.get(line_index),
                 syntax.old(line.source_index),
                 theme,
@@ -1072,7 +1070,7 @@ pub(crate) fn stack_hunk_lines(
                 &line.line.text,
                 content_width,
                 wrap,
-                base,
+                &base,
                 evidence.get(line_index),
                 syntax.new_side(line.source_index),
                 theme,
@@ -1081,7 +1079,7 @@ pub(crate) fn stack_hunk_lines(
                 &line.line.text,
                 content_width,
                 wrap,
-                base,
+                &base,
                 evidence.get(line_index),
                 syntax.old(line.source_index),
                 theme,
@@ -1105,7 +1103,7 @@ pub(crate) fn stack_hunk_lines(
                     format_number(new_number),
                     width = number_width,
                 ),
-                base,
+                base.clone(),
             ));
             spans.extend(content);
             rendered.push(Line::from(spans));
@@ -1129,9 +1127,9 @@ fn split_cell(
     evidence: Option<&LineEvidence>,
     syntax: Option<&SyntaxLine>,
     theme: SemanticTheme,
-) -> Vec<Span<'static>> {
+) -> Vec<Span> {
     let Some(line) = line else {
-        return vec![Span::styled(" ".repeat(width), Style::default())];
+        return vec![Span::raw(" ".repeat(width))];
     };
     let number = match side {
         Side::Old => line.old_number,
@@ -1144,13 +1142,13 @@ fn split_cell(
         change_marker(line.line.kind),
     );
     let prefix_width = UnicodeWidthStr::width(prefix.as_str()).min(width);
-    let mut spans = vec![Span::styled(fit_width(&prefix, prefix_width), base)];
+    let mut spans = vec![Span::styled(fit_width(&prefix, prefix_width), base.clone())];
     spans.extend(
         highlighted_content_rows(
             &line.line.text,
             width.saturating_sub(prefix_width),
             false,
-            base,
+            &base,
             evidence,
             syntax,
             theme,
@@ -1162,12 +1160,7 @@ fn split_cell(
     spans
 }
 
-fn metadata_row(
-    text: &str,
-    available_width: usize,
-    selected: bool,
-    theme: SemanticTheme,
-) -> Line<'static> {
+fn metadata_row(text: &str, available_width: usize, selected: bool, theme: SemanticTheme) -> Line {
     let style = theme.style(Tone::Attention);
     let mut spans = vec![state_gutter(selected, None, theme)];
     spans.push(Span::styled(
@@ -1191,11 +1184,11 @@ fn highlighted_content_rows(
     text: &str,
     width: usize,
     wrap: bool,
-    base: Style,
+    base: &TextStyle,
     evidence: Option<&LineEvidence>,
     syntax: Option<&SyntaxLine>,
     theme: SemanticTheme,
-) -> Vec<Vec<Span<'static>>> {
+) -> Vec<Vec<Span>> {
     if width == 0 {
         return vec![Vec::new()];
     }
@@ -1229,32 +1222,34 @@ fn highlighted_content_rows(
                 .enumerate()
                 .map(|(index, (grapheme, syntax_style))| {
                     let index = chunk_start.saturating_add(index);
-                    let mut style =
-                        syntax_style.map_or(base, |source| merge_syntax_style(base, source, theme));
+                    let mut style = syntax_style.map_or_else(
+                        || base.clone(),
+                        |source| merge_syntax_style(base.clone(), source, theme),
+                    );
                     if evidence.is_some_and(|line| line.intraline.contains(&index)) {
                         // Preserve the syntax foreground and quiet row
                         // background. A bright span background can make token
                         // colors unreadable; underline and the pair gutter
                         // carry the local change evidence instead.
-                        style = style.add_modifier(Modifier::UNDERLINED);
+                        style = style.underlined();
                     }
                     if evidence.is_some_and(|line| line.search.contains(&index)) {
-                        style = style
-                            .bg(if theme.colors_enabled() {
-                                Color::Blue
-                            } else {
-                                Color::Reset
-                            })
-                            .add_modifier(Modifier::REVERSED);
+                        if theme.colors_enabled() {
+                            style = style.background(Color::BLUE);
+                        }
+                        style = style.reverse();
                     }
                     Span::styled(grapheme, style)
                 })
                 .collect::<Vec<_>>();
             let used = spans
                 .iter()
-                .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+                .map(|span| UnicodeWidthStr::width(span.content.as_str()))
                 .sum::<usize>();
-            spans.push(Span::styled(" ".repeat(width.saturating_sub(used)), base));
+            spans.push(Span::styled(
+                " ".repeat(width.saturating_sub(used)),
+                base.clone(),
+            ));
             spans
         })
         .collect()
@@ -1415,11 +1410,7 @@ fn search_range(text: &str, query: &str) -> std::ops::Range<usize> {
     first..last
 }
 
-fn state_gutter(
-    selected: bool,
-    evidence: Option<&LineEvidence>,
-    theme: SemanticTheme,
-) -> Span<'static> {
+fn state_gutter(selected: bool, evidence: Option<&LineEvidence>, theme: SemanticTheme) -> Span {
     let member = if selected { "┃" } else { " " };
     let search = if evidence.is_some_and(|line| line.current_search) {
         symbols::SEARCH_CHAR
@@ -1431,7 +1422,7 @@ fn state_gutter(
         if selected {
             theme.style(Tone::FocusSelection)
         } else {
-            Style::default()
+            TextStyle::new()
         },
     )
 }
@@ -1477,18 +1468,18 @@ fn decimal_width(number: usize) -> usize {
     number.to_string().len()
 }
 
-fn merge_syntax_style(base: Style, source: TokenStyle, theme: SemanticTheme) -> Style {
+fn merge_syntax_style(base: TextStyle, source: TokenStyle, theme: SemanticTheme) -> TextStyle {
     let (red, green, blue) = source.foreground;
     let mut style = if theme.colors_enabled() {
-        base.fg(Color::Rgb(red, green, blue))
+        base.foreground(Color::Rgb(red, green, blue))
     } else {
         base
     };
     if source.bold {
-        style = style.add_modifier(Modifier::BOLD);
+        style = style.bold();
     }
     if source.italic {
-        style = style.add_modifier(Modifier::ITALIC);
+        style = style.italic();
     }
     style
 }
@@ -1508,9 +1499,9 @@ mod tests {
     use crate::semantic::{ThreadCard, ThreadState as SemanticThreadState};
     use crate::syntax::{HunkSyntax, SyntaxHighlighter};
     use crate::thread::{Participant, ParticipantKind, ThreadState};
-    use ratatui::style::{Color, Modifier};
     use unicode_segmentation::UnicodeSegmentation;
     use unicode_width::UnicodeWidthStr;
+    use urushi::{Color, TextAttribute};
 
     fn line(kind: DiffLineKind, text: &str) -> DiffLine {
         DiffLine {
@@ -1897,7 +1888,7 @@ mod tests {
         let text = rendered[0]
             .spans
             .iter()
-            .map(|span| span.content.as_ref())
+            .map(|span| span.content.as_str())
             .collect::<String>();
         assert!(text.contains("12 -gone"));
         assert!(!text.contains("20"));
@@ -1936,7 +1927,7 @@ mod tests {
             .map(|line| {
                 line.spans
                     .iter()
-                    .map(|span| span.content.as_ref())
+                    .map(|span| span.content.as_str())
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
@@ -1944,10 +1935,15 @@ mod tests {
         let changed = split
             .iter()
             .flat_map(|line| &line.spans)
-            .find(|span| span.content.as_ref() == "6")
+            .find(|span| span.content == "6")
             .expect("replacement token is rendered");
-        assert!(changed.style.add_modifier.contains(Modifier::UNDERLINED));
-        assert!(changed.style.add_modifier.contains(Modifier::REVERSED));
+        assert!(changed.style.get_underline().is_some());
+        assert!(
+            changed
+                .style
+                .get_attributes()
+                .contains(TextAttribute::Reversed)
+        );
 
         let stack = stack_hunk_lines(
             &lines,
@@ -1965,7 +1961,7 @@ mod tests {
             .map(|line| {
                 line.spans
                     .iter()
-                    .map(|span| span.content.as_ref())
+                    .map(|span| span.content.as_str())
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
@@ -1973,10 +1969,15 @@ mod tests {
         let changed = stack
             .iter()
             .flat_map(|line| &line.spans)
-            .find(|span| span.content.as_ref() == "6")
+            .find(|span| span.content == "6")
             .expect("replacement token is rendered");
-        assert!(changed.style.add_modifier.contains(Modifier::UNDERLINED));
-        assert!(changed.style.add_modifier.contains(Modifier::REVERSED));
+        assert!(changed.style.get_underline().is_some());
+        assert!(
+            changed
+                .style
+                .get_attributes()
+                .contains(TextAttribute::Reversed)
+        );
     }
 
     #[test]
@@ -2019,22 +2020,22 @@ mod tests {
         );
         let changed_style = changed_rows
             .iter()
-            .find(|row| row.spans.iter().any(|span| span.content.as_ref() == "r"))
+            .find(|row| row.spans.iter().any(|span| span.content == "r"))
             .and_then(|row| {
                 row.spans
                     .iter()
-                    .skip_while(|span| span.content.as_ref() != " │ ")
-                    .find(|span| span.content.as_ref() == "l")
+                    .skip_while(|span| span.content != " │ ")
+                    .find(|span| span.content == "l")
             })
-            .map(|span| span.style)
+            .map(|span| span.style.clone())
             .expect("new-side keyword is rendered");
         let clean_style = clean_rows
             .iter()
             .flat_map(|row| &row.spans)
-            .find(|span| span.content.as_ref() == "l")
-            .map(|span| span.style)
+            .find(|span| span.content == "l")
+            .map(|span| span.style.clone())
             .expect("clean keyword is rendered");
-        assert_eq!(changed_style.fg, clean_style.fg);
+        assert_eq!(changed_style.get_foreground(), clean_style.get_foreground());
 
         let changed_stack = stack_hunk_lines(
             &changed,
@@ -2060,15 +2061,15 @@ mod tests {
         );
         let changed_style = changed_stack
             .get(1)
-            .and_then(|row| row.spans.iter().find(|span| span.content.as_ref() == "l"))
-            .map(|span| span.style)
+            .and_then(|row| row.spans.iter().find(|span| span.content == "l"))
+            .map(|span| span.style.clone())
             .expect("new-side stack syntax is rendered");
         let clean_style = clean_stack
             .first()
-            .and_then(|row| row.spans.iter().find(|span| span.content.as_ref() == "l"))
-            .map(|span| span.style)
+            .and_then(|row| row.spans.iter().find(|span| span.content == "l"))
+            .map(|span| span.style.clone())
             .expect("clean stack syntax is rendered");
-        assert_eq!(changed_style.fg, clean_style.fg);
+        assert_eq!(changed_style.get_foreground(), clean_style.get_foreground());
     }
 
     #[test]
@@ -2126,7 +2127,7 @@ mod tests {
                 .find(|row| {
                     row.spans
                         .iter()
-                        .map(|span| span.content.as_ref())
+                        .map(|span| span.content.as_str())
                         .collect::<String>()
                         .contains("60")
                 })
@@ -2138,14 +2139,14 @@ mod tests {
             let changed = replacement
                 .spans
                 .iter()
-                .find(|span| span.content.as_ref() == "6")
+                .find(|span| span.content == "6")
                 .expect("changed grapheme is rendered");
-            assert!(changed.style.add_modifier.contains(Modifier::UNDERLINED));
-            assert_ne!(changed.style.bg, Some(Color::Yellow));
+            assert!(changed.style.get_underline().is_some());
+            assert_ne!(changed.style.get_background(), Some(Color::YELLOW));
             for source_grapheme in ["l", "1", ";"] {
                 assert!(
                     rendered.iter().flat_map(|row| &row.spans).any(|span| {
-                        span.content.as_ref() == source_grapheme && span.style.fg.is_some()
+                        span.content == source_grapheme && span.style.get_foreground().is_some()
                     }),
                     "{layout}, selected={selected}: syntax foreground missing for {source_grapheme:?}"
                 );
@@ -2188,16 +2189,21 @@ mod tests {
             let changed = rendered
                 .iter()
                 .flat_map(|row| &row.spans)
-                .find(|span| span.content.as_ref() == "6")
+                .find(|span| span.content == "6")
                 .expect("searched changed grapheme is rendered");
-            assert!(changed.style.add_modifier.contains(Modifier::UNDERLINED));
-            assert!(changed.style.add_modifier.contains(Modifier::REVERSED));
+            assert!(changed.style.get_underline().is_some());
+            assert!(
+                changed
+                    .style
+                    .get_attributes()
+                    .contains(TextAttribute::Reversed)
+            );
             let replacement = rendered
                 .iter()
                 .find(|row| {
                     row.spans
                         .iter()
-                        .map(|span| span.content.as_ref())
+                        .map(|span| span.content.as_str())
                         .collect::<String>()
                         .contains("60")
                 })
@@ -2209,7 +2215,7 @@ mod tests {
                 let text = replacement
                     .spans
                     .iter()
-                    .map(|span| span.content.as_ref())
+                    .map(|span| span.content.as_str())
                     .collect::<String>();
                 assert!(text.contains('-'));
                 assert!(text.contains('+'));

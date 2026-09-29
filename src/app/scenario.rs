@@ -1402,7 +1402,7 @@ fn global_binding_is_reached_only_by_explicit_delegation() {
 }
 
 #[test]
-fn semantic_view_preserves_roles_independently_of_ratatui_layout() {
+fn semantic_view_preserves_roles_independently_of_urushi_layout() {
     let mut scenario = Scenario::given(RAW, ThreadState::default());
     let view = super::view(&scenario.model);
     assert_eq!(view.header.file_count, 1);

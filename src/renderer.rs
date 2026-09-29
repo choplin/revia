@@ -3,30 +3,19 @@ use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 use crate::{
     presentation,
     semantic::{
-        Body, DiffSearchTarget, FileAttention, Overlay, ReviewBody, ReviewWindowSection,
-        RollupBody, StickyReviewContext, ThreadState, Tone, View,
+        DiffSearchTarget, ReviewBody, ReviewWindowSection, RollupBody, StickyReviewContext,
+        ThreadState, Tone, View,
     },
+    styled_text::{Document, Line, Span, patch_style},
     symbols,
     syntax::SyntaxHighlighter,
     ui::{FocusArea, LayoutMode, ShellSize, truncate_end},
 };
-use ratatui::{
-    Frame,
-    layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
-    widgets::{
-        Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
-        ScrollbarOrientation, ScrollbarState, Wrap,
-    },
-};
 use unicode_width::UnicodeWidthStr;
-
-const MINIMUM_WIDTH: u16 = 48;
-const MINIMUM_HEIGHT: u16 = 8;
+use urushi::{Color, TextStyle};
 const HUNK_TEXT_CACHE_CAPACITY: usize = 96;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SemanticTheme {
     colors_enabled: bool,
 }
@@ -36,7 +25,7 @@ pub(crate) struct SemanticTheme {
 ///
 /// The file and the hunk get a row each: sharing one row forced a long hunk
 /// header to compete with the path, and both were clipped.
-fn sticky_context_lines(context: &StickyReviewContext, width: u16) -> [String; 2] {
+pub(crate) fn sticky_context_lines(context: &StickyReviewContext, width: u16) -> [String; 2] {
     let file = presentation::right_aligned_row(
         &format!(
             "{} {}/{} ",
@@ -59,17 +48,6 @@ fn sticky_context_lines(context: &StickyReviewContext, width: u16) -> [String; 2
     [file, truncate_end(&hunk, usize::from(width))]
 }
 
-#[cfg(test)]
-fn logical_review_window(body: Text<'static>, top: usize, visible_rows: usize) -> Text<'static> {
-    Text::from(
-        body.lines
-            .into_iter()
-            .skip(top)
-            .take(visible_rows)
-            .collect::<Vec<_>>(),
-    )
-}
-
 impl SemanticTheme {
     fn from_environment() -> Self {
         let no_color = std::env::var_os("NO_COLOR");
@@ -89,38 +67,45 @@ impl SemanticTheme {
         }
     }
 
-    pub(crate) fn style(self, tone: Tone) -> Style {
+    pub(crate) fn style(self, tone: Tone) -> TextStyle {
         let base = match tone {
-            Tone::FocusSelection | Tone::Attention => Style::default().add_modifier(Modifier::BOLD),
-            Tone::MutedResolved => Style::default().add_modifier(Modifier::DIM),
-            Tone::ChangeAdded | Tone::ChangeRemoved => Style::default(),
+            Tone::FocusSelection | Tone::Attention => TextStyle::new().bold(),
+            Tone::MutedResolved => TextStyle::new().dim(),
+            Tone::ChangeAdded | Tone::ChangeRemoved => TextStyle::new(),
         };
         if !self.colors_enabled {
             return base;
         }
-        base.fg(match tone {
-            Tone::ChangeAdded => Color::Green,
-            Tone::ChangeRemoved => Color::Red,
-            Tone::FocusSelection => Color::Cyan,
-            Tone::Attention => Color::Yellow,
-            Tone::MutedResolved => Color::Gray,
+        base.foreground(match tone {
+            Tone::ChangeAdded => Color::GREEN,
+            Tone::ChangeRemoved => Color::RED,
+            Tone::FocusSelection => Color::CYAN,
+            Tone::Attention => Color::YELLOW,
+            Tone::MutedResolved => Color::WHITE,
         })
     }
 
-    pub(crate) fn selection(self) -> Style {
-        self.style(Tone::FocusSelection)
-            .add_modifier(Modifier::REVERSED)
+    pub(crate) fn selection(self) -> TextStyle {
+        self.style(Tone::FocusSelection).reverse()
     }
 
-    pub(crate) fn border(self, tone: Tone) -> Style {
-        self.style(tone)
-            .remove_modifier(Modifier::BOLD | Modifier::DIM | Modifier::REVERSED)
+    pub(crate) fn border(self, tone: Tone) -> TextStyle {
+        if !self.colors_enabled {
+            return TextStyle::new();
+        }
+        TextStyle::new().foreground(match tone {
+            Tone::ChangeAdded => Color::GREEN,
+            Tone::ChangeRemoved => Color::RED,
+            Tone::FocusSelection => Color::CYAN,
+            Tone::Attention => Color::YELLOW,
+            Tone::MutedResolved => Color::WHITE,
+        })
     }
 
-    fn modal_backdrop(self) -> Style {
-        let style = Style::default().add_modifier(Modifier::DIM);
+    pub(crate) fn modal_backdrop(self) -> TextStyle {
+        let style = TextStyle::new().dim();
         if self.colors_enabled {
-            style.fg(Color::DarkGray)
+            style.foreground(Color::BRIGHT_BLACK)
         } else {
             style
         }
@@ -128,65 +113,24 @@ impl SemanticTheme {
 
     /// Row kind owns a quiet background only.  Source-token foregrounds and
     /// modifiers are applied later by the presentation layer.
-    pub(crate) fn diff_row_style(self, tone: Tone) -> Style {
+    pub(crate) fn diff_row_style(self, tone: Tone) -> TextStyle {
         if !self.colors_enabled {
-            return Style::default();
+            return TextStyle::new();
         }
         let background = match tone {
             Tone::ChangeAdded => Color::Rgb(20, 46, 32),
             Tone::ChangeRemoved => Color::Rgb(54, 27, 32),
-            Tone::FocusSelection | Tone::Attention | Tone::MutedResolved => Color::Reset,
+            Tone::FocusSelection | Tone::Attention | Tone::MutedResolved => {
+                return TextStyle::new();
+            }
         };
-        Style::default().bg(background)
+        TextStyle::new().background(background)
     }
 
     pub(crate) fn colors_enabled(self) -> bool {
         self.colors_enabled
     }
 }
-
-#[derive(Debug, Clone, Copy)]
-struct ShellAreas {
-    header: Rect,
-    navigation_rail: Option<Rect>,
-    review_body: Rect,
-    current_context: Rect,
-    contextual_keys: Rect,
-    size: ShellSize,
-}
-
-impl ShellAreas {
-    fn resolve(area: Rect, show_rail: bool) -> Self {
-        let [header, content, current_context, contextual_keys] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .areas(area);
-        let size = ShellSize::for_width(area.width);
-        let (navigation_rail, review_body) = match (show_rail, size.rail_width(content.width)) {
-            (true, Some(rail_width)) => {
-                let [rail, body] = Layout::horizontal([
-                    Constraint::Length(rail_width),
-                    Constraint::Min(MINIMUM_WIDTH),
-                ])
-                .areas(content);
-                (Some(rail), body)
-            }
-            _ => (None, content),
-        };
-        Self {
-            header,
-            navigation_rail,
-            review_body,
-            current_context,
-            contextual_keys,
-            size,
-        }
-    }
-}
-
 pub struct Renderer {
     syntax: SyntaxHighlighter,
     semantic_theme: SemanticTheme,
@@ -236,7 +180,7 @@ struct HunkTextLookup<'a> {
 
 struct HunkTextCache {
     key: HunkTextKey,
-    lines: Vec<Line<'static>>,
+    lines: Vec<Line>,
 }
 
 impl Default for Renderer {
@@ -250,220 +194,18 @@ impl Default for Renderer {
 }
 
 impl Renderer {
-    pub fn render(&self, frame: &mut Frame, view: &View) {
-        if frame.area().width < MINIMUM_WIDTH || frame.area().height < MINIMUM_HEIGHT {
-            self.render_too_small(frame);
-            return;
-        }
-        let areas = ShellAreas::resolve(frame.area(), view.file_rail.is_some());
-
-        frame.render_widget(
-            Paragraph::new(header_text(view, areas.header.width, areas.size))
-                .style(Style::default().add_modifier(Modifier::BOLD)),
-            areas.header,
-        );
-
-        if let (Some(area), Some(rail)) = (areas.navigation_rail, &view.file_rail) {
-            let inner_width = usize::from(area.width.saturating_sub(2));
-            let items = rail
-                .items
-                .iter()
-                .enumerate()
-                .map(|(index, file)| {
-                    let marker = match file.attention {
-                        FileAttention::NeedsAttention => symbols::NEEDS_ATTENTION,
-                        FileAttention::Open => symbols::OPEN,
-                        FileAttention::Resolved => symbols::RESOLVED,
-                        FileAttention::None => " ",
-                    };
-                    let selection = if rail.selected == Some(index) {
-                        symbols::NEXT
-                    } else {
-                        " "
-                    };
-                    // The rail answers "which file, and what kind of change".
-                    // Exact additions and deletions belong on the file
-                    // boundary, where there is room for them.
-                    let change = presentation::change_direction(file.magnitude);
-                    let prefix = format!("{selection} {marker} ");
-                    let path_width = inner_width
-                        .saturating_sub(UnicodeWidthStr::width(prefix.as_str()))
-                        .saturating_sub(UnicodeWidthStr::width(change))
-                        .saturating_sub(2);
-                    let path = presentation::fit_path_label(
-                        &file.path,
-                        presentation::unique_prefix_segments(
-                            &file.path,
-                            rail.items.iter().map(|item| item.path.as_str()),
-                        ),
-                        path_width,
-                    );
-                    let style = match file.attention {
-                        FileAttention::NeedsAttention => self.semantic_theme.style(Tone::Attention),
-                        FileAttention::Resolved => self.semantic_theme.style(Tone::MutedResolved),
-                        FileAttention::Open | FileAttention::None => Style::default(),
-                    };
-                    ListItem::new(Line::styled(
-                        presentation::right_aligned_row(&prefix, &path, change, inner_width),
-                        style,
-                    ))
-                })
-                .collect::<Vec<_>>();
-            let mut state = ListState::default();
-            state.select(rail.selected);
-            let focused = view.layout.focus == FocusArea::Files;
-            let block = region_block(
-                "Files",
-                focused,
-                if focused {
-                    Some("FILE FOCUS")
-                } else {
-                    rail.selected.map(|_| "CURRENT FILE")
-                },
-                self.semantic_theme,
-            );
-            // Only the focused region carries the reversed selection bar; the
-            // ▸ marker keeps the current file identifiable either way.
-            let highlight = if focused {
-                self.semantic_theme.selection()
-            } else {
-                self.semantic_theme.style(Tone::MutedResolved)
-            };
-            frame.render_stateful_widget(
-                List::new(items).block(block).highlight_style(highlight),
-                area,
-                &mut state,
-            );
-        }
-
-        let review_content = Rect::new(
-            areas.review_body.x,
-            areas.review_body.y,
-            areas.review_body.width.saturating_sub(1),
-            areas.review_body.height,
-        );
-        let body_inner_width = match view.body {
-            Body::Review(_) => review_content.width,
-            Body::Rollup(_) => areas.review_body.width.saturating_sub(2),
-        };
-        let (body, scroll) = match &view.body {
-            Body::Review(review) => (
-                self.review_window(review, review.viewport.presentation_width, view),
-                0,
-            ),
-            Body::Rollup(rollup) => {
-                let body = rollup_text(rollup, body_inner_width, self.semantic_theme);
-                let viewport_height = usize::from(areas.review_body.height.saturating_sub(2));
-                let max_scroll = body
-                    .height()
-                    .saturating_sub(viewport_height)
-                    .min(usize::from(u16::MAX)) as u16;
-                (body, rollup.scroll.min(max_scroll))
-            }
-        };
-        let inner = match view.body {
-            Body::Review(_) => review_content,
-            Body::Rollup(_) => {
-                frame.render_widget(
-                    region_block(
-                        "Thread rollup",
-                        view.overlay.is_none(),
-                        None,
-                        self.semantic_theme,
-                    ),
-                    areas.review_body,
-                );
-                Rect::new(
-                    areas.review_body.x.saturating_add(1),
-                    areas.review_body.y.saturating_add(1),
-                    areas.review_body.width.saturating_sub(2),
-                    areas.review_body.height.saturating_sub(2),
-                )
-            }
-        };
-        let content = if let Body::Review(review) = &view.body {
-            if let Some(context) = &review.viewport.sticky_context {
-                let [file_row, hunk_row, content] = Layout::vertical([
-                    Constraint::Length(1),
-                    Constraint::Length(1),
-                    Constraint::Min(0),
-                ])
-                .areas(inner);
-                let [file, hunk] = sticky_context_lines(context, body_inner_width);
-                // The file row follows review focus; the hunk row is secondary
-                // and stays muted either way.
-                let file_tone = if view.layout.focus == FocusArea::Review {
-                    Tone::FocusSelection
-                } else {
-                    Tone::MutedResolved
-                };
-                frame.render_widget(
-                    Paragraph::new(file).style(self.semantic_theme.style(file_tone)),
-                    file_row,
-                );
-                frame.render_widget(
-                    Paragraph::new(hunk).style(self.semantic_theme.style(Tone::MutedResolved)),
-                    hunk_row,
-                );
-                content
-            } else {
-                inner
-            }
-        } else {
-            inner
-        };
-        frame.render_widget(Paragraph::new(body).scroll((scroll, 0)), content);
-        if let Body::Review(review) = &view.body
-            && review.viewport.total_rows > review.viewport.visible_rows
-        {
-            let scroll_positions = review
-                .viewport
-                .total_rows
-                .saturating_sub(review.viewport.visible_rows)
-                .saturating_add(1);
-            let mut state = ScrollbarState::new(scroll_positions)
-                .position(review.scroll)
-                .viewport_content_length(review.viewport.visible_rows);
-            frame.render_stateful_widget(
-                Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                    .begin_symbol(None)
-                    .end_symbol(None)
-                    .track_symbol(None)
-                    .thumb_symbol(symbols::SCROLL_THUMB),
-                areas.review_body,
-                &mut state,
-            );
-        }
-
-        frame.render_widget(
-            Paragraph::new(view.footer.current_context.text.as_str())
-                .style(self.semantic_theme.style(Tone::FocusSelection)),
-            areas.current_context,
-        );
-        frame.render_widget(
-            Paragraph::new(format!("Keys: {}", view.footer.contextual_keys.text))
-                .style(self.semantic_theme.style(Tone::MutedResolved)),
-            areas.contextual_keys,
-        );
-        if let Some(overlay) = &view.overlay {
-            if matches!(overlay, Overlay::Composer(_)) {
-                let area = frame.area();
-                frame
-                    .buffer_mut()
-                    .set_style(area, self.semantic_theme.modal_backdrop());
-            }
-            self.render_overlay(frame, overlay);
-        }
+    pub(crate) fn semantic_theme(&self) -> SemanticTheme {
+        self.semantic_theme
     }
 
-    fn review_window(
+    pub(crate) fn review_window(
         &self,
         review: &ReviewBody,
         available_width: u16,
         view: &View,
-    ) -> Text<'static> {
+    ) -> Document {
         if let Some(message) = &review.empty_state {
-            return Text::from(
+            return Document::from(
                 message
                     .lines()
                     .skip(review.scroll)
@@ -530,7 +272,7 @@ impl Renderer {
                 lines.extend(section_lines.drain(local_start..local_end));
             }
         }
-        Text::from(lines)
+        Document::from(lines)
     }
 
     fn file_header_lines(
@@ -538,7 +280,7 @@ impl Renderer {
         file: &crate::semantic::ReviewFile,
         review: &ReviewBody,
         available_width: u16,
-    ) -> Vec<Line<'static>> {
+    ) -> Vec<Line> {
         let path_match = matches!(
             review.search_target.as_ref(),
             Some(DiffSearchTarget::FilePath { path }) if path == &file.path
@@ -586,7 +328,7 @@ impl Renderer {
         available_width: u16,
         number_width: usize,
         view: &View,
-    ) -> Vec<Line<'static>> {
+    ) -> Vec<Line> {
         let content_width = available_width.saturating_sub(2);
         let layout = view.layout.diff_layout.resolved(content_width);
         let header_match = matches!(
@@ -644,7 +386,7 @@ impl Renderer {
         let mut lines = vec![hunk_box_top(
             hunk_title.as_deref(),
             hunk_width,
-            border_style,
+            &border_style,
         )];
         let source_lines = if layout == LayoutMode::Split {
             presentation::split_hunk_lines(
@@ -673,7 +415,7 @@ impl Renderer {
         lines.extend(
             source_lines
                 .into_iter()
-                .map(|line| hunk_box_content(line, hunk_width, border_style)),
+                .map(|line| hunk_box_content(line, hunk_width, &border_style)),
         );
         if !hunk.threads.is_empty() {
             let active = hunk.threads.iter().any(|thread| thread.active);
@@ -696,10 +438,10 @@ impl Renderer {
             lines.push(hunk_box_content(
                 Line::styled(summary, style),
                 hunk_width,
-                border_style,
+                &border_style,
             ));
         }
-        lines.push(hunk_box_bottom(hunk_width, border_style));
+        lines.push(hunk_box_bottom(hunk_width, &border_style));
 
         let key = HunkTextKey {
             available_width,
@@ -724,193 +466,14 @@ impl Renderer {
         });
         lines
     }
-
-    fn render_too_small(&self, frame: &mut Frame) {
-        let area = frame.area();
-        frame.render_widget(Clear, area);
-        frame.render_widget(
-            Paragraph::new(format!(
-                "Terminal is too small for revia ({0}×{1}).\nResize to at least 48×8, then continue.\nPress q to quit.",
-                area.width, area.height
-            ))
-            .wrap(Wrap { trim: false }),
-            area,
-        );
-    }
-
-    fn render_overlay(&self, frame: &mut Frame, overlay: &Overlay) {
-        match overlay {
-            Overlay::Composer(composer) => {
-                let area = centered_rect(70, composer.height, frame.area());
-                frame.render_widget(Clear, area);
-                frame.render_widget(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(self.semantic_theme.border(Tone::FocusSelection))
-                        .title(format!(" {} ", composer.context)),
-                    area,
-                );
-                let inner = Rect::new(
-                    area.x.saturating_add(1),
-                    area.y.saturating_add(1),
-                    area.width.saturating_sub(2),
-                    area.height.saturating_sub(2),
-                );
-                let [editor, feedback] =
-                    Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
-                frame.render_widget(
-                    Paragraph::new(Text::from(
-                        composer
-                            .lines
-                            .iter()
-                            .cloned()
-                            .map(Line::raw)
-                            .collect::<Vec<_>>(),
-                    ))
-                    .scroll((u16::try_from(composer.scroll).unwrap_or(u16::MAX), 0)),
-                    editor,
-                );
-                frame.render_widget(
-                    Paragraph::new(
-                        composer
-                            .message
-                            .as_deref()
-                            .unwrap_or(&composer.instructions),
-                    )
-                    .style(self.semantic_theme.style(Tone::MutedResolved)),
-                    feedback,
-                );
-                if composer.cursor_row >= composer.scroll {
-                    let cursor_row = composer.cursor_row - composer.scroll;
-                    if cursor_row < usize::from(editor.height) {
-                        let cursor_x = u16::try_from(composer.cursor_column)
-                            .unwrap_or(u16::MAX)
-                            .min(editor.width.saturating_sub(1));
-                        let cursor_y = u16::try_from(cursor_row)
-                            .unwrap_or(u16::MAX)
-                            .min(editor.height.saturating_sub(1));
-                        frame.set_cursor_position((
-                            editor.x.saturating_add(cursor_x),
-                            editor.y.saturating_add(cursor_y),
-                        ));
-                    }
-                }
-            }
-            Overlay::Help(help) => {
-                let area = centered_rect(86, 20, frame.area());
-                frame.render_widget(Clear, area);
-                frame.render_widget(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Double)
-                        .border_style(self.semantic_theme.style(Tone::FocusSelection))
-                        .title("Keyboard help — Esc/? to close"),
-                    area,
-                );
-                let inner = Rect::new(
-                    area.x.saturating_add(1),
-                    area.y.saturating_add(1),
-                    area.width.saturating_sub(2),
-                    area.height.saturating_sub(2),
-                );
-                let [content, hint] =
-                    Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
-                frame.render_widget(
-                    Paragraph::new(Text::from(
-                        help.lines
-                            .iter()
-                            .cloned()
-                            .map(Line::raw)
-                            .collect::<Vec<_>>(),
-                    ))
-                    .scroll((u16::try_from(help.scroll).unwrap_or(u16::MAX), 0)),
-                    content,
-                );
-                frame.render_widget(
-                    Paragraph::new(truncate_end(&help.position_hint, usize::from(hint.width)))
-                        .style(self.semantic_theme.style(Tone::MutedResolved)),
-                    hint,
-                );
-            }
-            Overlay::Thread(thread) => {
-                let area = centered_rect(78, 18, frame.area());
-                frame.render_widget(Clear, area);
-                let state = match thread.state {
-                    ThreadState::NeedsAttention => "NEEDS ATTENTION",
-                    ThreadState::Open => "OPEN",
-                    ThreadState::Resolved => "RESOLVED",
-                };
-                let outdated = if thread.outdated { " · OUTDATED" } else { "" };
-                frame.render_widget(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(self.semantic_theme.border(Tone::FocusSelection))
-                        .title(format!(
-                            " Conversation #{} · {state}{outdated} · {} ",
-                            thread.id, thread.position
-                        )),
-                    area,
-                );
-                let inner = Rect::new(
-                    area.x.saturating_add(1),
-                    area.y.saturating_add(1),
-                    area.width.saturating_sub(2),
-                    area.height.saturating_sub(2),
-                );
-                let [context, messages, actions] = Layout::vertical([
-                    Constraint::Length(1),
-                    Constraint::Min(1),
-                    Constraint::Length(1),
-                ])
-                .areas(inner);
-                frame.render_widget(
-                    Paragraph::new(truncate_end(&thread.context, usize::from(context.width)))
-                        .style(self.semantic_theme.style(Tone::MutedResolved)),
-                    context,
-                );
-                let mut lines = Vec::new();
-                for (index, message) in thread.messages.iter().enumerate() {
-                    if index > 0 {
-                        lines.push(Line::raw(""));
-                    }
-                    lines.push(Line::styled(
-                        message.author.clone(),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ));
-                    lines.extend(message.body.lines().map(|line| Line::raw(line.to_owned())));
-                }
-                frame.render_widget(
-                    Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
-                    messages,
-                );
-                frame.render_widget(
-                    Paragraph::new(if thread.state == ThreadState::Resolved {
-                        if actions.width >= 48 {
-                            "t/T switch · c reply · R reopen · Esc close"
-                        } else {
-                            "t/T · c reply · R reopen · Esc"
-                        }
-                    } else if actions.width >= 48 {
-                        "t/T switch · c reply · x resolve · Esc close"
-                    } else {
-                        "t/T · c reply · x resolve · Esc"
-                    })
-                    .style(self.semantic_theme.style(Tone::MutedResolved)),
-                    actions,
-                );
-            }
-        }
-    }
 }
 
 fn highlight_hunk_box(
-    lines: &mut [Line<'static>],
+    lines: &mut [Line],
     window_start: usize,
     range_start: usize,
     range_end: usize,
-    style: Style,
+    style: TextStyle,
 ) {
     for (offset, line) in lines.iter_mut().enumerate() {
         let row = window_start.saturating_add(offset);
@@ -919,22 +482,22 @@ fn highlight_hunk_box(
         }
         if row == range_start || row + 1 == range_end {
             for span in &mut line.spans {
-                span.style = span.style.patch(style);
+                span.style = patch_style(span.style.clone(), &style);
             }
         } else {
             if let Some(border) = line.spans.first_mut() {
-                border.style = border.style.patch(style);
+                border.style = patch_style(border.style.clone(), &style);
             }
             if let Some(border) = line.spans.last_mut() {
-                border.style = border.style.patch(style);
+                border.style = patch_style(border.style.clone(), &style);
             }
         }
     }
 }
 
-fn hunk_box_top(title: Option<&str>, width: usize, style: Style) -> Line<'static> {
+fn hunk_box_top(title: Option<&str>, width: usize, style: &TextStyle) -> Line {
     if width < 2 {
-        return Line::styled("─".repeat(width), style);
+        return Line::styled("─".repeat(width), style.clone());
     }
     let title_width = width.saturating_sub(4);
     let title = title
@@ -946,23 +509,23 @@ fn hunk_box_top(title: Option<&str>, width: usize, style: Style) -> Line<'static
     let fill = width
         .saturating_sub(UnicodeWidthStr::width(prefix.as_str()))
         .saturating_sub(1);
-    Line::styled(format!("{prefix}{}╮", "─".repeat(fill)), style)
+    Line::styled(format!("{prefix}{}╮", "─".repeat(fill)), style.clone())
 }
 
-fn hunk_box_content(mut line: Line<'static>, width: usize, style: Style) -> Line<'static> {
+fn hunk_box_content(mut line: Line, width: usize, style: &TextStyle) -> Line {
     if width < 2 {
         return line;
     }
     let inner_width = width.saturating_sub(2);
     line = fit_line(line, inner_width);
     let padding = inner_width.saturating_sub(line.width());
-    line.spans.insert(0, Span::styled("│", style));
+    line.spans.insert(0, Span::styled("│", style.clone()));
     line.spans.push(Span::raw(" ".repeat(padding)));
-    line.spans.push(Span::styled("│", style));
+    line.spans.push(Span::styled("│", style.clone()));
     line
 }
 
-fn fit_line(line: Line<'static>, width: usize) -> Line<'static> {
+fn fit_line(line: Line, width: usize) -> Line {
     let mut remaining = width;
     let mut spans = Vec::new();
     for span in line.spans {
@@ -975,7 +538,7 @@ fn fit_line(line: Line<'static>, width: usize) -> Line<'static> {
             spans.push(span);
         } else {
             spans.push(Span::styled(
-                truncate_end(span.content.as_ref(), remaining),
+                truncate_end(span.content.as_str(), remaining),
                 span.style,
             ));
             break;
@@ -984,17 +547,21 @@ fn fit_line(line: Line<'static>, width: usize) -> Line<'static> {
     Line::from(spans)
 }
 
-fn hunk_box_bottom(width: usize, style: Style) -> Line<'static> {
+fn hunk_box_bottom(width: usize, style: &TextStyle) -> Line {
     if width < 2 {
-        return Line::styled("─".repeat(width), style);
+        return Line::styled("─".repeat(width), style.clone());
     }
-    Line::styled(format!("╰{}╯", "─".repeat(width - 2)), style)
+    Line::styled(format!("╰{}╯", "─".repeat(width - 2)), style.clone())
 }
 
-fn rollup_text(rollup: &RollupBody, available_width: u16, theme: SemanticTheme) -> Text<'static> {
+pub(crate) fn rollup_text(
+    rollup: &RollupBody,
+    available_width: u16,
+    theme: SemanticTheme,
+) -> Document {
     let mut lines = vec![Line::styled(
         rollup.summary.clone(),
-        Style::default().add_modifier(Modifier::BOLD),
+        TextStyle::new().bold(),
     )];
     for item in &rollup.items {
         let state = match item.state {
@@ -1024,7 +591,7 @@ fn rollup_text(rollup: &RollupBody, available_width: u16, theme: SemanticTheme) 
             } else if item.state == ThreadState::Resolved {
                 theme.style(Tone::MutedResolved)
             } else {
-                Style::default()
+                TextStyle::new()
             },
         ));
     }
@@ -1037,7 +604,7 @@ fn rollup_text(rollup: &RollupBody, available_width: u16, theme: SemanticTheme) 
         },
         theme.style(Tone::MutedResolved),
     ));
-    Text::from(lines)
+    Document::from(lines)
 }
 
 /// Cells the comparison label keeps before the active filter is dropped from
@@ -1048,7 +615,7 @@ const COMPARISON_FLOOR: usize = 12;
 ///
 /// Every width keeps all three. The comparison label is shortened and then the
 /// active filter is dropped before any number is given up.
-fn header_text(view: &View, width: u16, size: ShellSize) -> String {
+pub(crate) fn header_text(view: &View, width: u16, size: ShellSize) -> String {
     let header = &view.header;
     let magnitude = presentation::format_magnitude(header.magnitude);
     let (files, separator) = match size {
@@ -1078,1568 +645,58 @@ fn header_text(view: &View, width: u16, size: ShellSize) -> String {
     truncate_end(&format!("{comparison}{separator}{facts}{filter}"), width)
 }
 
-fn region_block<'a>(
-    title: &'a str,
-    focused: bool,
-    focus_label: Option<&'a str>,
-    theme: SemanticTheme,
-) -> Block<'a> {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title(match focus_label {
-            Some(label) => format!(" {title}  {label} "),
-            None => format!(" {title} "),
-        });
-    if focused {
-        block.border_style(theme.border(Tone::FocusSelection))
-    } else {
-        block.border_style(theme.border(Tone::MutedResolved))
-    }
-}
-
-fn centered_rect(width_percent: u16, height: u16, area: Rect) -> Rect {
-    let width = area
-        .width
-        .saturating_mul(width_percent)
-        .saturating_div(100)
-        .max(24)
-        .min(area.width);
-    let height = height.min(area.height.saturating_sub(2)).max(3);
-    Rect {
-        x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
-        y: area
-            .y
-            .saturating_add(area.height.saturating_sub(height) / 2),
-        width,
-        height,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use ratatui::{
-        Terminal,
-        backend::TestBackend,
-        buffer::Buffer,
-        layout::Rect,
-        style::{Color, Modifier, Style},
-        text::{Line, Span},
-    };
+    use urushi::{Color, TextAttribute, TextStyle};
 
-    use crate::{
-        anchor::{Anchor, HunkLocation},
-        app::Model,
-        diff::{DiffDocument, DiffRequest, DiffTarget, LoadedDiff},
-        mode::{help, review},
-        semantic::Body,
-        symbols,
-        thread::{Participant, ParticipantKind, ThreadState},
-        ui::LayoutMode,
-    };
-
-    use super::{Renderer, SemanticTheme, ShellAreas, logical_review_window};
-    use crate::ui::truncate_start;
-
-    const RESPONSIVE_DIFF: &str = "diff --git a/src/components/review/navigation.rs b/src/components/review/navigation.rs\n--- a/src/components/review/navigation.rs\n+++ b/src/components/review/navigation.rs\n@@ -1 +1 @@\n-old_navigation\n+new_navigation\ndiff --git a/src/画面/とても長いレビュー項目.rs b/src/画面/とても長いレビュー項目.rs\n--- a/src/画面/とても長いレビュー項目.rs\n+++ b/src/画面/とても長いレビュー項目.rs\n@@ -1 +1 @@\n-old_wide\n+new_wide\n";
-    const READABLE_DIFF: &str = "diff --git a/src/readable.rs b/src/readable.rs\nindex 111..222 100644\n--- a/src/readable.rs\n+++ b/src/readable.rs\n@@ -8,3 +18,3 @@ fn first()\n context\n-old_ascii_line_that_is_far_too_long_for_the_available_terminal_region\n+new\twide_画面_👨‍👩‍👧‍👦_that_is_also_far_too_long_for_the_available_terminal_region\n tail\n@@ -100,2 +200,3 @@ fn second()\n next\n+inserted\n last\n";
-    const HIDDEN_SELECTION_DIFF: &str = "diff --git a/selection.rs b/selection.rs\n--- a/selection.rs\n+++ b/selection.rs\n@@ -8,3 +18,3 @@\n before\n-old_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n+new\n after\n";
-
-    fn model_with_diff(raw: &str) -> Model {
-        Model::new(
-            DiffRequest {
-                target: DiffTarget::WorkingTree,
-                context_lines: 3,
-            },
-            LoadedDiff {
-                text: raw.into(),
-                document: DiffDocument::parse(raw),
-            },
-            ThreadState::default(),
-        )
-    }
-
-    fn render(renderer: &Renderer, model: &mut Model, width: u16, height: u16) -> Buffer {
-        crate::app::update(
-            model,
-            crate::app::global::Event::ViewportResized {
-                rows: height.saturating_sub(5),
-                columns: width,
-            },
-        );
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        let semantic = crate::app::view(model);
-        terminal
-            .draw(|frame| renderer.render(frame, &semantic))
-            .unwrap();
-        terminal.backend().buffer().clone()
-    }
-
-    fn rows(buffer: &Buffer) -> Vec<String> {
-        buffer
-            .content()
-            .chunks(usize::from(buffer.area.width))
-            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
-            .collect()
-    }
-
-    fn focus_toned_cells(buffer: &Buffer, columns: std::ops::Range<u16>) -> usize {
-        let width = buffer.area.width;
-        buffer
-            .content()
-            .iter()
-            .enumerate()
-            .filter(|(index, cell)| {
-                let column = (*index as u16) % width;
-                columns.contains(&column) && cell.fg == Color::Cyan
-            })
-            .count()
-    }
+    use super::*;
 
     #[test]
-    fn a_focus_switch_is_visible_on_both_sides_of_the_shell() {
-        const RAIL: std::ops::Range<u16> = 0..30;
-        const BODY: std::ops::Range<u16> = 30..120;
-
-        let renderer = Renderer::default();
-        let mut model = model_with_diff(RESPONSIVE_DIFF);
-        let diff_focused = render(&renderer, &mut model, 120, 20);
-        let diff_focused_rows = rows(&diff_focused);
-        assert!(
-            diff_focused_rows.iter().any(|row| row.contains("Files")),
-            "{diff_focused_rows:#?}"
-        );
-        assert!(
-            !diff_focused_rows
-                .iter()
-                .any(|row| row.contains("FILE FOCUS"))
-        );
-
-        crate::app::update(&mut model, review::Event::CycleFocus);
-        let rail_focused = render(&renderer, &mut model, 120, 20);
-        let rail_focused_rows = rows(&rail_focused);
-        assert!(
-            rail_focused_rows
-                .iter()
-                .any(|row| row.contains("FILE FOCUS")),
-            "{rail_focused_rows:#?}"
-        );
-
-        // The rail gains the focus tone and the diff gives it up, so the switch
-        // reads from either half of the shell rather than the footer alone.
-        assert!(
-            focus_toned_cells(&rail_focused, RAIL) > focus_toned_cells(&diff_focused, RAIL),
-            "the rail did not gain the focus tone"
-        );
-        assert!(
-            focus_toned_cells(&rail_focused, BODY) < focus_toned_cells(&diff_focused, BODY),
-            "the diff kept the focus tone while the rail held focus"
-        );
-    }
-
-    #[test]
-    fn semantic_view_projects_to_existing_split_and_stack_contract() {
-        let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old_a\n+new_a\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-old_b\n+new_b\n";
-        let mut threads = ThreadState::default();
-        let human = Participant {
-            id: "human".into(),
-            kind: ParticipantKind::Human,
-        };
-        let attention = threads.post(
-            Anchor::new("deadbeef", HunkLocation::new("a.rs", "@@ -1 +1 @@")),
-            human.clone(),
-            "Needs a human decision.".into(),
-            1,
-        );
-        threads.set_needs_attention(attention, true).unwrap();
-        let resolved = threads.post(
-            Anchor::new("deadbeef", HunkLocation::new("b.rs", "@@ -1 +1 @@")),
-            human.clone(),
-            "Already addressed.".into(),
-            2,
-        );
-        threads.close(resolved, &human).unwrap();
-        let mut model = Model::new(
-            DiffRequest {
-                target: DiffTarget::WorkingTree,
-                context_lines: 3,
-            },
-            LoadedDiff {
-                text: raw.into(),
-                document: DiffDocument::parse(raw),
-            },
-            threads,
-        );
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::from_no_color(None),
-            ..Renderer::default()
-        };
-
-        let split = render(&renderer, &mut model, 120, 48)
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(split.contains("2 files  +2 -2"));
-        let semantic = crate::app::view(&model);
-        let Body::Review(review) = semantic.body else {
-            panic!("review body")
-        };
-        assert!(!review.files[0].hunks[0].threads.is_empty());
-        assert!(split.contains(" │ "));
-
-        crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Stack));
-        let stack = render(&renderer, &mut model, 80, 32)
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(stack.contains("-old_a"));
-        assert!(stack.contains("+new_a"));
-    }
-
-    #[test]
-    fn lifecycle_cards_remain_legible_at_wide_narrow_and_no_color_sizes() {
-        let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
-        let human = Participant {
-            id: "reviewer".into(),
-            kind: ParticipantKind::Human,
-        };
-        let location = HunkLocation::new("a.rs", "@@ -1 +1 @@");
-        let mut threads = ThreadState::default();
-        threads.post(
-            Anchor::new("deadbeef", location.clone()),
-            human.clone(),
-            "open context".into(),
-            1,
-        );
-        let resolved = threads.post(
-            Anchor::new("deadbeef", location.clone()),
-            human.clone(),
-            "resolved context".into(),
-            2,
-        );
-        threads.close(resolved, &human).unwrap();
-        let attention = threads.post(
-            Anchor::new("deadbeef", location),
-            human,
-            "reviewer: 長い画面メッセージ👨‍👩‍👧‍👦 that wraps across a narrow card without corrupting the next row".into(),
-            3,
-        );
-        threads.set_needs_attention(attention, true).unwrap();
-        threads.set_outdated(attention, true).unwrap();
-        let mut model = Model::new(
-            DiffRequest {
-                target: DiffTarget::WorkingTree,
-                context_lines: 3,
-            },
-            LoadedDiff {
-                text: raw.into(),
-                document: DiffDocument::parse(raw),
-            },
-            threads,
-        );
-        crate::app::update(&mut model, review::Event::MoveThread(1));
-        crate::app::update(&mut model, review::Event::MoveThread(1));
-        crate::app::update(&mut model, review::Event::MoveThread(1));
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::no_color(),
-            ..Renderer::default()
-        };
-
-        let wide = render(&renderer, &mut model, 120, 40);
-        let wide_text = rows(&wide).join("\n");
-        assert!(wide_text.contains("Conversation #2 · NEEDS ATTENTION · OUTDATED · 3/3"));
-        assert!(wide_text.contains("reviewer:"));
-        assert!(wide_text.contains("t/T switch · c reply · x resolve · Esc close"));
-        assert!(wide.content().iter().all(|cell| cell.fg == Color::Reset));
-
-        let narrow = render(&renderer, &mut model, 48, 40);
-        let narrow_rows = rows(&narrow);
-        let narrow_text = narrow_rows.join("\n");
-        assert!(narrow_text.contains("Conversation #2"));
-        assert!(narrow_text.contains("NEEDS ATTENTION"));
-        let semantic = crate::app::view(&model);
-        let Some(crate::semantic::Overlay::Thread(thread)) = semantic.overlay else {
-            panic!("thread overlay")
-        };
-        assert!(thread.outdated);
-        assert!(narrow.content().iter().all(|cell| cell.fg == Color::Reset));
-
-        crate::app::update(&mut model, review::Event::MoveThread(-1));
-        let resolved = render(&renderer, &mut model, 48, 40);
-        let resolved_text = rows(&resolved).join("\n");
-        for action in ["c reply", "R reopen", "Esc"] {
-            assert!(
-                resolved_text.contains(action),
-                "missing {action}: {resolved_text}"
-            );
-        }
-    }
-
-    #[test]
-    fn renders_a_stable_explanation_below_the_minimum_layout_size() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::from_no_color(None),
-            ..Renderer::default()
-        };
-        let model = Model::new(
-            DiffRequest {
-                target: DiffTarget::WorkingTree,
-                context_lines: 3,
-            },
-            LoadedDiff {
-                text: String::new(),
-                document: DiffDocument::default(),
-            },
-            ThreadState::default(),
-        );
-        let semantic = crate::app::view(&model);
-
-        for (width, height) in [(1, 1), (12, 7), (47, 20)] {
-            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-            terminal
-                .draw(|frame| renderer.render(frame, &semantic))
-                .unwrap();
-            let rendered = terminal
-                .backend()
-                .buffer()
-                .content()
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect::<String>();
-            assert!(rendered.contains("Terminal") || width < 8);
-        }
-    }
-
-    #[test]
-    fn renders_empty_states_with_the_selected_diff_target() {
-        let renderer = Renderer::default();
-        for (target, expected) in [
-            (DiffTarget::WorkingTree, "working tree"),
-            (DiffTarget::Staged, "staged changes"),
-            (DiffTarget::Commit("abc123".into()), "commit abc123"),
-            (DiffTarget::Range("main...HEAD".into()), "range main...HEAD"),
-        ] {
-            let model = Model::new(
-                DiffRequest {
-                    target,
-                    context_lines: 3,
-                },
-                LoadedDiff {
-                    text: String::new(),
-                    document: DiffDocument::default(),
-                },
-                ThreadState::default(),
-            );
-            let semantic = crate::app::view(&model);
-            let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
-            terminal
-                .draw(|frame| renderer.render(frame, &semantic))
-                .unwrap();
-            let rendered = terminal
-                .backend()
-                .buffer()
-                .content()
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect::<String>();
-            assert!(rendered.contains("No changes found."));
-            assert!(rendered.contains(expected));
-        }
-    }
-
-    #[test]
-    fn filtered_empty_state_names_the_filter_and_recovery_without_color_at_narrow_width() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::no_color(),
-            ..Renderer::default()
-        };
-        let mut model = model_with_diff(RESPONSIVE_DIFF);
-        crate::app::update(&mut model, review::Event::CycleFilter(1));
-
-        let buffer = render(&renderer, &mut model, 48, 20);
-        let rendered = rows(&buffer).join("\n");
-        assert!(rendered.contains("Needs attention"));
-        assert!(rendered.contains("No review targets match Filter:"));
-        assert!(rendered.contains("Git diff is still loaded"));
-        assert!(rendered.contains("Press A for All changes"));
-        assert!(
-            buffer
-                .content()
-                .iter()
-                .all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset)
-        );
-
-        let minimum = render(&renderer, &mut model, 48, 8);
-        let minimum_rows = rows(&minimum).join("\n");
-        assert!(minimum_rows.contains("No review targets match Filter:"));
-        assert!(minimum_rows.contains("Git diff is still loaded"));
-        assert!(minimum_rows.contains("Press A for All changes"));
-        assert!((1..6).all(|y| minimum[(47, y)].symbol() != symbols::SCROLL_THUMB));
-
-        let semantic = crate::app::view(&model);
-        let Body::Review(review) = semantic.body else {
-            panic!("review body")
-        };
-        assert_eq!(review.viewport.total_rows, 3);
-        assert_eq!(review.viewport.visible_rows, 3);
-        assert_eq!(review.viewport.sticky_context, None);
-    }
-
-    #[test]
-    fn help_scroll_reaches_the_exit_section_at_supported_viewports() {
-        let renderer = Renderer::default();
-        for (width, height) in [(120, 24), (48, 20), (48, 8)] {
-            let mut model = model_with_diff(RESPONSIVE_DIFF);
-            crate::app::update(&mut model, crate::app::global::Event::OpenHelp);
-
-            let top = rows(&render(&renderer, &mut model, width, height)).join("\n");
-            assert!(top.contains("Keyboard help — Esc/? to close"), "{top}");
-            assert!(top.contains("Navigation"), "{top}");
-            assert!(top.contains("rows "), "{top}");
-
-            crate::app::update(&mut model, help::Event::JumpToEdge { end: true });
-            let bottom = rows(&render(&renderer, &mut model, width, height)).join("\n");
-            assert!(
-                bottom.contains("Esc/? closes"),
-                "{width}x{height}: {bottom}"
-            );
-            assert!(bottom.contains("rows "), "{width}x{height}: {bottom}");
-        }
-    }
-
-    #[test]
-    fn wide_medium_narrow_and_minimum_shells_have_intentional_roles() {
-        let renderer = Renderer::default();
-        let mut model = model_with_diff(RESPONSIVE_DIFF);
-
-        let wide = rows(&render(&renderer, &mut model, 120, 24));
-        assert_eq!(
-            wide[0].trim_end(),
-            "working tree  2 files  +2 -2  All changes"
-        );
-        assert!(wide.iter().any(|row| row.contains("Files")));
-        assert!(wide.iter().any(|row| row.contains("Diff")));
-        assert!(wide[22].contains("Context: Diff"));
-        assert!(wide[23].starts_with("Keys:"));
-        let wide_areas = ShellAreas::resolve(Rect::new(0, 0, 120, 24), true);
-        assert_eq!(wide_areas.header, Rect::new(0, 0, 120, 1));
-        assert_eq!(wide_areas.navigation_rail, Some(Rect::new(0, 1, 30, 21)));
-        assert_eq!(wide_areas.review_body, Rect::new(30, 1, 90, 21));
-        assert_eq!(wide_areas.current_context, Rect::new(0, 22, 120, 1));
-        assert_eq!(wide_areas.contextual_keys, Rect::new(0, 23, 120, 1));
-
-        let medium = rows(&render(&renderer, &mut model, 88, 20));
-        assert_eq!(
-            medium[0].trim_end(),
-            "working tree  2 files  +2 -2  All changes"
-        );
-        assert!(medium.iter().any(|row| row.contains("Files")));
-        assert!(medium.iter().any(|row| row.contains("-old_navigation")));
-        let medium_areas = ShellAreas::resolve(Rect::new(0, 0, 88, 20), true);
-        assert_eq!(medium_areas.navigation_rail, Some(Rect::new(0, 1, 28, 17)));
-        assert_eq!(medium_areas.review_body, Rect::new(28, 1, 60, 17));
-        assert_eq!(medium_areas.current_context.y, 18);
-        assert_eq!(medium_areas.contextual_keys.y, 19);
-
-        let narrow = rows(&render(&renderer, &mut model, 64, 16));
-        assert_eq!(narrow[0].trim_end(), "working tree 2f +2 -2 All changes");
-        assert!(!narrow.iter().any(|row| row.contains(" Files ")));
-        assert!(
-            narrow
-                .iter()
-                .any(|row| row.contains("review/navigation.rs"))
-        );
-        assert!(narrow[14].contains("Review"), "{}", narrow[14]);
-        let narrow_areas = ShellAreas::resolve(Rect::new(0, 0, 64, 16), true);
-        assert_eq!(narrow_areas.navigation_rail, None);
-        assert_eq!(narrow_areas.review_body, Rect::new(0, 1, 64, 13));
-        assert_eq!(narrow_areas.current_context.y, 14);
-        assert_eq!(narrow_areas.contextual_keys.y, 15);
-
-        let minimum = rows(&render(&renderer, &mut model, 48, 8));
-        assert!(minimum.iter().any(|row| row.contains("@@ -1 +1 @@")));
-        assert!(minimum.iter().any(|row| row.contains("navigation.rs")));
-        assert!(minimum[6].contains("Review"), "{}", minimum[6]);
-        assert!(minimum[7].starts_with("Keys:"));
-        let minimum_areas = ShellAreas::resolve(Rect::new(0, 0, 48, 8), true);
-        assert_eq!(minimum_areas.navigation_rail, None);
-        assert_eq!(minimum_areas.review_body, Rect::new(0, 1, 48, 5));
-        assert_eq!(minimum_areas.current_context.y, 6);
-        assert_eq!(minimum_areas.contextual_keys.y, 7);
-    }
-
-    #[test]
-    fn ascii_and_wide_paths_are_truncated_without_crossing_region_borders() {
-        assert_eq!(
-            unicode_width::UnicodeWidthStr::width(
-                truncate_start("src/画面/とても長いレビュー項目.rs", 16).as_str()
-            ),
-            16
-        );
-        assert!(truncate_start("a/very/long/path/to/file.rs", 14).ends_with("file.rs"));
-        assert!(unicode_width::UnicodeWidthStr::width(truncate_start("long/✈️", 2).as_str()) <= 2);
-        assert_eq!(truncate_start("long/画\u{301}", 2), "…");
-
-        let renderer = Renderer::default();
-        let mut model = model_with_diff(RESPONSIVE_DIFF);
-        let buffer = render(&renderer, &mut model, 120, 24);
-        for y in 2..21 {
-            assert_eq!(buffer[(29, y)].symbol(), "│");
-            assert_ne!(buffer[(30, y)].symbol(), "║");
-        }
-    }
-
-    #[test]
-    fn hunk_content_keeps_both_borders_at_a_fixed_width() {
+    fn hunk_box_preserves_width_and_urushi_styles() {
         let line = Line::from(vec![
-            Span::styled("画面", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("画面", TextStyle::new().bold()),
             Span::raw("x".repeat(40)),
         ]);
-        let boxed = super::hunk_box_content(line, 20, Style::default());
+        let boxed = hunk_box_content(line, 20, &TextStyle::new().foreground(Color::CYAN));
 
         assert_eq!(boxed.width(), 20);
-        assert_eq!(boxed.spans.first().unwrap().content, "│");
-        assert_eq!(boxed.spans.last().unwrap().content, "│");
-    }
-
-    #[test]
-    fn no_color_retains_change_state_selection_and_focus_in_text_and_shape() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::no_color(),
-            ..Renderer::default()
-        };
-        let mut model = model_with_diff(RESPONSIVE_DIFF);
-        let buffer = render(&renderer, &mut model, 120, 24);
-        let rendered = rows(&buffer).join("\n");
-
-        assert!(rendered.contains(""));
-        assert!(rendered.contains("╭─ @@ -1 +1 @@"));
-        assert!(rendered.contains("Diff"));
-        assert!(rendered.contains("-old_navigation"));
-        assert!(rendered.contains("+new_navigation"));
-        assert!(
-            buffer
-                .content()
-                .iter()
-                .all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset)
-        );
-    }
-
-    #[test]
-    fn selected_semantic_search_match_has_a_non_color_marker() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::no_color(),
-            ..Renderer::default()
-        };
-        let mut model = model_with_diff(READABLE_DIFF);
-        for event in [
-            review::Event::BeginSearch,
-            review::Event::InsertSearchCharacter('i'),
-            review::Event::InsertSearchCharacter('n'),
-            review::Event::InsertSearchCharacter('s'),
-            review::Event::InsertSearchCharacter('e'),
-            review::Event::InsertSearchCharacter('r'),
-            review::Event::InsertSearchCharacter('t'),
-            review::Event::InsertSearchCharacter('e'),
-            review::Event::InsertSearchCharacter('d'),
-        ] {
-            crate::app::update(&mut model, event);
-        }
-
-        let rendered = rows(&render(&renderer, &mut model, 80, 24)).join("\n");
-        assert!(rendered.contains(""));
-        assert!(rendered.contains("Context: Search input"));
-        assert!(rendered.contains("Esc cancel"));
-    }
-
-    #[test]
-    fn case_insensitive_search_reverses_the_actual_source_graphemes() {
-        let raw =
-            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+INSERTED\n";
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::no_color(),
-            ..Renderer::default()
-        };
-        let mut model = model_with_diff(raw);
-        crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Split));
-        crate::app::update(&mut model, review::Event::BeginSearch);
-        for character in "inserted".chars() {
-            crate::app::update(&mut model, review::Event::InsertSearchCharacter(character));
-        }
-
-        let buffer = render(&renderer, &mut model, 80, 24);
-        let source_row = rows(&buffer)
-            .into_iter()
-            .find(|row| row.contains("+INSERTED"))
-            .expect("selected source row is rendered");
-        assert!(source_row.contains("  "), "{source_row:?}");
-        assert!(
-            buffer
-                .content()
-                .iter()
-                .any(|cell| { cell.symbol() == "I" && cell.modifier.contains(Modifier::REVERSED) })
-        );
-    }
-
-    #[test]
-    fn renderer_keeps_selected_split_and_stack_change_evidence_composed() {
-        let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,2 +1,2 @@\n let stable = 1;\n-let timeout = 30;\n+let timeout = 60;\n@@ -10,2 +10,2 @@\n fn stable_two() {}\n-let retries = 2;\n+let retries = 3;\n";
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::from_no_color(None),
-            ..Renderer::default()
-        };
-        let mut model = model_with_diff(raw);
-        crate::app::update(&mut model, review::Event::BeginSearch);
-        for character in "60".chars() {
-            crate::app::update(&mut model, review::Event::InsertSearchCharacter(character));
-        }
-
-        for layout in [LayoutMode::Split, LayoutMode::Stack] {
-            crate::app::update(&mut model, review::Event::SetLayout(layout));
-            let buffer = render(&renderer, &mut model, 80, 32);
-            let source_row = rows(&buffer)
-                .into_iter()
-                .find(|row| row.contains("60"))
-                .expect("selected replacement source row is rendered");
-            assert!(source_row.contains("  "), "{layout:?}: {source_row:?}");
-            let changed = buffer
-                .content()
-                .iter()
-                .find(|cell| cell.symbol() == "6" && cell.modifier.contains(Modifier::REVERSED))
-                .expect("searched changed grapheme is reverse-marked");
-            assert!(changed.modifier.contains(Modifier::UNDERLINED));
-
-            let rendered_rows = rows(&buffer);
-            for source in ["stable = 1", "timeout = 30", "timeout = 60", "stable_two"] {
-                let y = rendered_rows
-                    .iter()
-                    .position(|row| row.contains(source))
-                    .unwrap_or_else(|| panic!("{layout:?}: missing source row {source:?}"));
-                assert!(
-                    (0..buffer.area.width).any(|x| {
-                        let cell = &buffer[(x, y as u16)];
-                        cell.fg != Color::Reset && !cell.symbol().trim().is_empty()
-                    }),
-                    "{layout:?}: {source:?} lost lexical foreground"
-                );
-            }
-
-            // The sticky position row repeats the current hunk header, so a box
-            // row has to be identified by its border, not by the header alone.
-            let box_row = |header: &str| {
-                rendered_rows
-                    .iter()
-                    .position(|row| row.contains(header) && row.contains('╭'))
-                    .unwrap_or_else(|| panic!("{layout:?}: hunk box {header:?} is visible"))
-            };
-            let selected_box = box_row("@@ -1,2 +1,2 @@");
-            let unselected_box = box_row("@@ -10,2 +10,2 @@");
-            assert!(
-                (0..buffer.area.width).any(|x| buffer[(x, selected_box as u16)].fg == Color::Cyan)
-            );
-            assert!(
-                (0..buffer.area.width)
-                    .all(|x| buffer[(x, unselected_box as u16)].fg != Color::Cyan)
-            );
-        }
-    }
-
-    #[test]
-    fn hidden_hunk_header_search_marks_the_resolved_content_row() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::no_color(),
-            ..Renderer::default()
-        };
-        let mut model = model_with_diff(READABLE_DIFF);
-        crate::app::update(&mut model, review::Event::ToggleHunkHeaders);
-        crate::app::update(&mut model, review::Event::BeginSearch);
-        for character in "second()".chars() {
-            crate::app::update(&mut model, review::Event::InsertSearchCharacter(character));
-        }
-
-        let rendered = rows(&render(&renderer, &mut model, 80, 24)).join("\n");
-        assert!(!rendered.contains("@@ -100,2 +200,3 @@ fn second()"));
-        assert!(rendered.contains(""));
-        assert!(rendered.contains("next"));
-    }
-
-    #[test]
-    fn split_search_marker_identifies_the_selected_change_side() {
-        let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-needle old\n+needle new\n";
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::no_color(),
-            ..Renderer::default()
-        };
-        let mut model = model_with_diff(raw);
-        crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Split));
-        crate::app::update(&mut model, review::Event::BeginSearch);
-        for character in "needle".chars() {
-            crate::app::update(&mut model, review::Event::InsertSearchCharacter(character));
-        }
-
-        let removed = rows(&render(&renderer, &mut model, 120, 16)).join("\n");
-        assert!(removed.contains(""));
-        assert!(removed.contains("-needle old"));
-        crate::app::update(&mut model, review::Event::FinishSearch);
-        crate::app::update(&mut model, review::Event::MoveSearch(1));
-        let added = rows(&render(&renderer, &mut model, 120, 16)).join("\n");
-        assert!(added.contains(""));
-        assert!(added.contains("+needle new"));
-    }
-
-    #[test]
-    fn hunk_box_survives_hidden_hunk_headers_without_color() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::no_color(),
-            ..Renderer::default()
-        };
-        let mut model = model_with_diff(RESPONSIVE_DIFF);
-        crate::app::update(&mut model, review::Event::ToggleHunkHeaders);
-        let buffer = render(&renderer, &mut model, 64, 16);
-        let rendered = rows(&buffer).join("\n");
-
-        assert!(!rendered.contains("▶"));
-        assert!(rows(&buffer).iter().any(|row| row.contains("╭─")));
-        assert!(rows(&buffer).iter().any(|row| row.contains("╰─")));
-    }
-
-    #[test]
-    fn hidden_headers_keep_every_selected_source_row_visible_without_color() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::no_color(),
-            ..Renderer::default()
-        };
-        let mut model = model_with_diff(HIDDEN_SELECTION_DIFF);
-        crate::app::update(&mut model, review::Event::ToggleSidebar);
-        crate::app::update(&mut model, review::Event::ToggleHunkHeaders);
-
-        crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Split));
-        let split = render(&renderer, &mut model, 120, 24);
-        assert_selected_source_block(&split, &["before", "-old_", "after"]);
-
-        crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Stack));
-        crate::app::update(&mut model, review::Event::ToggleWrap);
-        let stack = render(&renderer, &mut model, 64, 24);
-        assert_selected_source_block(&stack, &["before", "-old_", "↪", "+new", "after"]);
-    }
-
-    fn assert_selected_source_block(buffer: &Buffer, expected_rows: &[&str]) {
-        let rendered = rows(buffer);
-        assert!(rendered.iter().all(|row| !row.contains("@@")));
-        for expected in expected_rows {
-            let (y, row) = rendered
-                .iter()
-                .enumerate()
-                .find(|(_, row)| row.contains(expected))
-                .expect("selected source row is visible");
-            assert!(
-                row.contains('│'),
-                "source row is outside its hunk box: {row:?}"
-            );
-            assert!(
-                (1..buffer.area.width.saturating_sub(1))
-                    .all(|x| { !buffer[(x, y as u16)].modifier.contains(Modifier::REVERSED) }),
-                "hunk membership must not reverse-paint source row {y}"
-            );
-        }
-    }
-
-    #[test]
-    fn wide_and_narrow_diff_rows_preserve_number_gutters_and_region_bounds() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::no_color(),
-            ..Renderer::default()
-        };
-        let mut model = model_with_diff(READABLE_DIFF);
-        crate::app::update(&mut model, review::Event::ToggleSidebar);
-
-        let wide_buffer = render(&renderer, &mut model, 120, 32);
-        let wide = rows(&wide_buffer);
-        let replacement = wide
-            .iter()
-            .find(|row| row.contains("old_ascii_line"))
-            .expect("wide fixture renders its replacement row");
-        assert!(replacement.contains("old_ascii_line"));
-        assert!(replacement.contains("new wide_"), "{replacement:?}");
-        assert!(!replacement.contains('≈'));
-        let split_at = replacement.find(" │ ").expect("split separator is visible");
-        let split_column = unicode_width::UnicodeWidthStr::width(&replacement[..split_at]);
-        let context = wide
-            .iter()
-            .find(|row| row.contains("context"))
-            .expect("wide fixture renders context numbers");
-        let context_split = context.find(" │ ").expect("context separator is visible");
         assert_eq!(
-            unicode_width::UnicodeWidthStr::width(&context[..context_split]),
-            split_column
+            boxed.spans.first().map(|span| span.content.as_str()),
+            Some("│")
         );
-        assert!(wide.iter().any(|row| row.contains("100  next")));
-        assert!(wide.iter().any(|row| row.contains("│ 200  next")));
-        assert!(!wide.iter().any(|row| row.contains("index 111..222")));
-        assert!(
-            wide.iter()
-                .any(|row| row.contains("src/readable.rs") && row.contains("+2 -1"))
-        );
-        assert!(wide.iter().any(|row| row.contains("╭─ @@ -8,3 +18,3 @@")));
-        assert!(wide.iter().any(|row| row.contains("╰──")));
-
-        crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Stack));
-        let narrow_buffer = render(&renderer, &mut model, 64, 32);
-        let narrow = rows(&narrow_buffer);
-        assert!(
-            narrow
-                .iter()
-                .any(|row| row.contains("-old_ascii_line") && !row.contains('≈'))
-        );
-        assert!(
-            narrow
-                .iter()
-                .any(|row| row.contains("+new wide_") && !row.contains('≈'))
-        );
-        assert!(narrow.iter().any(|row| row.contains('…')));
-        assert!(narrow.iter().all(|row| !row.contains('\t')));
-        assert!(narrow.iter().any(|row| row.contains("  100 200 │  next")));
-        assert!(
-            narrow_buffer
-                .content()
-                .iter()
-                .all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset)
-        );
-
-        let ascii_row = narrow
-            .iter()
-            .position(|row| row.contains("-old_ascii_line"))
-            .expect("selected ASCII row is visible") as u16;
-        assert_eq!(narrow_buffer[(0, ascii_row)].symbol(), "│");
-        assert!(
-            !narrow_buffer[(62, ascii_row)]
-                .modifier
-                .contains(Modifier::REVERSED)
-        );
-    }
-
-    #[test]
-    fn wrapped_stack_rows_keep_gutters_and_selected_hunk_shape() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::no_color(),
-            ..Renderer::default()
-        };
-        let mut model = model_with_diff(READABLE_DIFF);
-        crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Stack));
-        crate::app::update(&mut model, review::Event::ToggleWrap);
-        let buffer = render(&renderer, &mut model, 64, 40);
-        let rendered = rows(&buffer);
-        let continuation = rendered
-            .iter()
-            .find(|row| row.contains('↪'))
-            .expect("wrapped source has a gutter-preserving continuation");
         assert_eq!(
-            unicode_width::UnicodeWidthStr::width(continuation.as_str()),
-            64
+            boxed.spans.last().map(|span| span.content.as_str()),
+            Some("│")
         );
-
-        let boxed_source_rows = rendered
-            .iter()
-            .filter(|row| row.starts_with("│ "))
-            .collect::<Vec<_>>();
-        assert!(boxed_source_rows.len() >= 6);
-    }
-
-    #[test]
-    fn syntax_colors_preserve_the_theme_truecolor_palette() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::from_no_color(None),
-            ..Renderer::default()
-        };
-        let mut model = model_with_diff(
-            "diff --git a/main.rs b/main.rs\n--- a/main.rs\n+++ b/main.rs\n@@ -1 +1 @@\n-fn old() { let value: usize = 1; }\n+fn new() { let value: usize = 2; }\n",
-        );
-        let buffer = render(&renderer, &mut model, 88, 20);
-
-        assert!(
-            buffer
-                .content()
-                .iter()
-                .any(|cell| matches!(cell.fg, Color::Rgb(_, _, _)))
-        );
-    }
-
-    #[test]
-    fn added_and_removed_rows_have_distinct_quiet_backgrounds() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::from_no_color(None),
-            ..Renderer::default()
-        };
-        let mut model = model_with_diff(
-            "diff --git a/main.rs b/main.rs\n--- a/main.rs\n+++ b/main.rs\n@@ -1 +1 @@\n-old_value\n+new_value\n",
-        );
-        let buffer = render(&renderer, &mut model, 80, 20);
-        let rendered = rows(&buffer);
-        let removed_y = rendered
-            .iter()
-            .position(|row| row.contains("-old_value"))
-            .expect("removed row is visible") as u16;
-        let added_y = rendered
-            .iter()
-            .position(|row| row.contains("+new_value"))
-            .expect("added row is visible") as u16;
-        let removed = (0..buffer.area.width)
-            .find_map(|x| {
-                (buffer[(x, removed_y)].symbol() == "o").then_some(buffer[(x, removed_y)].bg)
-            })
-            .expect("removed source cell is visible");
-        let added = (0..buffer.area.width)
-            .find_map(|x| (buffer[(x, added_y)].symbol() == "n").then_some(buffer[(x, added_y)].bg))
-            .expect("added source cell is visible");
-
-        assert_eq!(removed, Color::Rgb(54, 27, 32));
-        assert_eq!(added, Color::Rgb(20, 46, 32));
-        assert_ne!(removed, added);
-    }
-
-    #[test]
-    fn tree_sitter_rust_query_highlights_macros_and_structural_punctuation() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::from_no_color(None),
-            ..Renderer::default()
-        };
-        let mut model = model_with_diff(
-            "diff --git a/main.rs b/main.rs\n--- a/main.rs\n+++ b/main.rs\n@@ -1 +1 @@\n-old();\n+assert_eq!(actual, expected);\n",
-        );
-        let buffer = render(&renderer, &mut model, 80, 20);
-        let rendered = rows(&buffer);
-        let y = rendered
-            .iter()
-            .position(|row| row.contains("assert_eq!(actual"))
-            .expect("macro row is visible") as u16;
-        let row = &rendered[usize::from(y)];
-        let macro_byte = row.find("assert_eq!").expect("macro starts in row");
-        let paren_byte = row.find('(').expect("opening parenthesis is visible");
-        let macro_x = unicode_width::UnicodeWidthStr::width(&row[..macro_byte]) as u16;
-        let paren_x = unicode_width::UnicodeWidthStr::width(&row[..paren_byte]) as u16;
-
-        assert_eq!(buffer[(macro_x, y)].fg, Color::Rgb(220, 220, 170));
-        assert!(buffer[(macro_x, y)].modifier.contains(Modifier::BOLD));
-        assert_eq!(buffer[(paren_x, y)].fg, Color::Rgb(143, 161, 190));
-    }
-
-    #[test]
-    fn layout_wrap_and_search_decorate_only_visible_hunks() {
-        let mut raw =
-            String::from("diff --git a/main.rs b/main.rs\n--- a/main.rs\n+++ b/main.rs\n");
-        for index in 1..=40 {
-            raw.push_str(&format!(
-                "@@ -{index} +{index} @@\n-old_{index}\n+new_{index}\n"
-            ));
-        }
-        let renderer = Renderer::default();
-        let mut model = model_with_diff(&raw);
-        let _ = render(&renderer, &mut model, 80, 20);
-        let initial = renderer.hunk_text_cache.borrow().len();
-        assert!(initial < 10, "rendered {initial} off-screen hunk variants");
-
-        crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Split));
-        let _ = render(&renderer, &mut model, 80, 20);
-        crate::app::update(&mut model, review::Event::ToggleWrap);
-        let _ = render(&renderer, &mut model, 80, 20);
-        crate::app::update(&mut model, review::Event::BeginSearch);
-        for character in "new_1".chars() {
-            crate::app::update(&mut model, review::Event::InsertSearchCharacter(character));
-            let _ = render(&renderer, &mut model, 80, 20);
-        }
-
-        let variants = renderer.hunk_text_cache.borrow().len();
-        assert!(
-            variants < 30,
-            "layout/search/wrap decorated the whole diff: {variants} variants"
-        );
-    }
-
-    #[test]
-    fn no_color_environment_value_disables_the_semantic_palette() {
-        assert!(SemanticTheme::from_no_color(None).colors_enabled());
-        assert!(SemanticTheme::from_no_color(Some(std::ffi::OsStr::new(""))).colors_enabled());
-        assert!(!SemanticTheme::from_no_color(Some(std::ffi::OsStr::new("1"))).colors_enabled());
-    }
-
-    #[test]
-    fn status_changes_do_not_reflow_the_review_body() {
-        let renderer = Renderer::default();
-        let mut model = model_with_diff(RESPONSIVE_DIFF);
-        let before = rows(&render(&renderer, &mut model, 88, 20));
-        model.global.status = Some("reloading diff…".into());
-        let after = rows(&render(&renderer, &mut model, 88, 20));
-
-        assert_eq!(&before[1..18], &after[1..18]);
-        assert_ne!(before[18], after[18]);
-        assert!(after[18].contains("Context: Diff"));
-        assert!(after[18].contains("Status: reloading diff…"));
-        assert_eq!(before[19], after[19]);
-    }
-
-    #[test]
-    fn scrolling_reuses_the_predecorated_review_text() {
-        let renderer = Renderer::default();
-        let mut model = model_with_diff(READABLE_DIFF);
-        let _ = render(&renderer, &mut model, 80, 20);
-        let initial_lines = renderer
-            .hunk_text_cache
-            .borrow()
-            .front()
-            .expect("initial render populates the hunk text cache")
-            .lines
-            .as_ptr();
-
-        crate::app::update(&mut model, review::Event::ScrollRows(1));
-        let _ = render(&renderer, &mut model, 80, 20);
-        let scrolled_lines = renderer
-            .hunk_text_cache
-            .borrow()
-            .front()
-            .expect("scroll keeps the hunk text cache")
-            .lines
-            .as_ptr();
-
-        assert_eq!(initial_lines, scrolled_lines);
-    }
-
-    #[test]
-    fn hunk_and_file_navigation_reuse_the_predecorated_review_text() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::from_no_color(None),
-            ..Renderer::default()
-        };
-        let mut model = model_with_diff(RESPONSIVE_DIFF);
-        let initial = render(&renderer, &mut model, 80, 20);
-        let initial_focus_count = (0..initial.area.height)
-            .flat_map(|y| (0..initial.area.width).map(move |x| (x, y)))
-            .filter(|(x, y)| {
-                let cell = &initial[(*x, *y)];
-                cell.symbol() == "╭" && cell.fg == Color::Cyan
-            })
-            .count();
-        let _initial_focus_row = (0..initial.area.height)
-            .find(|y| {
-                (0..initial.area.width).any(|x| {
-                    let cell = &initial[(x, *y)];
-                    cell.symbol() == "╭" && cell.fg == Color::Cyan
-                })
-            })
-            .expect("selected hunk box is highlighted");
-        assert_eq!(initial_focus_count, 1);
-        let initial_location = model.review.selected_location();
-        let initial_lines = renderer
-            .hunk_text_cache
-            .borrow()
-            .front()
-            .expect("initial render populates the hunk text cache")
-            .lines
-            .as_ptr();
-
-        crate::app::update(&mut model, review::Event::MoveHunk(1));
-        assert_ne!(model.review.selected_location(), initial_location);
-        let navigated = render(&renderer, &mut model, 80, 20);
-        let navigated_focus_count = (0..navigated.area.height)
-            .flat_map(|y| (0..navigated.area.width).map(move |x| (x, y)))
-            .filter(|(x, y)| {
-                let cell = &navigated[(*x, *y)];
-                cell.symbol() == "╭" && cell.fg == Color::Cyan
-            })
-            .count();
-        let _navigated_focus_row = (0..navigated.area.height)
-            .find(|y| {
-                (0..navigated.area.width).any(|x| {
-                    let cell = &navigated[(x, *y)];
-                    cell.symbol() == "╭" && cell.fg == Color::Cyan
-                })
-            })
-            .expect("navigated hunk box is highlighted");
-        assert_eq!(navigated_focus_count, 1);
-        let navigated_lines = renderer
-            .hunk_text_cache
-            .borrow()
-            .front()
-            .expect("navigation keeps the hunk text cache")
-            .lines
-            .as_ptr();
-
-        assert_eq!(initial_lines, navigated_lines);
-
-        crate::app::update(&mut model, review::Event::MoveFile(1));
-        let _ = render(&renderer, &mut model, 80, 20);
-        let file_navigated_lines = renderer
-            .hunk_text_cache
-            .borrow()
-            .front()
-            .expect("file navigation keeps the hunk text cache")
-            .lines
-            .as_ptr();
-        assert_eq!(initial_lines, file_navigated_lines);
-    }
-
-    #[test]
-    fn modal_overlay_is_the_only_region_that_claims_focus() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::from_no_color(None),
-            ..Renderer::default()
-        };
-
-        let mut composer = model_with_diff(RESPONSIVE_DIFF);
-        crate::app::update(
-            &mut composer,
-            review::Event::BeginThread { always_new: true },
-        );
-        let semantic = crate::app::view(&composer);
-        let Some(crate::semantic::Overlay::Composer(ref overlay)) = semantic.overlay else {
-            panic!("composer overlay")
-        };
-        let overlay_area = super::centered_rect(70, overlay.height, Rect::new(0, 0, 120, 24));
-        let buffer = render(&renderer, &mut composer, 120, 24);
-        let rendered = rows(&buffer).join("\n");
-        assert!(rendered.contains("Comment •"));
-        assert!(rendered.contains("Ctrl-J post · Enter newline · Esc cancel"));
-        assert!(!rendered.contains("DIFF FOCUS"));
-        assert!(!rendered.contains("THREAD TARGET"));
-        assert!(buffer[(0, 0)].modifier.contains(Modifier::DIM));
-        assert_eq!(buffer[(0, 0)].fg, Color::DarkGray);
-        assert_eq!(buffer[(overlay_area.x, overlay_area.y)].symbol(), "╭");
-        assert_ne!(buffer[(overlay_area.x, overlay_area.y)].fg, Color::DarkGray);
-        assert!(
-            !buffer[(overlay_area.x, overlay_area.y)]
-                .modifier
-                .contains(Modifier::DIM)
-        );
-
-        let mut help = model_with_diff(RESPONSIVE_DIFF);
-        crate::app::update(&mut help, crate::app::global::Event::OpenHelp);
-        let rendered = rows(&render(&renderer, &mut help, 120, 24)).join("\n");
-        assert!(rendered.contains("Keyboard help — Esc/? to close"));
-        assert!(!rendered.contains("DIFF FOCUS"));
-        assert!(!rendered.contains("THREAD TARGET"));
-    }
-
-    #[test]
-    fn composer_places_the_terminal_cursor_after_wide_graphemes() {
-        let renderer = Renderer::default();
-        let mut composer = model_with_diff(RESPONSIVE_DIFF);
-        crate::app::update(
-            &mut composer,
-            review::Event::BeginThread { always_new: true },
-        );
-        crate::app::update(
-            &mut composer,
-            crate::mode::composer::Event::InsertCharacter('a'),
-        );
-        crate::app::update(
-            &mut composer,
-            crate::mode::composer::Event::InsertCharacter('画'),
-        );
-        crate::app::update(
-            &mut composer,
-            crate::app::global::Event::ViewportResized {
-                rows: 19,
-                columns: 120,
-            },
-        );
-        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
-        let semantic = crate::app::view(&composer);
-        terminal
-            .draw(|frame| renderer.render(frame, &semantic))
-            .unwrap();
-
-        terminal.backend_mut().assert_cursor_position((22, 11));
-    }
-
-    #[test]
-    fn narrow_footer_keeps_target_and_mode_actions_visible() {
-        let renderer = Renderer::default();
-        let mut review = model_with_diff(RESPONSIVE_DIFF);
-        crate::app::update(
-            &mut review,
-            crate::app::global::Event::ViewportResized {
-                rows: 16,
-                columns: 48,
-            },
-        );
-        let review_rows = rows(&render(&renderer, &mut review, 48, 20));
-        assert!(review_rows[18].contains("hunk 1/1"), "{}", review_rows[18]);
-        assert!(review_rows[19].contains("q exit"), "{}", review_rows[19]);
-        assert!(review_rows[19].contains("c comment"), "{}", review_rows[19]);
-        assert!(review_rows[19].contains("? help"), "{}", review_rows[19]);
-        crate::app::update(&mut review, review::Event::ToggleSidebar);
-        crate::app::update(&mut review, review::Event::ToggleSidebar);
-        let review_rows = rows(&render(&renderer, &mut review, 48, 20));
-        assert!(
-            review_rows[18].contains("rail hidden"),
-            "{}",
-            review_rows[18]
-        );
-        crate::app::update(
-            &mut review,
-            crate::app::global::Event::ViewportResized {
-                rows: 16,
-                columns: 64,
-            },
-        );
-        crate::app::update(&mut review, review::Event::MoveFile(1));
-        crate::app::update(&mut review, review::Event::ToggleSidebar);
-        crate::app::update(&mut review, review::Event::ToggleSidebar);
-        let wide_target_rows = rows(&render(&renderer, &mut review, 64, 20));
-        assert!(
-            wide_target_rows[18].contains("rail hidden"),
-            "{}",
-            wide_target_rows[18]
+        assert_eq!(
+            boxed
+                .spans
+                .first()
+                .and_then(|span| span.style.get_foreground()),
+            Some(Color::CYAN)
         );
         assert!(
-            wide_target_rows[18].contains("hunk 1/1"),
-            "{}",
-            wide_target_rows[18]
+            boxed.spans[1]
+                .style
+                .get_attributes()
+                .contains(TextAttribute::Bold)
         );
+    }
 
-        let mut threads = ThreadState::default();
-        let human = Participant {
-            id: "human".into(),
-            kind: ParticipantKind::Human,
-        };
-        threads.post(
-            Anchor::new(
-                "deadbeef",
-                HunkLocation::new("src/components/review/navigation.rs", "@@ -1 +1 @@"),
-            ),
-            human,
-            "thread".into(),
-            1,
+    #[test]
+    fn no_color_theme_keeps_semantic_attributes_without_colors() {
+        let theme = SemanticTheme::no_color();
+
+        assert_eq!(theme.selection().get_foreground(), None);
+        assert!(
+            theme
+                .selection()
+                .get_attributes()
+                .contains(TextAttribute::Reversed)
         );
-        let mut thread = Model::new(
-            DiffRequest {
-                target: DiffTarget::WorkingTree,
-                context_lines: 3,
-            },
-            LoadedDiff {
-                text: RESPONSIVE_DIFF.into(),
-                document: DiffDocument::parse(RESPONSIVE_DIFF),
-            },
-            threads,
+        assert_eq!(
+            theme.diff_row_style(Tone::ChangeAdded).get_background(),
+            None
         );
-        crate::app::update(
-            &mut thread,
-            crate::app::global::Event::ViewportResized {
-                rows: 16,
-                columns: 64,
-            },
-        );
-        crate::app::update(&mut thread, review::Event::MoveThread(1));
-        let semantic = crate::app::view(&thread);
-        assert!(semantic.footer.current_context.text.contains("thread #0"));
-        assert!(semantic.footer.contextual_keys.text.contains("Tab diff"));
-        assert!(semantic.footer.contextual_keys.text.contains("x resolve"));
-        let thread_rows = rows(&render(&renderer, &mut thread, 64, 20)).join("\n");
-        assert!(thread_rows.contains("Conversation #0"));
-        assert!(thread_rows.contains("Conversation #0"));
-    }
-
-    #[test]
-    fn empty_rollup_uses_its_own_title_and_available_keys() {
-        let renderer = Renderer::default();
-        let mut model = model_with_diff(RESPONSIVE_DIFF);
-        crate::app::update(&mut model, review::Event::ShowRollup);
-        let rendered = rows(&render(&renderer, &mut model, 120, 24)).join("\n");
-
-        assert!(rendered.contains("Thread rollup"));
-        assert!(rendered.contains("Keys: v/Esc return · no targets"));
-        assert!(!rendered.contains("j/k select • Enter jump"));
-    }
-
-    #[test]
-    fn diff_end_jump_renders_the_end_of_the_diff() {
-        let renderer = Renderer::default();
-        let mut model = model_with_diff(RESPONSIVE_DIFF);
-        crate::app::update(&mut model, review::Event::ToggleSidebar);
-        crate::app::update(
-            &mut model,
-            crate::app::global::Event::ViewportResized {
-                rows: 10,
-                columns: 80,
-            },
-        );
-        crate::app::update(&mut model, review::Event::JumpToDiffEdge { end: true });
-
-        let at_end = rows(&render(&renderer, &mut model, 80, 14)).join("\n");
-        assert!(at_end.contains("new_wide"), "{at_end}");
-
-        crate::app::update(&mut model, review::Event::ScrollRows(-1));
-        let before_end = rows(&render(&renderer, &mut model, 80, 14)).join("\n");
-        assert_ne!(at_end, before_end);
-        assert!(before_end.contains("1 row before end"), "{before_end}");
-    }
-
-    #[test]
-    fn sticky_context_and_scrollbar_track_the_same_review_viewport() {
-        let renderer = Renderer::default();
-        let mut model = model_with_diff(READABLE_DIFF);
-        crate::app::update(&mut model, review::Event::ToggleSidebar);
-
-        let top = render(&renderer, &mut model, 80, 14);
-        let top_rows = rows(&top);
-        assert!(top_rows[1].contains("󰈔 1/1 src/readable.rs"));
-        let top_thumb = (1..12)
-            .find(|y| top[(79, *y)].symbol() == symbols::SCROLL_THUMB)
-            .expect("long review renders a scrollbar thumb");
-        assert!((1..12).all(|y| matches!(top[(79, y)].symbol(), " " | symbols::SCROLL_THUMB)));
-
-        crate::app::update(&mut model, review::Event::ScrollViewport(1));
-        let middle = render(&renderer, &mut model, 80, 14);
-        let middle_thumb = (1..12)
-            .find(|y| middle[(79, *y)].symbol() == symbols::SCROLL_THUMB)
-            .expect("middle review renders a scrollbar thumb");
-        assert!(middle_thumb >= top_thumb);
-
-        crate::app::update(&mut model, review::Event::JumpToDiffEdge { end: true });
-        let end = render(&renderer, &mut model, 80, 14);
-        let end_thumb = (1..12)
-            .rev()
-            .find(|y| end[(79, *y)].symbol() == symbols::SCROLL_THUMB)
-            .expect("review end renders a scrollbar thumb");
-        assert!(end_thumb > top_thumb);
-        assert_eq!(end[(79, 11)].symbol(), symbols::SCROLL_THUMB);
-        assert!(rows(&end)[1].contains("󰈔 1/1 src/readable.rs"));
-    }
-
-    fn edge_fixture_model() -> Model {
-        Model::new(
-            DiffRequest {
-                target: DiffTarget::Range("main...HEAD".into()),
-                context_lines: 3,
-            },
-            LoadedDiff {
-                text: crate::diff::EDGE_FIXTURE.into(),
-                document: DiffDocument::parse(crate::diff::EDGE_FIXTURE),
-            },
-            ThreadState::default(),
-        )
-    }
-
-    #[test]
-    fn opening_frame_states_the_comparison_and_its_total_magnitude_at_every_width() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::no_color(),
-            ..Renderer::default()
-        };
-        let mut model = edge_fixture_model();
-
-        for (width, height) in [(120u16, 30u16), (80, 24), (48, 20)] {
-            let header = rows(&render(&renderer, &mut model, width, height))[0].clone();
-            assert!(header.contains("main...HEAD"), "{width}: {header}");
-            assert!(header.contains("+6 -4"), "{width}: {header}");
-            assert!(
-                header.contains("8 files") || header.contains("8f"),
-                "{width}: {header}"
-            );
-        }
-    }
-
-    #[test]
-    fn file_boundaries_carry_magnitude_and_semantic_facts_instead_of_transport_rows() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::no_color(),
-            ..Renderer::default()
-        };
-        let mut model = edge_fixture_model();
-        crate::app::update(&mut model, review::Event::ToggleSidebar);
-        crate::app::update(&mut model, review::Event::JumpToDiffEdge { end: false });
-
-        // The fixture is taller than any supported terminal, so walk it by file
-        // and collect every boundary the reviewer would actually pass. Rows 0
-        // and 1 are the changeset header and the sticky position row, which are
-        // asserted by their own tests.
-        let mut seen = Vec::new();
-        for _ in 0..model.review.session().diff().document.files.len() {
-            seen.extend(
-                rows(&render(&renderer, &mut model, 120, 30))
-                    .into_iter()
-                    .skip(2),
-            );
-            crate::app::update(&mut model, review::Event::MoveFile(1));
-        }
-        let rendered = seen.join("\n");
-
-        for transport in ["diff --git", "index 6735744", "--- a/", "+++ b/"] {
-            assert!(
-                !rendered.contains(transport),
-                "{transport} is still visible"
-            );
-        }
-        let boundary = |path: &str| {
-            seen.iter()
-                .find(|row| row.contains(path) && row.contains('+') && row.contains('-'))
-                .unwrap_or_else(|| panic!("{path} has a visible boundary row:\n{rendered}"))
-                .clone()
-        };
-        assert!(boundary("src/lib.rs").contains("+2 -2"));
-        assert!(boundary("docs/added.md").contains("new file"));
-        assert!(boundary("docs/added.md").contains("+1 -0"));
-        assert!(boundary("docs/removed.md").contains("deleted file"));
-        assert!(boundary("assets/logo.png").contains("binary"));
-        // A metadata-only change is still a reviewable file with a magnitude.
-        assert!(boundary("assets/logo.png").contains("+0 -0"));
-        assert!(boundary("scripts/review.sh").contains("mode 100644 → 100755"));
-        assert!(boundary("scripts/review.sh").contains("+0 -0"));
-        assert!(boundary("src/new_name.rs").contains("rename 92%"));
-        assert!(boundary("src/new_name.rs").contains("src/old_name.rs"));
-        assert!(rendered.contains("no newline at EOF"));
-        assert!(!rendered.contains("\\ No newline"));
-    }
-
-    #[test]
-    fn sticky_position_keeps_file_identity_and_magnitude_across_scrolling_and_jumps() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::no_color(),
-            ..Renderer::default()
-        };
-        let mut model = model_with_diff(READABLE_DIFF);
-        crate::app::update(&mut model, review::Event::ToggleSidebar);
-
-        // The sticky block is two rows: the file, then the hunk.
-        let sticky = |model: &mut Model, layout: (u16, u16)| {
-            let rendered = rows(&render(&renderer, model, layout.0, layout.1));
-            (rendered[1].clone(), rendered[2].clone())
-        };
-
-        let (file, hunk) = sticky(&mut model, (80, 10));
-        assert!(file.contains("src/readable.rs"), "{file}");
-        assert!(file.contains("+2 -1"), "{file}");
-        assert!(hunk.contains("hunk 1/2"), "{hunk}");
-        // The whole hunk header survives now that it owns its row.
-        assert!(hunk.contains("@@ -8,3 +18,3 @@ fn first()"), "{hunk}");
-
-        crate::app::update(&mut model, review::Event::JumpToDiffEdge { end: true });
-        let (file, hunk) = sticky(&mut model, (80, 10));
-        assert!(file.contains("+2 -1"), "{file}");
-        assert!(hunk.contains("hunk 2/2"), "{hunk}");
-
-        crate::app::update(&mut model, review::Event::SetLayout(LayoutMode::Split));
-        let (file, hunk) = sticky(&mut model, (80, 10));
-        assert!(file.contains("+2 -1"), "{file}");
-        assert!(hunk.contains("hunk 2/2"), "{hunk}");
-
-        crate::app::update(&mut model, review::Event::JumpToDiffEdge { end: false });
-        let (file, hunk) = sticky(&mut model, (80, 10));
-        assert!(file.contains("+2 -1"), "{file}");
-        assert!(hunk.contains("hunk 1/2"), "{hunk}");
-
-        // Narrowing removes the rail, not the reviewer's sense of position.
-        let (file, hunk) = sticky(&mut model, (48, 10));
-        assert!(file.contains("readable.rs"), "{file}");
-        assert!(file.contains("+2 -1"), "{file}");
-        assert!(hunk.contains("hunk 1/2"), "{hunk}");
-    }
-
-    #[test]
-    fn a_file_without_hunks_keeps_its_semantic_facts_on_the_sticky_hunk_row() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::no_color(),
-            ..Renderer::default()
-        };
-        let mut model = edge_fixture_model();
-        crate::app::update(&mut model, review::Event::ToggleSidebar);
-
-        // assets/logo.png is binary: it has no hunk to name, so the second
-        // sticky row must carry the file fact rather than go blank.
-        let rendered = rows(&render(&renderer, &mut model, 80, 12));
-        assert!(rendered[1].contains("assets/logo.png"), "{:?}", rendered[1]);
-        assert!(rendered[2].contains("binary"), "{:?}", rendered[2]);
-    }
-
-    #[test]
-    fn the_file_rail_shows_change_direction_and_unique_paths() {
-        let renderer = Renderer {
-            semantic_theme: SemanticTheme::no_color(),
-            ..Renderer::default()
-        };
-        let mut model = edge_fixture_model();
-
-        // Each rendered row spans the whole terminal, so the rail has to be
-        // sliced out of it before asserting on what the rail alone shows.
-        let rail_width = ShellAreas::resolve(Rect::new(0, 0, 120, 30), true)
-            .navigation_rail
-            .expect("the wide shell allocates a rail")
-            .width;
-        let rendered = rows(&render(&renderer, &mut model, 120, 30))
-            .into_iter()
-            .map(|row| {
-                row.chars()
-                    .take(usize::from(rail_width))
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>();
-        let rail = |needle: &str| {
-            rendered
-                .iter()
-                .find(|row| row.contains(needle))
-                .unwrap_or_else(|| panic!("the rail lists {needle}: {rendered:#?}"))
-                .clone()
-        };
-        // The rail carries the direction of the change; exact counts stay on
-        // the file boundary, so the path keeps the width.
-        let ends_with = |row: String, marker: &str| {
-            row.trim_end()
-                .trim_end_matches('│')
-                .trim_end()
-                .ends_with(marker)
-        };
-        assert!(ends_with(rail("src/lib.rs"), symbols::CHANGE_BOTH));
-        assert!(ends_with(rail("docs/added.md"), symbols::CHANGE_ADDED));
-        assert!(ends_with(rail("docs/removed.md"), symbols::CHANGE_REMOVED));
-        // A metadata-only change has no direction to report.
-        for quiet in ["assets/logo.png", "scripts/review.sh"] {
-            let row = rail(quiet);
-            for marker in [
-                symbols::CHANGE_ADDED,
-                symbols::CHANGE_REMOVED,
-                symbols::CHANGE_BOTH,
-            ] {
-                assert!(!row.contains(marker), "{row}");
-            }
-        }
-        for row in &rendered {
-            assert!(!row.contains("h/0t"), "hunk and thread counts are gone");
-        }
-        // Two files named mod.rs must not collapse to the same rail label.
-        assert_ne!(rail("alpha").trim(), rail("beta").trim());
-
-        // Every marker must occupy exactly one cell, or the entry overflows
-        // the rail and pushes its right border out.
-        for marker in [
-            symbols::CHANGE_ADDED,
-            symbols::CHANGE_REMOVED,
-            symbols::CHANGE_BOTH,
-            symbols::CHANGE_NONE,
-        ] {
-            assert_eq!(
-                unicode_width::UnicodeWidthStr::width(marker),
-                1,
-                "{marker:?}"
-            );
-        }
-        for row in rendered.iter().filter(|row| row.starts_with('│')) {
-            assert!(row.ends_with('│'), "the rail border moved: {row:?}");
-        }
-    }
-
-    #[test]
-    fn logical_review_window_slices_beyond_u16_terminal_coordinates() {
-        let body = ratatui::text::Text::from(
-            (0..70_000)
-                .map(|row| ratatui::text::Line::raw(row.to_string()))
-                .collect::<Vec<_>>(),
-        );
-
-        let visible = logical_review_window(body, 69_990, 10);
-
-        assert_eq!(visible.height(), 10);
-        assert_eq!(visible.lines[0].to_string(), "69990");
-        assert_eq!(visible.lines[9].to_string(), "69999");
     }
 }

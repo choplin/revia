@@ -1,39 +1,30 @@
 mod anchor;
 mod app;
 mod cli;
-mod crossterm_adapter;
 mod diff;
 mod input;
 mod mode;
 mod presentation;
-mod render_loop;
 mod renderer;
 mod review;
 mod runtime;
 mod semantic;
+mod styled_text;
 mod symbols;
 mod syntax;
 mod thread;
+mod tui_app;
 mod ui;
+mod urushi_renderer;
 
-use std::{
-    collections::VecDeque,
-    io,
-    time::{Duration, Instant},
-};
+use std::io;
 
-use anyhow::{Context, Result, bail};
-use app::{Effect, Model};
+use anyhow::{Context, Result};
+use app::Model;
 use clap::Parser;
 use cli::Args;
-use crossterm::event::{self, Event as CrosstermEvent};
 use diff::LoadedDiff;
-use input::KeyPhase;
-use render_loop::PhysicalRenderer;
 use runtime::Runtime;
-
-const LOGICAL_FRAME_INTERVAL: Duration = Duration::from_millis(33);
-const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(8);
 
 fn main() -> Result<()> {
     let args = Args::parse();
@@ -61,101 +52,20 @@ fn main() -> Result<()> {
     run_tui(model, runtime)
 }
 
+#[cfg(unix)]
 fn run_tui(mut model: Model, runtime: Runtime) -> Result<()> {
-    let mut session = crossterm_adapter::TerminalSession::start(io::stdout())?;
-    model.global.keyboard_protocol = session.keyboard_protocol();
-    let renderer = PhysicalRenderer::start()?;
-    let app_result = run_app(&renderer, &mut model, &runtime);
-    let render_result = renderer.finish();
-    let result = app_result.and(render_result);
-    session.finish(result)
-}
-
-fn run_app(renderer: &PhysicalRenderer, model: &mut Model, runtime: &Runtime) -> Result<()> {
-    let (width, height) = crossterm::terminal::size()?;
-    let effects = app::update(
-        model,
-        app::global::Event::ViewportResized {
-            rows: height.saturating_sub(3),
-            columns: width,
-        },
-    );
-    dispatch_effects(model, runtime, effects);
-    if !renderer.try_publish(app::view(model)) {
-        bail!("terminal renderer rejected the initial frame");
-    }
-    let mut last_logical_frame_at = Instant::now();
-    let mut dirty = false;
-
-    while model.is_running() && renderer.is_running() {
-        if dirty
-            && renderer.is_ready()
-            && last_logical_frame_at.elapsed() >= LOGICAL_FRAME_INTERVAL
-            && renderer.try_publish(app::view(model))
-        {
-            dirty = false;
-            last_logical_frame_at = Instant::now();
-        }
-
-        let poll_interval = if dirty && renderer.is_ready() {
-            LOGICAL_FRAME_INTERVAL
-                .saturating_sub(last_logical_frame_at.elapsed())
-                .min(INPUT_POLL_INTERVAL)
-        } else {
-            INPUT_POLL_INTERVAL
-        };
-        if !event::poll(poll_interval)? {
-            continue;
-        }
-        let mut drained = 0;
-        loop {
-            dirty |= handle_terminal_event(model, runtime, event::read()?)?;
-            drained += 1;
-            if drained >= 64 || !model.is_running() || !event::poll(Duration::ZERO)? {
-                break;
-            }
-        }
-    }
+    model.global.keyboard_protocol = input::KeyboardProtocol::Legacy;
+    let terminal = urushi_terminal::backend::native::NativeTerminal::open()
+        .context("could not open the controlling terminal")?;
+    urushi_tui_app::Runtime::new(tui_app::ReviaApplication::new(model, runtime))
+        .backend(terminal)
+        .keyboard_enhancement(None)
+        .run()
+        .context("could not run the terminal application")?;
     Ok(())
 }
 
-fn handle_terminal_event(
-    model: &mut Model,
-    runtime: &Runtime,
-    event: CrosstermEvent,
-) -> Result<bool> {
-    match event {
-        CrosstermEvent::Key(key) => {
-            if crossterm_adapter::is_interrupt(key) {
-                bail!("interrupted by Ctrl-C");
-            }
-            let input = crossterm_adapter::physical_input(key);
-            if input.phase == KeyPhase::Release {
-                return Ok(false);
-            }
-            let (_, effects) = app::handle_input(model, input);
-            dispatch_effects(model, runtime, effects);
-            Ok(true)
-        }
-        CrosstermEvent::Resize(width, height) => {
-            let effects = app::update(
-                model,
-                app::global::Event::ViewportResized {
-                    rows: height.saturating_sub(3),
-                    columns: width,
-                },
-            );
-            dispatch_effects(model, runtime, effects);
-            Ok(true)
-        }
-        _ => Ok(false),
-    }
-}
-
-fn dispatch_effects(model: &mut Model, runtime: &Runtime, initial: Vec<Effect>) {
-    let mut effects = VecDeque::from(initial);
-    while let Some(effect) = effects.pop_front() {
-        let result = runtime.perform(effect, &model.global.threads);
-        effects.extend(app::update(model, result));
-    }
+#[cfg(not(unix))]
+fn run_tui(_model: Model, _runtime: Runtime) -> Result<()> {
+    anyhow::bail!("the native Urushi terminal backend requires Unix")
 }

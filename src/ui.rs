@@ -1,6 +1,6 @@
 //! Pure review-surface navigation state.
 //!
-//! This module deliberately knows nothing about crossterm or ratatui.  Keeping
+//! This module deliberately knows nothing about terminal backends or Urushi. Keeping
 //! viewport, focus, and responsive layout decisions here prevents the renderer
 //! and input loop from drifting into separate notions of the visible surface.
 //! Review-target selection is domain state in `review::ReviewSession`.

@@ -9,7 +9,7 @@ Accepted.
 ADR 0003 split the TUI into mode-local Elm programs, but active modes still
 owned ephemeral models, shared behavior had no Global module, bindings could not
 distinguish delegation from consumption, effect outcomes bypassed Update, and
-Ratatui layout was the only view representation.
+physical terminal layout was the only view representation.
 
 The Multilayer Elm Architecture requires one persistent Root Model, explicit
 Global and Mode slices, a physical-input-to-semantic-event binding layer,
@@ -28,8 +28,8 @@ semantic views projected into physical layouts by a framework adapter.
 | Rollup mode | Owns persistent selection, modal bindings/update/semantic body/effects | `mode::rollup` |
 | Binding resolution | Distinguishes local handling, explicit Global delegation, modal consumption, override, and unbound input | `input::BindingResolution` |
 | Effect lifecycle | Update declares user-visible operations, records pending state, and accepts only injected outcomes; adapters perform Git/filesystem/clock work | `app::Effect`, `app::Outcome`, `runtime::Runtime` |
-| Semantic view | Describes visible roles, content, feedback, and layout policy without Ratatui types | `semantic` |
-| Physical layout | Maps semantic roles and policies to Ratatui widgets, geometry, and styling | `renderer::Renderer` |
+| Semantic view | Describes visible roles, content, feedback, and layout policy without Urushi types | `semantic` |
+| Physical layout | Maps semantic roles and policies to Urushi views, geometry, and styling | `urushi_renderer::UrushiRenderer` |
 | Scenario | Drives the same semantic events, physical inputs, outcomes, viewport, and virtual time used by the application | `app::scenario` tests |
 
 ## Decision
@@ -44,7 +44,7 @@ semantic views projected into physical layouts by a framework adapter.
   Outcome variants.
 - Treat Mode as the dispatch axis for a complete local program
   (`Model/Event/Bindings/Update/View/Effect`), not as a child of Root Model.
-- Normalize Crossterm keys into framework-neutral `PhysicalInput` before binding
+- Normalize Urushi terminal keys into framework-neutral `PhysicalInput` before binding
   resolution. Each Mode returns `Handle`, `Delegate`, `Consume`, `Override`, or
   `Unbound`; Global bindings run only after `Delegate`.
 - Give Global and every Mode its own model, bindings, update, view, and effect
@@ -59,7 +59,7 @@ semantic views projected into physical layouts by a framework adapter.
   owner-tagged `Outcome`, and dispatch it back to that Mode's Update through
   Root.
 - Build a framework-independent `semantic::View`, then render it through the
-  Ratatui adapter. Screenshots and terminal buffers remain projections.
+  Urushi adapter. Resolved views and terminal cells remain projections.
 
 ## Contract and invariant evidence
 
@@ -67,15 +67,15 @@ semantic views projected into physical layouts by a framework adapter.
 | --- | --- | --- |
 | CLI flags, targets, context defaults, print mode | Existing CLI/diff tests and `main` composition inspection | Preserved |
 | Keyboard meanings and modal precedence | Binding-resolution scenarios cover delegation, override, consume, and unbound input | Preserved |
-| Review navigation, focus, layout, inline threads | Semantic scenarios and Ratatui TestBackend projection test | Preserved |
+| Review navigation, focus, layout, inline threads | Semantic scenarios and Urushi resolved-view tests | Preserved |
 | Mode context | Scenario verifies persistent Rollup state and explicit Composer reset | Preserved |
 | Effect lifecycle | Scenario verifies pending state and owner-tagged injected outcome re-entry through Mode Update | Preserved |
 | Thread JSON shape and atomic replacement | `ThreadState` keeps the same serde shape; repository test reloads persisted state | Preserved |
 | Human-only close rule | Pure ThreadState and repository tests | Preserved |
 | Scope dependency direction | Mode modules contain no `app`, Root Model, or sibling-Mode references; Root constructs Mode-owned input projections and interprets intents | Preserved |
 | Git/domain effects | `runtime::Runtime` is the only new interpreter; Mode/Global Update modules contain no Git or filesystem calls | Preserved |
-| Semantic/physical view boundary | `semantic` contains no Ratatui types; renderer consumes only the semantic projection | Preserved |
-| Timer/streaming | No semantic timer or stream exists; key-repeat throttling remains a Crossterm adapter concern | Not applicable to semantic core |
+| Semantic/physical view boundary | `semantic` contains no Urushi types; renderer consumes only the semantic projection | Preserved |
+| Timer/streaming | No semantic timer or stream exists; scheduling remains an application-runtime concern | Not applicable to semantic core |
 | SQL/schema/generated artifacts | Repository contains none | Not applicable |
 
 ## Consequences
@@ -89,7 +89,7 @@ semantic views projected into physical layouts by a framework adapter.
 - Adding an asynchronous runtime later does not change semantic events, Update,
   effects, outcomes, or views; only the effect interpreter changes.
 - The architecture introduces more explicit projection types. This is deliberate:
-  it prevents Ratatui geometry and transport mechanisms from becoming the
+  it prevents terminal geometry and transport mechanisms from becoming the
   interaction model.
 - Adding a Mode deliberately touches `ActiveMode`, its persistent Root Model
   field, its Root Event protocol implementation, and Root's
