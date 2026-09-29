@@ -32,17 +32,25 @@ rejected alternatives, and only the history needed to understand the current
 choice. Worked examples and edge cases belong here when they are needed to
 implement or verify the rule.
 
-Design documents are maintained in place. When a decision changes, rewrite the
-document so it still describes current truth; Git and the decision log preserve
-the chronology. Do not create a new document merely because a new work item
+These are not ADRs. When a decision changes, rewrite its document in place so
+it continues to describe the current rule and rationale rather than becoming a
+dated record. The decision log preserves the superseded decision and why Revia
+revised it. Do not create a new document merely because a new work item
 revisited the same question.
 
-## `decision-log.md`: chronology
+## `decision-log.md`: design decision history
 
-[`decision-log.md`](decision-log.md) records decisions newest first. Each row
-states what changed, why, and which current document owns the resulting rule.
-It does not repeat implementation details or become a second architecture
-description.
+[`decision-log.md`](decision-log.md) preserves design decisions whose historical
+context would otherwise disappear when a design document is rewritten in
+place. A row records that Revia chose or revised a durable design rule among
+meaningful alternatives, summarizes why, and links to the document that owns
+the current rule and rationale.
+
+The log does not record implementation or documentation activity. Implementing,
+completing, testing, or refactoring an existing decision does not add a row;
+neither does synchronizing documentation with code or summarizing a change or
+release. If the design rule and its rationale did not change, the log does not
+change.
 
 ## Single source of truth
 
@@ -50,4 +58,3 @@ Give every settled claim one canonical home. A top-level document may summarize
 a design rule at the depth needed for its mental model, then link to the design
 document that owns the precise contract and rationale. Prefer stable module and
 type names over line numbers or exhaustive lists of participants.
-
