@@ -1,15 +1,19 @@
 use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 
-use crate::{
-    presentation,
-    semantic::{
-        DiffSearchTarget, ReviewBody, ReviewWindowSection, RollupBody, StickyReviewContext,
-        ThreadState, Tone, View,
-    },
-    styled_text::{Document, Line, Span, patch_style},
+use super::{
     symbols,
     syntax::SyntaxHighlighter,
-    ui::{FocusArea, LayoutMode, ShellSize, truncate_end},
+    text::{Document, Line, Span, patch_style},
+};
+use crate::{
+    app::{
+        view::{
+            DiffSearchTarget, ReviewBody, ReviewWindowSection, RollupBody, StickyReviewContext,
+            ThreadState, Tone, View,
+        },
+        view_state::{FocusArea, LayoutMode, ShellSize, truncate_end},
+    },
+    presentation,
 };
 use unicode_width::UnicodeWidthStr;
 use urushi::{Color, TextStyle};
@@ -169,11 +173,11 @@ pub struct Renderer {
 #[derive(Debug, Clone)]
 struct HunkTextKey {
     available_width: u16,
-    anchor: crate::anchor::HunkLocation,
+    anchor: crate::domain::anchor::HunkLocation,
     header: Option<String>,
-    coordinates: Option<crate::diff::HunkCoordinates>,
-    lines: Arc<Vec<crate::diff::DiffLine>>,
-    threads: Vec<crate::semantic::ThreadCard>,
+    coordinates: Option<crate::domain::diff::HunkCoordinates>,
+    lines: Arc<Vec<crate::domain::diff::DiffLine>>,
+    threads: Vec<crate::app::view::ThreadCard>,
     number_width: usize,
     layout: LayoutMode,
     wrap_lines: bool,
@@ -182,7 +186,7 @@ struct HunkTextKey {
 }
 
 impl HunkTextKey {
-    fn matches(&self, hunk: &crate::semantic::ReviewHunk, lookup: HunkTextLookup<'_>) -> bool {
+    fn matches(&self, hunk: &crate::app::view::ReviewHunk, lookup: HunkTextLookup<'_>) -> bool {
         self.available_width == lookup.available_width
             && self.anchor == hunk.anchor
             && self.header == hunk.header
@@ -307,7 +311,7 @@ impl Renderer {
 
     fn file_header_lines(
         &self,
-        file: &crate::semantic::ReviewFile,
+        file: &crate::app::view::ReviewFile,
         review: &ReviewBody,
         available_width: u16,
     ) -> Vec<Line> {
@@ -352,8 +356,8 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     fn cached_hunk_lines(
         &self,
-        file: &crate::semantic::ReviewFile,
-        hunk: &crate::semantic::ReviewHunk,
+        file: &crate::app::view::ReviewFile,
+        hunk: &crate::app::view::ReviewHunk,
         review: &ReviewBody,
         available_width: u16,
         number_width: usize,

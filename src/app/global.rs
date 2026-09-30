@@ -1,10 +1,12 @@
 use crate::{
-    app::effect::{OperationId, PendingEffectKind},
-    input::{BindingResolution, Key, KeyboardProtocol, PhysicalInput},
-    mode::ActiveMode,
-    semantic::{ContextualKeys, CurrentContext, Footer, Header, SurfaceContext},
-    thread::ThreadState,
-    ui::{truncate_end, truncate_start},
+    app::{
+        effect::{OperationId, PendingEffectKind},
+        input::{BindingResolution, Key, KeyboardProtocol, PhysicalInput},
+        mode::ActiveMode,
+        view::{ContextualKeys, CurrentContext, Footer, Header, SurfaceContext},
+        view_state::{truncate_end, truncate_start},
+    },
+    domain::thread::ThreadState,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -95,7 +97,7 @@ pub struct Update {
 }
 
 pub fn bindings(input: PhysicalInput) -> BindingResolution<Event> {
-    if input.phase != crate::input::KeyPhase::Press {
+    if input.phase != crate::app::input::KeyPhase::Press {
         return BindingResolution::Consume;
     }
     match input.key {
@@ -123,7 +125,7 @@ pub fn update(model: &mut Model, event: Event) -> Update {
 pub struct ViewInput {
     pub comparison: String,
     pub file_count: usize,
-    pub magnitude: crate::diff::Magnitude,
+    pub magnitude: crate::domain::diff::Magnitude,
     pub active_filter: &'static str,
     pub context: SurfaceContext,
     pub target: Option<String>,

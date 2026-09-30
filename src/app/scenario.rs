@@ -1,20 +1,22 @@
 use crate::{
-    anchor::{Anchor, HunkLocation},
     app::{
-        ActiveMode, Effect, EffectResult, Model, Outcome,
+        Effect, EffectResult, Model, Outcome,
         effect::{OperationId, PendingEffectKind},
         global,
+        input::{BindingResolution, Key, KeyPhase, PhysicalInput},
+        mode::{ActiveMode, composer, help, review, rollup},
+        view::{Body, DiffSearchTarget, FileRailRowKind, LayoutPolicy, Overlay, ReviewBody},
+        view_state::{FocusArea, LayoutMode},
     },
-    diff::{DiffDocument, DiffRequest, DiffTarget, LoadedDiff},
-    input::{BindingResolution, Key, KeyPhase, PhysicalInput},
-    mode::{composer, help, review, rollup},
+    domain::{
+        anchor::{Anchor, HunkLocation},
+        diff::{DiffDocument, DiffRequest, DiffTarget, LoadedDiff},
+        thread::{
+            Participant, ParticipantKind, Resolution, ThreadChange, ThreadId, ThreadState,
+            ThreadSuccess,
+        },
+    },
     presentation::{self, ReviewRowMap},
-    semantic::{Body, DiffSearchTarget, FileRailRowKind, LayoutPolicy, Overlay, ReviewBody},
-    thread::{
-        Participant, ParticipantKind, Resolution, ThreadChange, ThreadId, ThreadState,
-        ThreadSuccess,
-    },
-    ui::{FocusArea, LayoutMode},
 };
 
 struct Scenario {
@@ -49,7 +51,7 @@ impl Scenario {
         }
     }
 
-    fn when_event(&mut self, event: impl super::Event) -> Vec<Effect> {
+    fn when_event(&mut self, event: impl super::root::Event) -> Vec<Effect> {
         self.trace.push(Trace::Event(format!("{event:?}")));
         let effects = super::update(&mut self.model, event);
         self.trace
@@ -1706,7 +1708,7 @@ fn lifecycle_cards_fold_deterministically_and_actions_follow_the_visible_target(
     assert!(matches!(
         effects,
         Some(Effect::ChangeThreads {
-            operation: crate::thread::ThreadOperation::Reopen { id },
+            operation: crate::domain::thread::ThreadOperation::Reopen { id },
             ..
         }) if id.to_string() == "1"
     ));

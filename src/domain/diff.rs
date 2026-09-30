@@ -1,6 +1,4 @@
-use std::{path::Path, process::Command, sync::Arc};
-
-use anyhow::{Context, Result, bail};
+use std::{path::Path, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiffTarget {
@@ -14,25 +12,6 @@ pub enum DiffTarget {
 pub struct DiffRequest {
     pub target: DiffTarget,
     pub context_lines: usize,
-}
-
-impl DiffRequest {
-    pub fn git_arguments(&self) -> Vec<String> {
-        let mut arguments = vec!["diff".into(), "--no-ext-diff".into()];
-        arguments.push(format!("--unified={}", self.context_lines));
-
-        match &self.target {
-            DiffTarget::WorkingTree => {}
-            DiffTarget::Staged => arguments.push("--cached".into()),
-            DiffTarget::Commit(revision) => {
-                arguments[0] = "show".into();
-                arguments.extend(["--format=".into(), revision.clone()]);
-            }
-            DiffTarget::Range(range) => arguments.push(range.clone()),
-        }
-
-        arguments
-    }
 }
 
 impl DiffTarget {
@@ -88,32 +67,6 @@ impl Magnitude {
 pub struct LoadedDiff {
     pub text: String,
     pub document: DiffDocument,
-}
-
-impl LoadedDiff {
-    pub fn load(repository: &Path, request: &DiffRequest) -> Result<Self> {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(repository)
-            .args(request.git_arguments())
-            .output()
-            .with_context(|| format!("could not run git in {}", repository.display()))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!(
-                "git could not load the selected {} diff: {}",
-                request.target.description(),
-                stderr.trim()
-            );
-        }
-
-        let text = String::from_utf8(output.stdout).context("git produced a non-UTF-8 diff")?;
-        Ok(Self {
-            document: DiffDocument::parse(&text),
-            text,
-        })
-    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -375,48 +328,14 @@ pub enum DiffLineKind {
 /// mocking the parser's input.
 #[cfg(test)]
 pub(crate) const EDGE_FIXTURE: &str =
-    include_str!("../tests/fixtures/diff_viewer_baseline_edges.patch");
+    include_str!("../../tests/fixtures/diff_viewer_baseline_edges.patch");
 
 #[cfg(test)]
 mod tests {
     use super::{
-        DiffDocument, DiffLineKind, DiffRequest, DiffTarget, EDGE_FIXTURE, FileStatus,
-        HunkCoordinates, HunkRange, Magnitude, ModeChange, PathMove,
+        DiffDocument, DiffLineKind, DiffTarget, EDGE_FIXTURE, FileStatus, HunkCoordinates,
+        HunkRange, Magnitude, ModeChange, PathMove,
     };
-
-    #[test]
-    fn working_tree_uses_git_diff_with_requested_context() {
-        let request = DiffRequest {
-            target: DiffTarget::WorkingTree,
-            context_lines: 7,
-        };
-
-        assert_eq!(
-            request.git_arguments(),
-            ["diff", "--no-ext-diff", "--unified=7"]
-        );
-    }
-
-    #[test]
-    fn staged_and_revision_targets_preserve_git_fidelity() {
-        let staged = DiffRequest {
-            target: DiffTarget::Staged,
-            context_lines: 3,
-        };
-        assert_eq!(
-            staged.git_arguments(),
-            ["diff", "--no-ext-diff", "--unified=3", "--cached"]
-        );
-
-        let commit = DiffRequest {
-            target: DiffTarget::Commit("HEAD".into()),
-            context_lines: 3,
-        };
-        assert_eq!(
-            commit.git_arguments(),
-            ["show", "--no-ext-diff", "--unified=3", "--format=", "HEAD"]
-        );
-    }
 
     #[test]
     fn target_descriptions_identify_every_selectable_diff() {

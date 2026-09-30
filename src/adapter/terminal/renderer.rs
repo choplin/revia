@@ -14,15 +14,19 @@ use urushi::{
 use urushi_tui_app::SurfaceSize;
 
 use crate::{
-    diff::FileStatus,
-    renderer::{self, Renderer, SemanticTheme},
-    semantic::{
-        Body, FileRailRow, FileRailRowKind, Overlay, ReviewBody, RollupBody, ThreadState, Tone,
-        View as SemanticView,
+    app::{
+        view::{
+            Body, FileRailRow, FileRailRowKind, Overlay, ReviewBody, RollupBody, ThreadState, Tone,
+            View as SemanticView,
+        },
+        view_state::{FocusArea, ShellSize, truncate_end},
     },
-    styled_text::{Document, Line, Span, patch_style},
-    symbols,
-    ui::{FocusArea, ShellSize, truncate_end},
+    domain::diff::FileStatus,
+    presentation::{
+        renderer::{self, Renderer, SemanticTheme},
+        symbols,
+        text::{Document, Line, Span, patch_style},
+    },
 };
 
 const MINIMUM_WIDTH: usize = 48;
@@ -96,7 +100,7 @@ impl UrushiRenderer {
     fn file_rail_view(
         &self,
         semantic: &SemanticView,
-        rail: &crate::semantic::FileRail,
+        rail: &crate::app::view::FileRail,
         width: u16,
         height: usize,
         theme: SemanticTheme,
@@ -473,7 +477,7 @@ fn is_help_heading(line: &str) -> bool {
     )
 }
 
-fn composer_editor(composer: &crate::semantic::ComposerOverlay) -> View {
+fn composer_editor(composer: &crate::app::view::ComposerOverlay) -> View {
     let lines = composer.lines.iter().enumerate().map(|(row, line)| {
         let content = if row == composer.cursor_row {
             let split = byte_at_column(line, composer.cursor_column);
@@ -574,7 +578,7 @@ fn file_list_line(row: &FileRailRow, width: usize, selected: bool, theme: Semant
     Line::from(spans)
 }
 
-fn file_change_icon(change: &crate::diff::FileChange) -> &'static str {
+fn file_change_icon(change: &crate::domain::diff::FileChange) -> &'static str {
     if let Some(moved) = &change.moved {
         return if moved.copied {
             symbols::CHANGE_COPIED
@@ -689,12 +693,14 @@ mod tests {
 
     use super::*;
     use crate::{
-        diff::{FileChange, Magnitude},
-        semantic::{
-            ContextualKeys, CurrentContext, FileAttention, FileRail, FileRailRow, FileRailRowKind,
-            Footer, Header, LayoutPolicy, ReviewViewport,
+        app::{
+            view::{
+                ContextualKeys, CurrentContext, FileAttention, FileRail, FileRailRow,
+                FileRailRowKind, Footer, Header, LayoutPolicy, ReviewViewport,
+            },
+            view_state::LayoutMode,
         },
-        ui::LayoutMode,
+        domain::diff::{FileChange, Magnitude},
     };
 
     #[test]
@@ -926,7 +932,7 @@ mod tests {
 
     #[test]
     fn composer_cursor_is_an_urushi_anchor_at_the_display_column() {
-        let editor = composer_editor(&crate::semantic::ComposerOverlay {
+        let editor = composer_editor(&crate::app::view::ComposerOverlay {
             context: "Comment".into(),
             lines: vec!["a界b".into()],
             cursor_row: 0,

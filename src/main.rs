@@ -1,35 +1,19 @@
-mod anchor;
+mod adapter;
 mod app;
-mod cli;
-mod diff;
-mod input;
-mod mode;
+mod domain;
 mod presentation;
-mod renderer;
-mod review;
-mod runtime;
-mod semantic;
-mod styled_text;
-mod symbols;
-mod syntax;
-mod thread;
-mod tui_app;
-mod ui;
-mod urushi_renderer;
 
 use std::io;
 
+use adapter::{cli::Args, git::diff as git_diff, runtime::Runtime, terminal::ReviaApplication};
 use anyhow::{Context, Result};
-use app::Model;
+use app::{Model, input::KeyboardProtocol};
 use clap::Parser;
-use cli::Args;
-use diff::LoadedDiff;
-use runtime::Runtime;
 
 fn main() -> Result<()> {
     let args = Args::parse();
     let request = args.request();
-    let diff = LoadedDiff::load(&args.repo, &request).with_context(|| {
+    let diff = git_diff::load(&args.repo, &request).with_context(|| {
         format!(
             "could not load the selected {} diff from {}",
             request.target.description(),
@@ -54,10 +38,10 @@ fn main() -> Result<()> {
 
 #[cfg(unix)]
 fn run_tui(mut model: Model, runtime: Runtime) -> Result<()> {
-    model.global.keyboard_protocol = input::KeyboardProtocol::Legacy;
+    model.global.keyboard_protocol = KeyboardProtocol::Legacy;
     let terminal = urushi_terminal::backend::native::NativeTerminal::open()
         .context("could not open the controlling terminal")?;
-    urushi_tui_app::Runtime::new(tui_app::ReviaApplication::new(model, runtime))
+    urushi_tui_app::Runtime::new(ReviaApplication::new(model, runtime))
         .backend(terminal)
         .keyboard_enhancement(None)
         .run()

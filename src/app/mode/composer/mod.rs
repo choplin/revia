@@ -1,12 +1,18 @@
+//! Comment composer mode-local Elm program.
+
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    anchor::HunkLocation,
-    diff::DiffTarget,
-    input::{BindingResolution, Key, KeyboardProtocol, PhysicalInput},
-    semantic::{ComposerOverlay, Overlay},
-    thread::{ThreadChange, ThreadId, ThreadOperation, ThreadState, ThreadSuccess},
+    app::{
+        input::{BindingResolution, Key, KeyboardProtocol, PhysicalInput},
+        view::{ComposerOverlay, Overlay},
+    },
+    domain::{
+        anchor::HunkLocation,
+        diff::DiffTarget,
+        thread::{ThreadChange, ThreadId, ThreadOperation, ThreadState, ThreadSuccess},
+    },
 };
 
 const MAX_EDITOR_ROWS: usize = 8;
@@ -177,8 +183,8 @@ pub struct Update {
 }
 
 pub fn bindings(input: PhysicalInput) -> BindingResolution<Event> {
-    if input.phase == crate::input::KeyPhase::Release
-        || input.phase == crate::input::KeyPhase::Repeat
+    if input.phase == crate::app::input::KeyPhase::Release
+        || input.phase == crate::app::input::KeyPhase::Repeat
             && matches!(input.key, Key::Esc | Key::Submit)
     {
         return BindingResolution::Consume;
@@ -523,8 +529,8 @@ pub fn view(model: &Model, target: Option<&str>, keyboard_protocol: KeyboardProt
 #[cfg(test)]
 mod tests {
     use crate::{
-        diff::DiffTarget,
-        input::{BindingResolution, Key, KeyPhase, KeyboardProtocol, PhysicalInput},
+        app::input::{BindingResolution, Key, KeyPhase, KeyboardProtocol, PhysicalInput},
+        domain::diff::DiffTarget,
     };
 
     use super::{Event, Model, Overlay, UpdateInput, view};

@@ -22,7 +22,7 @@ border/label differences still carry workflow meaning.
 
 ## Parsed facts and hidden transport
 
-`diff` parses file status, paths, rename/copy similarity, mode changes, binary
+`domain::diff` parses file status, paths, rename/copy similarity, mode changes, binary
 state, hunk coordinates, patch notes, and addition/deletion counts before
 presentation. The review stream hides `diff --git`, object-index, `---`, and
 `+++` rows. It retains new/deleted, rename/copy, mode, binary, missing-newline,
@@ -88,4 +88,3 @@ keeps navigation and evidence stable for non-ASCII source.
 - Independent split-side wrapping breaks row correspondence.
 - A selected-file-only body hides changeset order and turns the rail into a
   second navigation model.
-

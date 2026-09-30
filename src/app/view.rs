@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
 use crate::{
-    anchor::HunkLocation,
-    diff::{DiffLine, FileChange, HunkCoordinates, Magnitude},
-    thread::ThreadId,
-    ui::{FocusArea, LayoutMode},
+    app::view_state::{FocusArea, LayoutMode},
+    domain::{
+        anchor::HunkLocation,
+        diff::{DiffLine, FileChange, HunkCoordinates, Magnitude},
+        thread::ThreadId,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

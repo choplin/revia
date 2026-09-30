@@ -5,7 +5,7 @@
 //! Git-command, or persistence dependency; the application layer supplies new
 //! snapshots and persists thread changes separately.
 
-use crate::{
+use super::{
     anchor::HunkLocation,
     diff::{DiffFile, LoadedDiff},
 };
@@ -193,7 +193,7 @@ fn wrapped_index(current: usize, length: usize, direction: i32) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use crate::diff::{DiffDocument, LoadedDiff};
+    use crate::domain::diff::{DiffDocument, LoadedDiff};
 
     use super::ReviewSession;
 
@@ -268,7 +268,10 @@ mod tests {
         assert_eq!(session.cursor().selected_hunk(), 1);
         assert_eq!(
             session.selected_location(),
-            Some(crate::anchor::HunkLocation::new("b.rs", "@@ -22 +22 @@"))
+            Some(crate::domain::anchor::HunkLocation::new(
+                "b.rs",
+                "@@ -22 +22 @@"
+            ))
         );
     }
 
@@ -288,7 +291,10 @@ mod tests {
         assert_eq!(session.cursor().selected_hunk(), 0);
         assert_eq!(
             session.selected_location(),
-            Some(crate::anchor::HunkLocation::new("c.rs", "@@ -1 +1 @@"))
+            Some(crate::domain::anchor::HunkLocation::new(
+                "c.rs",
+                "@@ -1 +1 @@"
+            ))
         );
     }
 

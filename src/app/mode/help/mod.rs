@@ -1,9 +1,11 @@
+//! Keyboard help mode-local Elm program.
+
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::{
+use crate::app::{
     input::{BindingResolution, Key, KeyPhase, PhysicalInput},
-    semantic::{HelpOverlay, Overlay},
+    view::{HelpOverlay, Overlay},
 };
 
 const MAX_OVERLAY_HEIGHT: u16 = 32;
@@ -225,8 +227,8 @@ fn wrap_help_text(text: &str, width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::input::{Key, KeyPhase, PhysicalInput};
-    use crate::semantic::Overlay;
+    use crate::app::input::{Key, KeyPhase, PhysicalInput};
+    use crate::app::view::Overlay;
 
     use super::{Context, Event, Model, bindings, help_text, update, view};
 
@@ -293,14 +295,14 @@ mod tests {
         ] {
             assert_eq!(
                 bindings(input(key)),
-                crate::input::BindingResolution::Override(expected)
+                crate::app::input::BindingResolution::Override(expected)
             );
         }
         let mut repeated = input(Key::Esc);
         repeated.phase = KeyPhase::Repeat;
         assert!(matches!(
             bindings(repeated),
-            crate::input::BindingResolution::Consume
+            crate::app::input::BindingResolution::Consume
         ));
     }
 

@@ -10,10 +10,10 @@ state.
 | Slice | Owns |
 | --- | --- |
 | `app::global` | Thread state, status, pending-operation identity, running state, keyboard protocol, global bindings, and shell header/footer semantics. |
-| `mode::review` | Diff request and session, focus, viewport, layout preferences, search, filters, projected threads, and review commands. |
-| `mode::composer` | Draft text, grapheme cursor, reply target, scroll, validation, and explicit entry/exit reset. |
-| `mode::help` | Invocation context, viewport, and help scrolling. |
-| `mode::rollup` | Persistent rollup selection and thread-opening behavior. |
+| `app::mode::review` | Diff request and session, focus, viewport, layout preferences, search, filters, projected threads, and review commands. |
+| `app::mode::composer` | Draft text, grapheme cursor, reply target, scroll, validation, and explicit entry/exit reset. |
+| `app::mode::help` | Invocation context, viewport, and help scrolling. |
+| `app::mode::rollup` | Persistent rollup selection and thread-opening behavior. |
 | `app::Model` | All slices plus the single `ActiveMode` registry. |
 
 Each mode defines its own Model, Event, bindings, Update, view, Effect, Outcome,
@@ -22,7 +22,8 @@ projected input structure; it does not import Root or sibling-mode state.
 
 ## Input resolution
 
-`tui_app` normalizes Urushi key events into framework-neutral `PhysicalInput`.
+`adapter::terminal` normalizes Urushi key events into framework-neutral
+`PhysicalInput`.
 The active mode then returns one `BindingResolution`:
 
 - `Handle(event)` handles a normal local command;
@@ -79,14 +80,14 @@ extension rules are in
 ## Semantic and physical view
 
 Root asks every relevant slice for a semantic projection and composes one
-`semantic::View`. That value names roles and content: comparison header, file
+`app::view::View`. That value names roles and content: comparison header, file
 rail, review or rollup body, footer, overlay, and layout policy. It contains no
 Urushi `View` or terminal cell values.
 
 `Renderer` converts diff and thread semantics into styled, width-bounded text.
 `UrushiRenderer` then maps the semantic screen into Urushi layout primitives,
-panels, viewports, scrollbars, overlays, and cursor placement. `tui_app` returns
-the resulting `urushi::View` to the framework.
+panels, viewports, scrollbars, overlays, and cursor placement.
+`adapter::terminal` returns the resulting `urushi::View` to the framework.
 
 This separation lets scenario tests drive semantic input, events, effects,
 outcomes, viewport changes, and virtual time without a terminal. Renderer tests
@@ -107,4 +108,3 @@ the real session lifecycle.
   not in semantic update code.
 - Test interaction behavior in `app::scenario`; test Git/filesystem adapters at
   their boundary and terminal lifecycle through the PTY test.
-

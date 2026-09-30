@@ -81,14 +81,13 @@ does not claim to track edits semantically across revisions.
 
 ## Change map
 
-- Change Git invocation or patch parsing in `diff`, then verify CLI and parser
-  tests together.
-- Change selection identity or replacement behavior in `review` and the
+- Change Git invocation in `adapter::git::diff`; change patch parsing in
+  `domain::diff`, then verify adapter and parser tests together.
+- Change selection identity or replacement behavior in `domain::review` and the
   review-mode scenarios; do not encode it in rendered rows.
 - Change lifecycle rules in `ThreadState`, then adapt `Runtime` only for the
   operation and persistence mechanics.
-- Change anchor creation or retrieval in `AnchorStore`; preserve immutable Git
-  provenance and the worktree-shared storage boundary.
+- Change anchor creation or retrieval in `adapter::git::anchor::AnchorStore`;
+  preserve immutable Git provenance and the worktree-shared storage boundary.
 - Change current-diff placement in the review mode's projection helpers; never
   mutate persisted anchors to make display easier.
-

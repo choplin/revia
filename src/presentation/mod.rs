@@ -4,25 +4,37 @@
 //! parsed Git hunks to width-bounded terminal rows. Source coordinates remain
 //! attached to the parsed hunk; display rows are deliberately ephemeral.
 
+pub(crate) mod renderer;
+pub(crate) mod symbols;
+pub(crate) mod syntax;
+pub(crate) mod text;
+
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 use urushi::{Color, TextStyle};
 
 use crate::{
-    anchor::HunkLocation,
-    diff::{DiffFile, DiffLine, DiffLineKind, FileStatus, HunkCoordinates, Magnitude},
-    renderer::SemanticTheme,
-    semantic::{
-        DiffSearchTarget, LayoutPolicy, ReviewBody, ReviewWindowSection, StickyReviewContext, Tone,
+    app::{
+        view::{
+            DiffSearchTarget, LayoutPolicy, ReviewBody, ReviewWindowSection, StickyReviewContext,
+            Tone,
+        },
+        view_state::{LayoutMode, fit_width, truncate_end, truncate_start},
     },
-    styled_text::{Line, Span},
-    symbols,
+    domain::{
+        anchor::HunkLocation,
+        diff::{DiffFile, DiffLine, DiffLineKind, FileStatus, HunkCoordinates, Magnitude},
+    },
+};
+
+use self::{
+    renderer::SemanticTheme,
     syntax::{HunkSyntax, SyntaxLine, TokenStyle},
-    ui::{LayoutMode, fit_width, truncate_end, truncate_start},
+    text::{Line, Span},
 };
 
 #[cfg(test)]
-use crate::semantic::{ThreadCard, ThreadState};
+use crate::app::view::{ThreadCard, ThreadState};
 
 const TAB_WIDTH: usize = 4;
 const SPLIT_SEPARATOR: &str = " │ ";
@@ -349,8 +361,8 @@ pub(crate) fn review_row_map(
 /// The renderer swaps in a search marker of the same cell width, so both agree
 /// on how many physical rows the boundary occupies.
 pub(crate) fn file_boundary_for(
-    file: &crate::semantic::ReviewFile,
-    files: &[crate::semantic::ReviewFile],
+    file: &crate::app::view::ReviewFile,
+    files: &[crate::app::view::ReviewFile],
     available_width: u16,
 ) -> FileBoundary {
     file_boundary(
@@ -1477,14 +1489,14 @@ mod tests {
         fit_path_label, fit_path_label_with, line_number_width, numbered_lines, search_range,
         split_hunk_lines, split_rows, stack_hunk_lines, thread_card_rows, unique_prefix_segments,
     };
-    use crate::anchor::{Anchor, HunkLocation};
-    use crate::diff::{
+    use crate::app::view::{ThreadCard, ThreadState as SemanticThreadState};
+    use crate::domain::anchor::{Anchor, HunkLocation};
+    use crate::domain::diff::{
         DiffDocument, DiffLine, DiffLineKind, EDGE_FIXTURE, HunkCoordinates, HunkRange, Magnitude,
     };
-    use crate::renderer::SemanticTheme;
-    use crate::semantic::{ThreadCard, ThreadState as SemanticThreadState};
-    use crate::syntax::{HunkSyntax, SyntaxHighlighter};
-    use crate::thread::{Participant, ParticipantKind, ThreadState};
+    use crate::domain::thread::{Participant, ParticipantKind, ThreadState};
+    use crate::presentation::renderer::SemanticTheme;
+    use crate::presentation::syntax::{HunkSyntax, SyntaxHighlighter};
     use unicode_segmentation::UnicodeSegmentation;
     use unicode_width::UnicodeWidthStr;
     use urushi::{Color, TextAttribute};
@@ -2120,7 +2132,11 @@ mod tests {
                 .expect("replacement row is rendered");
             let gutter = replacement.spans.first().expect("state gutter");
             assert!(gutter.content.starts_with(expected_member));
-            assert!(gutter.content.contains(crate::symbols::SEARCH_CHAR));
+            assert!(
+                gutter
+                    .content
+                    .contains(crate::presentation::symbols::SEARCH_CHAR)
+            );
             assert!(!gutter.content.contains('≈'));
             let changed = replacement
                 .spans
@@ -2195,7 +2211,11 @@ mod tests {
                 })
                 .expect("replacement row is rendered");
             let gutter = replacement.spans.first().expect("state gutter");
-            assert!(gutter.content.contains(crate::symbols::SEARCH_CHAR));
+            assert!(
+                gutter
+                    .content
+                    .contains(crate::presentation::symbols::SEARCH_CHAR)
+            );
             assert!(!gutter.content.contains('≈'));
             if layout == "split" {
                 let text = replacement

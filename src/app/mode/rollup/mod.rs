@@ -1,8 +1,14 @@
+//! Thread rollup mode-local Elm program.
+
 use crate::{
-    anchor::HunkLocation,
-    input::{BindingResolution, Key, PhysicalInput},
-    semantic::{Body, RollupBody, RollupItem, ThreadState as SemanticThreadState},
-    thread::{Resolution, ThreadId, ThreadState},
+    app::{
+        input::{BindingResolution, Key, PhysicalInput},
+        view::{Body, RollupBody, RollupItem, ThreadState as SemanticThreadState},
+    },
+    domain::{
+        anchor::HunkLocation,
+        thread::{Resolution, ThreadId, ThreadState},
+    },
 };
 
 #[derive(Debug, Default)]
@@ -70,8 +76,8 @@ pub struct Update {
 }
 
 pub fn bindings(input: PhysicalInput) -> BindingResolution<Event> {
-    if input.phase == crate::input::KeyPhase::Release
-        || input.phase == crate::input::KeyPhase::Repeat
+    if input.phase == crate::app::input::KeyPhase::Release
+        || input.phase == crate::app::input::KeyPhase::Repeat
             && matches!(input.key, Key::Char('v') | Key::Esc | Key::Enter)
     {
         return BindingResolution::Consume;
@@ -179,7 +185,7 @@ pub fn view(model: &Model, input: ViewInput<'_>) -> Body {
     })
 }
 
-fn thread_state(thread: &crate::thread::ReviewThread) -> SemanticThreadState {
+fn thread_state(thread: &crate::domain::thread::ReviewThread) -> SemanticThreadState {
     if thread.needs_attention {
         SemanticThreadState::NeedsAttention
     } else if matches!(thread.resolution, Resolution::Open) {

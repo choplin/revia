@@ -9,7 +9,7 @@ use tree_sitter_highlight::{
     HighlightConfiguration, HighlightEvent, Highlighter as TreeSitterHighlighter,
 };
 
-use crate::diff::{DiffLine, DiffLineKind};
+use crate::domain::diff::{DiffLine, DiffLineKind};
 
 const HIGHLIGHT_NAMES: &[&str] = &[
     "attribute",

@@ -1,21 +1,27 @@
+//! Diff review mode-local Elm program.
+
 use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
 use crate::{
-    anchor::HunkLocation,
-    diff::{DiffHunk, DiffLineKind, DiffRequest, HunkCoordinates, HunkRange, LoadedDiff},
-    input::{BindingResolution, Key, PhysicalInput},
+    app::{
+        input::{BindingResolution, Key, PhysicalInput},
+        view::{
+            Body, DiffSearchTarget, FileAttention, FileRail, FileRailRow, FileRailRowKind,
+            LayoutPolicy, ReviewBody, ReviewFile, ReviewHunk, ReviewViewport, ThreadCard,
+            ThreadState as SemanticThreadState,
+        },
+        view_state::{FocusArea, LayoutMode, ShellSize, ViewState, review_body_width},
+    },
+    domain::{
+        anchor::HunkLocation,
+        diff::{DiffHunk, DiffLineKind, DiffRequest, HunkCoordinates, HunkRange, LoadedDiff},
+        review::{ReviewCursor, ReviewSession},
+        thread::{
+            Resolution, ReviewThread, ThreadChange, ThreadId, ThreadOperation,
+            ThreadState as Threads, ThreadSuccess,
+        },
+    },
     presentation::{self, ReviewRowMap, ViewportAnchor},
-    review::{ReviewCursor, ReviewSession},
-    semantic::{
-        Body, DiffSearchTarget, FileAttention, FileRail, FileRailRow, FileRailRowKind,
-        LayoutPolicy, ReviewBody, ReviewFile, ReviewHunk, ReviewViewport, ThreadCard,
-        ThreadState as SemanticThreadState,
-    },
-    thread::{
-        Resolution, ReviewThread, ThreadChange, ThreadId, ThreadOperation, ThreadState as Threads,
-        ThreadSuccess,
-    },
-    ui::{FocusArea, LayoutMode, ShellSize, ViewState, review_body_width},
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -342,14 +348,14 @@ impl Model {
         })
     }
 
-    pub fn help_context(&self) -> crate::mode::help::Context {
+    pub fn help_context(&self) -> super::help::Context {
         if self.search.as_ref().is_some_and(|search| !search.editing) {
-            crate::mode::help::Context::SearchResults
+            super::help::Context::SearchResults
         } else {
             match self.focus() {
-                FocusArea::Threads => crate::mode::help::Context::Threads,
-                FocusArea::Files => crate::mode::help::Context::Files,
-                FocusArea::Review => crate::mode::help::Context::Review,
+                FocusArea::Threads => super::help::Context::Threads,
+                FocusArea::Files => super::help::Context::Files,
+                FocusArea::Review => super::help::Context::Review,
             }
         }
     }
@@ -1170,8 +1176,8 @@ fn file_rail_binding(key: Key) -> Option<Event> {
 
 pub fn bindings(model: &Model, input: PhysicalInput) -> BindingResolution<Event> {
     if model.search.as_ref().is_some_and(|search| search.editing) {
-        if input.phase == crate::input::KeyPhase::Release
-            || input.phase == crate::input::KeyPhase::Repeat
+        if input.phase == crate::app::input::KeyPhase::Release
+            || input.phase == crate::app::input::KeyPhase::Repeat
                 && matches!(input.key, Key::Esc | Key::Enter)
         {
             return BindingResolution::Consume;
@@ -1188,14 +1194,14 @@ pub fn bindings(model: &Model, input: PhysicalInput) -> BindingResolution<Event>
     }
     if model.search.is_some()
         && matches!(input.key, Key::Esc)
-        && input.phase == crate::input::KeyPhase::Press
+        && input.phase == crate::app::input::KeyPhase::Press
     {
         return BindingResolution::Override(Event::CancelSearch);
     }
-    if input.phase == crate::input::KeyPhase::Release {
+    if input.phase == crate::app::input::KeyPhase::Release {
         return BindingResolution::Consume;
     }
-    if input.phase == crate::input::KeyPhase::Repeat
+    if input.phase == crate::app::input::KeyPhase::Repeat
         && !matches!(
             input.key,
             Key::Char('j')
@@ -2572,7 +2578,7 @@ fn empty_filter_message(filter: ReviewFilter) -> String {
     )
 }
 
-fn empty_diff_message(target: &crate::diff::DiffTarget) -> String {
+fn empty_diff_message(target: &crate::domain::diff::DiffTarget) -> String {
     format!(
         "No changes found.\nSelected diff target: {}.\nUpdate the target or make a change, then press r to reload.",
         target.description()

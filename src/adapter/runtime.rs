@@ -1,12 +1,17 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    anchor::AnchorStore,
+    adapter::git::{
+        anchor::AnchorStore,
+        diff as git_diff,
+        thread_store::{ThreadRepository, now_ms},
+    },
     app::{Effect, EffectResult, Outcome},
-    diff::{DiffTarget, LoadedDiff},
-    thread::{
-        Participant, ParticipantKind, ThreadChange, ThreadOperation, ThreadRepository, ThreadState,
-        ThreadSuccess, now_ms,
+    domain::{
+        diff::DiffTarget,
+        thread::{
+            Participant, ParticipantKind, ThreadChange, ThreadOperation, ThreadState, ThreadSuccess,
+        },
     },
 };
 
@@ -39,7 +44,7 @@ impl Runtime {
                 owner,
                 outcome: Outcome::DiffReloaded {
                     purpose,
-                    result: LoadedDiff::load(&self.repository, &request)
+                    result: git_diff::load(&self.repository, &request)
                         .map_err(|error| error.to_string()),
                 },
             },
@@ -72,8 +77,8 @@ impl Runtime {
     fn resolve_thread(
         &self,
         current_threads: &ThreadState,
-        id: crate::thread::ThreadId,
-    ) -> Result<crate::anchor::HunkLocation, String> {
+        id: crate::domain::thread::ThreadId,
+    ) -> Result<crate::domain::anchor::HunkLocation, String> {
         current_threads
             .thread(id)
             .ok_or_else(|| "thread does not exist".to_owned())

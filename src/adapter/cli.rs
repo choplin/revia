@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use clap::{ArgGroup, Parser};
 
-use crate::diff::{DiffRequest, DiffTarget};
+use crate::domain::diff::{DiffRequest, DiffTarget};
 
 /// Review Git diffs in the terminal without changing the repository.
 #[derive(Debug, Parser)]
@@ -67,7 +67,7 @@ impl Args {
 #[cfg(test)]
 mod tests {
     use super::Args;
-    use crate::diff::DiffTarget;
+    use crate::domain::diff::DiffTarget;
 
     #[test]
     fn defaults_to_the_working_tree() {

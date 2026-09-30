@@ -1,8 +1,10 @@
 use crate::{
-    anchor::HunkLocation,
-    diff::{DiffRequest, LoadedDiff},
-    mode::{ActiveMode, review::ReloadPurpose},
-    thread::{ThreadChange, ThreadId, ThreadOperation},
+    app::mode::{ActiveMode, review::ReloadPurpose},
+    domain::{
+        anchor::HunkLocation,
+        diff::{DiffRequest, LoadedDiff},
+        thread::{ThreadChange, ThreadId, ThreadOperation},
+    },
 };
 
 pub type OperationId = u64;

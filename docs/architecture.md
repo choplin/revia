@@ -46,30 +46,58 @@ physical input / surface -------------------/              \
                                                 urushi::View
 ```
 
-`main` composes the application. `cli` turns Clap arguments into a
-renderer-independent `DiffRequest`; `diff` invokes Git and parses the resulting
-patch into `LoadedDiff`. When `--print` is used or stdout is not a terminal,
-`main` writes Git's raw patch and does not open the review store or TUI.
+`main` composes the application. `adapter::cli` turns Clap arguments into a
+renderer-independent `DiffRequest`; `adapter::git::diff` invokes Git and
+`domain::diff` parses the resulting patch into `LoadedDiff`. When `--print` is
+used or stdout is not a terminal, `main` writes Git's raw patch and does not
+open the review store or TUI.
 
 The interactive path opens `Runtime`, builds the persistent Root model, and
-hands both to `tui_app::ReviaApplication`. Urushi owns terminal input, surface
-updates, effect execution, drawing, and session restoration. Revia owns the
-meaning of input, state transitions, external operations, and the semantic
+hands both to `adapter::terminal::ReviaApplication`. Urushi owns terminal input,
+surface updates, effect execution, drawing, and session restoration. Revia owns
+the meaning of input, state transitions, external operations, and the semantic
 screen it wants rendered.
+
+## Source layout
+
+The first directory below `src/` identifies why code changes:
+
+```text
+src/
+  main.rs          composition root and process-level error context
+  domain/          diff, anchor, thread, and review-session concepts
+  app/             deterministic Multilayer Elm state, modes, input, and view
+    root.rs        Root model, dispatch, coordination, and view composition
+  presentation/    semantic-view to styled-text transformations
+  adapter/
+    git/            Git commands, thread persistence, and wall-clock access
+    terminal/       Urushi application and physical view construction
+    cli.rs          Clap argument transport
+    runtime.rs      app::Effect interpreter
+```
+
+Adapters consume `app`, `presentation`, and `domain`; the application consumes
+`domain` and emits semantic `app::view` values; presentation consumes that
+semantic view and domain evidence. One deliberate pure dependency crosses back:
+the review mode uses `presentation::ReviewRowMap` because viewport navigation
+must follow the rows produced by wrapping and layout. Domain modules do not
+import application, presentation, terminal, filesystem, process, or clock APIs.
+`main` is the only composition root.
 
 ## Responsibility boundaries
 
 | Area | Owner | Boundary |
 | --- | --- | --- |
-| CLI transport | `cli` | Selects a repository, diff target, context, and print/TUI path; it does not load Git data. |
-| Git patch acquisition and parsing | `diff` | Produces semantic files, hunks, lines, file-change facts, and magnitude without terminal state. |
-| Review identity and lifecycle | `anchor`, `review`, `thread` | Own immutable locations, current selection, thread transitions, and durable thread data without rendering concerns. |
-| Deterministic application | `app`, `mode`, `input` | Resolves input, updates persistent state, coordinates cross-slice intents, and declares effects without performing I/O. |
-| External operations | `runtime` | Runs Git and filesystem operations declared by the application and returns typed outcomes. |
-| Semantic screen | `semantic`, mode `view` functions | Describes visible roles and content without Urushi layout types. |
-| Diff-row presentation | `presentation`, `syntax`, `styled_text`, `renderer` | Converts semantic diff evidence into width-bounded styled rows; display rows are never review identity. |
-| Physical layout | `urushi_renderer`, `tui_app` | Maps the semantic screen to Urushi layout and adapts Urushi input/effects to the application. |
-| Responsive navigation state | `ui` | Owns focus, viewport position, layout preference, terminal-width classes, and width-safe fitting independent of the backend. |
+| CLI transport | `adapter::cli` | Selects a repository, diff target, context, and print/TUI path; it does not load Git data. |
+| Git patch acquisition | `adapter::git::diff` | Owns Git's command-line representation and maps stdout into a domain diff. |
+| Review identity and lifecycle | `domain::{anchor, review, thread}` | Owns immutable locations, current selection, and thread transitions without I/O or rendering concerns. |
+| Diff parsing | `domain::diff` | Produces files, hunks, lines, file-change facts, and magnitude from patch text. |
+| Deterministic application | `app` and `app::mode` | Resolves input, updates persistent state, coordinates cross-slice intents, and declares effects without performing I/O. |
+| External operations | `adapter::runtime` and `adapter::git` | Runs Git, filesystem, persistence, and clock operations and returns typed outcomes. |
+| Semantic screen | `app::view` and mode `view` functions | Describes visible roles and content without Urushi layout types. |
+| Diff-row presentation | `presentation` | Converts semantic diff evidence into width-bounded styled rows; display rows are never review identity. |
+| Physical layout | `adapter::terminal` | Maps the semantic screen to Urushi and adapts terminal input/effects to the application. |
+| Responsive navigation state | `app::view_state` | Owns focus, viewport position, layout preference, terminal-width classes, and width-safe fitting independent of the backend. |
 
 Dependencies point from outer adapters toward these contracts. Domain state does
 not depend on Urushi, terminal geometry, Git process APIs, or filesystem APIs.
@@ -107,4 +135,3 @@ are defined in [`design/anchors-and-threads.md`](design/anchors-and-threads.md).
   interaction model.
 - At most one external operation is pending. Results carry operation identity
   and ownership so stale completions cannot replace newer state.
-

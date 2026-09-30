@@ -1,3 +1,5 @@
+//! Persistent mode-local programs coordinated by the application root.
+
 pub mod composer;
 pub mod help;
 pub mod review;

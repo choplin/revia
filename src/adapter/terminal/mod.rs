@@ -6,11 +6,16 @@ use urushi_tui_app::{
 };
 
 use crate::{
-    app::{self, Effect as AppEffect, EffectResult, Model},
-    input::{Key, KeyPhase, KeyboardProtocol, PhysicalInput},
-    runtime::Runtime,
-    urushi_renderer::UrushiRenderer,
+    adapter::runtime::Runtime,
+    app::{
+        self, Effect as AppEffect, EffectResult, Model,
+        input::{Key, KeyPhase, KeyboardProtocol, PhysicalInput},
+    },
 };
+
+use self::renderer::UrushiRenderer;
+
+mod renderer;
 
 pub(crate) struct ReviaApplication {
     initial_model: RefCell<Option<Model>>,
