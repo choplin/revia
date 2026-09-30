@@ -8,8 +8,8 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
-urushi = { path = "../urushi/urushi" }
-urushi-tui-app = { path = "../urushi/urushi-tui-app", default-features = false }
+urushi = "0.1.0"
+urushi-tui-app = { version = "0.1.0", default-features = false }
 syntect = { version = "5.2", default-features = false, features = ["default-fancy"] }
 tree-sitter = "0.26"
 tree-sitter-highlight = "0.26"
@@ -25,4 +25,4 @@ unicode-width = "0.2"
 unicode-segmentation = "1.13"
 
 [target.'cfg(unix)'.dependencies]
-urushi-terminal = { path = "../urushi/urushi-terminal", default-features = false }
+urushi-terminal = { version = "0.1.0", default-features = false }
