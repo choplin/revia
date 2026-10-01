@@ -1,12 +1,16 @@
 use std::{
-    path::Path,
+    fs,
+    path::{Path, PathBuf},
     process::Command,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail};
 
 use crate::domain::anchor::{Anchor, HunkLocation};
+
+static TEMPORARY_INDEX_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub struct AnchorStore<'a> {
     repository: &'a Path,
@@ -17,54 +21,72 @@ impl<'a> AnchorStore<'a> {
         Self { repository }
     }
 
-    pub fn committed(
+    pub fn object(
         &self,
-        revision: &str,
+        object: &str,
         path: impl Into<String>,
         hunk_header: impl Into<String>,
     ) -> Result<Anchor> {
-        let revision = self.git(["rev-parse", "--verify", &format!("{revision}^{{commit}}")])?;
-        Ok(Anchor::new(
-            revision.trim(),
-            HunkLocation::new(path, hunk_header),
-        ))
+        let object = self.git([
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{object}^{{object}}"),
+        ])?;
+        let object = object.trim();
+        self.protect(object)?;
+        Ok(Anchor::new(object, HunkLocation::new(path, hunk_header)))
     }
 
-    /// Creates an immutable stash commit without touching the stash stack, then
-    /// protects it from Git GC with a private revia ref.
-    pub fn snapshot_working_tree(
-        &self,
-        path: impl Into<String>,
-        hunk_header: impl Into<String>,
-    ) -> Result<Anchor> {
+    /// Returns a candidate complete index-plus-worktree tree. The caller must
+    /// verify its reconstructed comparison before caching or anchoring it.
+    pub fn snapshot_changes(&self) -> Result<String> {
+        let index = TemporaryIndex::new()?;
+        let repository_index =
+            self.git(["rev-parse", "--path-format=absolute", "--git-path", "index"])?;
+        let repository_index = PathBuf::from(repository_index.trim());
+        if repository_index.exists() {
+            fs::copy(&repository_index, index.path()).with_context(|| {
+                format!(
+                    "could not copy repository index {}",
+                    repository_index.display()
+                )
+            })?;
+        } else {
+            self.git_with_index(index.path(), ["read-tree", "--empty"])?;
+        }
+        self.git_with_index(index.path(), ["add", "-A", "--", ":/"])?;
+        Ok(self
+            .git_with_index(index.path(), ["write-tree"])?
+            .trim()
+            .into())
+    }
+
+    pub fn snapshot_index(&self) -> Result<String> {
+        Ok(self.git(["write-tree"])?.trim().into())
+    }
+
+    pub fn snapshot_working_tree(&self) -> Result<String> {
         let snapshot = self.git(["stash", "create"])?;
         let snapshot = snapshot.trim();
         if snapshot.is_empty() {
             bail!("the working tree has no tracked changes to snapshot");
         }
-
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("system clock is before Unix epoch")?
-            .as_nanos();
-        let reference = format!("refs/revia/snapshots/{nonce}-{snapshot}");
-        self.git(["update-ref", &reference, snapshot])?;
-
-        Ok(Anchor::new(snapshot, HunkLocation::new(path, hunk_header)))
+        Ok(snapshot.into())
     }
 
     pub fn resolve_file(&self, anchor: &Anchor) -> Result<String> {
-        self.git([
-            "show",
-            &format!("{}:{}", anchor.revision(), anchor.location().path()),
-        ])
-    }
-
-    fn git<const N: usize>(&self, arguments: [&str; N]) -> Result<String> {
+        let location = anchor.location();
+        let spec = object_path(
+            anchor.object_id(),
+            location.path(),
+            anchor.decoded_path_bytes(),
+        )?;
         let output = Command::new("git")
             .arg("-C")
             .arg(self.repository)
-            .args(arguments)
+            .arg("show")
+            .arg(spec)
             .output()
             .with_context(|| format!("could not run git in {}", self.repository.display()))?;
         if !output.status.success() {
@@ -75,37 +97,119 @@ impl<'a> AnchorStore<'a> {
         }
         String::from_utf8(output.stdout).context("git produced non-UTF-8 output")
     }
+
+    fn git<const N: usize>(&self, arguments: [&str; N]) -> Result<String> {
+        self.command(arguments, None)
+    }
+
+    fn git_with_index<const N: usize>(&self, index: &Path, arguments: [&str; N]) -> Result<String> {
+        self.command(arguments, Some(index))
+    }
+
+    fn command<const N: usize>(
+        &self,
+        arguments: [&str; N],
+        index: Option<&Path>,
+    ) -> Result<String> {
+        let mut command = Command::new("git");
+        command.arg("-C").arg(self.repository).args(arguments);
+        if let Some(index) = index {
+            command.env("GIT_INDEX_FILE", index);
+        }
+        let output = command
+            .output()
+            .with_context(|| format!("could not run git in {}", self.repository.display()))?;
+        if !output.status.success() {
+            bail!(
+                "git command failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        String::from_utf8(output.stdout).context("git produced non-UTF-8 output")
+    }
+
+    fn protect(&self, object: &str) -> Result<()> {
+        let reference = format!("refs/revia/snapshots/{}-{object}", nonce()?);
+        self.git(["update-ref", &reference, object])?;
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn object_path(object: &str, path: &str, decoded: Option<Vec<u8>>) -> Result<std::ffi::OsString> {
+    use std::os::unix::ffi::OsStringExt;
+
+    let mut bytes = object.as_bytes().to_vec();
+    bytes.push(b':');
+    bytes.extend(decoded.unwrap_or_else(|| path.as_bytes().to_vec()));
+    Ok(std::ffi::OsString::from_vec(bytes))
+}
+
+#[cfg(not(unix))]
+fn object_path(object: &str, path: &str, decoded: Option<Vec<u8>>) -> Result<std::ffi::OsString> {
+    if decoded.is_some() {
+        bail!("non-UTF-8 Git paths are unsupported on this platform");
+    }
+    Ok(format!("{object}:{path}").into())
+}
+
+struct TemporaryIndex {
+    directory: PathBuf,
+    path: PathBuf,
+}
+
+impl TemporaryIndex {
+    fn new() -> Result<Self> {
+        for _ in 0..100 {
+            let nonce = nonce()?;
+            let sequence = TEMPORARY_INDEX_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let directory = std::env::temp_dir().join(format!(
+                "revia-index-{}-{nonce}-{sequence}",
+                std::process::id()
+            ));
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            match builder.create(&directory) {
+                Ok(()) => {
+                    let path = directory.join("index");
+                    return Ok(Self { directory, path });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error).context("could not create a private index"),
+            }
+        }
+        bail!("could not allocate a unique temporary index")
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TemporaryIndex {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+        let _ = fs::remove_file(self.path.with_extension("lock"));
+        let _ = fs::remove_dir(&self.directory);
+    }
+}
+
+fn nonce() -> Result<u128> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before Unix epoch")?
+        .as_nanos())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::{Path, PathBuf},
-        process::Command,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::{fs, path::Path, process::Command};
 
-    use super::AnchorStore;
-
-    fn repository() -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("revia-anchor-{nonce}"));
-        fs::create_dir_all(&path).unwrap();
-        git(&path, ["init", "-q"]);
-        git(&path, ["config", "user.name", "Revia Test"]);
-        git(
-            &path,
-            ["config", "user.email", "revia-test@example.invalid"],
-        );
-        fs::write(path.join("example.rs"), "fn value() -> u8 { 1 }\n").unwrap();
-        git(&path, ["add", "example.rs"]);
-        git(&path, ["commit", "-qm", "initial"]);
-        path
-    }
+    use super::{AnchorStore, nonce};
 
     fn git<const N: usize>(repository: &Path, arguments: [&str; N]) -> String {
         let output = Command::new("git")
@@ -123,35 +227,56 @@ mod tests {
     }
 
     #[test]
-    fn committed_anchor_resolves_the_exact_committed_file() {
-        let repository = repository();
+    fn materialized_changes_anchor_exact_untracked_content_without_touching_the_index() {
+        let repository = std::env::temp_dir().join(format!("revia-anchor-{}", nonce().unwrap()));
+        fs::create_dir(&repository).unwrap();
+        git(&repository, ["init", "-q"]);
+        git(&repository, ["config", "user.name", "Revia Test"]);
+        git(
+            &repository,
+            ["config", "user.email", "revia@example.invalid"],
+        );
+        fs::write(repository.join("tracked.rs"), "fn old() {}\n").unwrap();
+        git(&repository, ["add", "."]);
+        git(&repository, ["commit", "-qm", "base"]);
+        fs::write(repository.join("untracked.rs"), "fn new_file() {}\n").unwrap();
+        let index_before = git(&repository, ["diff", "--cached"]);
         let store = AnchorStore::new(&repository);
+
+        let object = store.snapshot_changes().unwrap();
         let anchor = store
-            .committed("HEAD", "example.rs", "@@ -1 +1 @@")
+            .object(&object, "untracked.rs", "@@ -0,0 +1 @@")
             .unwrap();
 
-        assert_eq!(
-            store.resolve_file(&anchor).unwrap(),
-            "fn value() -> u8 { 1 }\n"
-        );
+        assert_eq!(store.resolve_file(&anchor).unwrap(), "fn new_file() {}\n");
+        assert_eq!(git(&repository, ["diff", "--cached"]), index_before);
+        fs::remove_dir_all(repository).unwrap();
     }
 
     #[test]
-    fn snapshot_anchor_survives_later_working_tree_edits() {
-        let repository = repository();
-        fs::write(repository.join("example.rs"), "fn value() -> u8 { 2 }\n").unwrap();
-        let store = AnchorStore::new(&repository);
-        let anchor = store
-            .snapshot_working_tree("example.rs", "@@ -1 +1 @@")
-            .unwrap();
-        fs::write(repository.join("example.rs"), "fn value() -> u8 { 3 }\n").unwrap();
+    fn legacy_marker_like_utf8_path_still_resolves_as_a_literal_filename() {
+        let repository = std::env::temp_dir().join(format!("revia-anchor-{}", nonce().unwrap()));
+        fs::create_dir(&repository).unwrap();
+        git(&repository, ["init", "-q"]);
+        git(&repository, ["config", "user.name", "Revia Test"]);
+        git(
+            &repository,
+            ["config", "user.email", "revia@example.invalid"],
+        );
+        fs::write(repository.join("git-path:utf8:foo"), "legacy\n").unwrap();
+        git(&repository, ["add", "."]);
+        git(&repository, ["commit", "-qm", "base"]);
+        let head = git(&repository, ["rev-parse", "HEAD"]);
+        let json = format!(
+            r#"{{"revision":"{}","path":"git-path:utf8:foo","hunk_header":"@@ -0,0 +1 @@"}}"#,
+            head.trim()
+        );
+        let anchor: crate::domain::anchor::Anchor = serde_json::from_str(&json).unwrap();
 
         assert_eq!(
-            store.resolve_file(&anchor).unwrap(),
-            "fn value() -> u8 { 2 }\n"
+            AnchorStore::new(&repository).resolve_file(&anchor).unwrap(),
+            "legacy\n"
         );
-        assert!(
-            git(&repository, ["for-each-ref", "refs/revia/snapshots"]).contains(anchor.revision())
-        );
+        fs::remove_dir_all(repository).unwrap();
     }
 }

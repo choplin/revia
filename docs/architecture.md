@@ -1,9 +1,13 @@
 # Architecture
 
-This is the starting point for developers changing Revia. Revia is a terminal,
-Git-only review application: it loads a line-based diff, lets a reviewer navigate
-one ordered changeset, and stores discussions against immutable Git-backed hunk
-anchors. It does not stage, edit, or commit tracked content.
+This is the starting point for developers changing Revia. Revia is an
+interactive terminal UI for reviewing Git diffs. Git repository comparisons
+are its primary input; an existing unified patch can also be reviewed from a
+file or stdin. Revia lets a reviewer navigate either input as one ordered
+changeset. Git sources can store discussions against immutable Git-backed hunk
+anchors. Persistent discussions are unavailable for patch input because it has
+no immutable repository provenance. Revia does not stage, edit, or commit
+tracked content.
 
 Three documents expand the main architectural units:
 
@@ -13,6 +17,8 @@ Three documents expand the main architectural units:
   semantic navigation, filtering, searching, and responsive presentation.
 - [`tui-architecture.md`](tui-architecture.md) explains the Multilayer Elm
   application, effect boundary, semantic view, and Urushi runtime adapter.
+- [`design/review-inputs.md`](design/review-inputs.md) defines source-specific
+  commands, shortcut normalization, and acquisition boundaries.
 
 Precise rules and their rationale live under [`design/`](design/). The
 [`decision log`](decision-log.md) records when those rules changed without
@@ -24,7 +30,9 @@ duplicating their current definitions.
 CLI arguments
     |
     v
-DiffRequest -- git diff/show --> LoadedDiff --> app::Model
+DiffRequest -- source adapter --> LoadedDiff --> app::Model
+                  |                 ^
+                  +-- Git/patch ----+
                                              /            \
 physical input / surface -------------------/              \
                                                             v
@@ -47,10 +55,10 @@ physical input / surface -------------------/              \
 ```
 
 `main` composes the application. `adapter::cli` turns Clap arguments into a
-renderer-independent `DiffRequest`; `adapter::git::diff` invokes Git and
-`domain::diff` parses the resulting patch into `LoadedDiff`. When `--print` is
-used or stdout is not a terminal, `main` writes Git's raw patch and does not
-open the review store or TUI.
+renderer-independent `DiffRequest`; `adapter::diff` routes acquisition to Git,
+a patch file, or stdin; and `domain::diff` parses the resulting patch into
+`LoadedDiff`. When `--print` is used or stdout is not a terminal, `main` writes
+the raw loaded patch and does not open the review store or TUI.
 
 The interactive path opens `Runtime`, builds the persistent Root model, and
 hands both to `adapter::terminal::ReviaApplication`. Urushi owns terminal input,
@@ -70,6 +78,7 @@ src/
     root.rs        Root model, dispatch, coordination, and view composition
   presentation/    semantic-view to styled-text transformations
   adapter/
+    diff.rs         source router for Git, patch files, and stdin
     git/            Git commands, thread persistence, and wall-clock access
     terminal/       Urushi application and physical view construction
     cli.rs          Clap argument transport
@@ -88,8 +97,8 @@ import application, presentation, terminal, filesystem, process, or clock APIs.
 
 | Area | Owner | Boundary |
 | --- | --- | --- |
-| CLI transport | `adapter::cli` | Selects a repository, diff target, context, and print/TUI path; it does not load Git data. |
-| Git patch acquisition | `adapter::git::diff` | Owns Git's command-line representation and maps stdout into a domain diff. |
+| CLI transport | `adapter::cli` | Normalizes canonical source commands and shortcuts into one request; it does not load data. |
+| Diff acquisition | `adapter::diff` and `adapter::git::diff` | Routes by source, owns Git's command-line representation and patch reads, and returns one common loaded representation. |
 | Review identity and lifecycle | `domain::{anchor, review, thread}` | Owns immutable locations, current selection, and thread transitions without I/O or rendering concerns. |
 | Diff parsing | `domain::diff` | Produces files, hunks, lines, file-change facts, and magnitude from patch text. |
 | Deterministic application | `app` and `app::mode` | Resolves input, updates persistent state, coordinates cross-slice intents, and declares effects without performing I/O. |
@@ -110,10 +119,16 @@ the only place that coordinates slices and changes the active mode.
 commits. Review metadata still has to be durable:
 
 - diffs and committed content are read through Git subprocesses;
-- a thread created against working-tree, staged, or range output receives an
-  immutable stash commit and a protecting `refs/revia/snapshots/*` ref;
+- immutable Git comparisons retain their resolved target object; mutable views
+  snapshot on first thread submission and accept that object only when its
+  reconstructed diff matches the displayed evidence, then reuse and protect it
+  with a `refs/revia/snapshots/*` ref;
 - thread state is atomically replaced at
   `<git-common-dir>/revia/threads.json`.
+
+Patch files and stdin do not open this store or create Git snapshots. Their TUI
+keeps reload and navigation available, but rejects persistent thread operations
+with the missing-provenance reason.
 
 Using the common Git directory makes review state and protected snapshots shared
 by all worktrees of the same repository. The precise anchor and lifecycle rules

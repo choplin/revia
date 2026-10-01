@@ -1,26 +1,72 @@
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DiffTarget {
-    WorkingTree,
+pub enum DiffSource {
+    Git(GitComparison),
+    Patch(PatchInput),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitComparison {
+    Changes,
     Staged,
-    Commit(String),
+    Unstaged,
+    Revision(String),
     Range(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatchInput {
+    File(PathBuf),
+    Stdin,
+}
+
+pub fn split_revision_range(value: &str) -> Option<(&str, &'static str, &str)> {
+    let bytes = value.as_bytes();
+    let mut separator = None;
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'.' {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len() && bytes[index] == b'.' {
+            index += 1;
+        }
+        let length = index - start;
+        if length >= 2 {
+            if separator.is_some() || !matches!(length, 2 | 3) {
+                return None;
+            }
+            separator = Some((start, length));
+        }
+    }
+    let (start, length) = separator?;
+    let left = &value[..start];
+    let right = &value[start + length..];
+    (!left.is_empty() && !right.is_empty()).then_some((
+        left,
+        if length == 2 { ".." } else { "..." },
+        right,
+    ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffRequest {
-    pub target: DiffTarget,
+    pub source: DiffSource,
     pub context_lines: usize,
 }
 
-impl DiffTarget {
+impl DiffSource {
     pub fn description(&self) -> String {
         match self {
-            Self::WorkingTree => "working tree".into(),
-            Self::Staged => "staged changes".into(),
-            Self::Commit(revision) => format!("commit {revision}"),
-            Self::Range(range) => format!("range {range}"),
+            Self::Git(comparison) => comparison.description(),
+            Self::Patch(PatchInput::File(path)) => format!("patch {}", path.display()),
+            Self::Patch(PatchInput::Stdin) => "patch from stdin".into(),
         }
     }
 
@@ -31,9 +77,40 @@ impl DiffTarget {
     /// of being restated as prose.
     pub fn comparison(&self) -> String {
         match self {
-            Self::WorkingTree => "working tree".into(),
+            Self::Git(comparison) => comparison.comparison(),
+            Self::Patch(PatchInput::File(path)) => path.display().to_string(),
+            Self::Patch(PatchInput::Stdin) => "stdin".into(),
+        }
+    }
+
+    pub fn supports_persistent_threads(&self) -> bool {
+        matches!(self, Self::Git(_))
+    }
+
+    pub fn persistent_threads_unavailable_reason(&self) -> Option<&'static str> {
+        (!self.supports_persistent_threads()).then_some(
+            "persistent thread operations are unavailable for patch input because it has no immutable Git provenance",
+        )
+    }
+}
+
+impl GitComparison {
+    fn description(&self) -> String {
+        match self {
+            Self::Changes => "changes".into(),
+            Self::Staged => "staged changes".into(),
+            Self::Unstaged => "unstaged changes".into(),
+            Self::Revision(revision) => format!("revision {revision}"),
+            Self::Range(range) => format!("range {range}"),
+        }
+    }
+
+    fn comparison(&self) -> String {
+        match self {
+            Self::Changes => "changes".into(),
             Self::Staged => "staged".into(),
-            Self::Commit(revision) => revision.clone(),
+            Self::Unstaged => "unstaged".into(),
+            Self::Revision(revision) => revision.clone(),
             Self::Range(range) => range.clone(),
         }
     }
@@ -65,8 +142,20 @@ impl Magnitude {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedDiff {
-    pub text: String,
-    pub document: DiffDocument,
+    pub text: Arc<str>,
+    pub document: Arc<DiffDocument>,
+    pub provenance: DiffProvenance,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum DiffProvenance {
+    GitObject(String),
+    MutableGit {
+        expected_document: Arc<DiffDocument>,
+        context_lines: usize,
+    },
+    #[default]
+    None,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -129,17 +218,13 @@ pub struct DiffFile {
 
 impl DiffFile {
     fn from_header(header: &str) -> Self {
-        let paths = header
-            .strip_prefix("diff --git ")
-            .unwrap_or_default()
-            .split_whitespace()
-            .collect::<Vec<_>>();
+        let paths = split_git_header_paths(header.strip_prefix("diff --git ").unwrap_or_default());
         let path = paths
             .get(1)
             .or_else(|| paths.first())
-            .map(|path| strip_git_prefix(path))
+            .map(|path| normalize_patch_path(path))
             .unwrap_or_else(|| "(unknown file)".to_owned());
-        let previous_path = paths.first().map(|path| strip_git_prefix(path));
+        let previous_path = paths.first().map(|path| normalize_patch_path(path));
 
         Self {
             path,
@@ -238,18 +323,107 @@ pub struct ModeChange {
     pub new: String,
 }
 
-fn strip_git_prefix(path: &str) -> String {
-    path.strip_prefix("a/")
-        .or_else(|| path.strip_prefix("b/"))
-        .unwrap_or(path)
-        .to_owned()
+fn split_git_header_paths(header: &str) -> Vec<&str> {
+    let bytes = header.as_bytes();
+    let mut paths = Vec::new();
+    let mut start = 0;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if escaped {
+            escaped = false;
+        } else if quoted && byte == b'\\' {
+            escaped = true;
+        } else if byte == b'"' {
+            quoted = !quoted;
+        } else if byte == b' ' && !quoted {
+            if start < index {
+                paths.push(&header[start..index]);
+            }
+            start = index + 1;
+        }
+    }
+    if start < header.len() {
+        paths.push(&header[start..]);
+    }
+    paths
 }
 
 fn normalize_patch_path(path: &str) -> String {
     if path == "/dev/null" {
         return path.to_owned();
     }
-    strip_git_prefix(path.split('\t').next().unwrap_or(path))
+    let path = path.split('\t').next().unwrap_or(path);
+    let mut bytes = decode_c_quoted_path(path).unwrap_or_else(|| path.as_bytes().to_vec());
+    if bytes.starts_with(b"a/") || bytes.starts_with(b"b/") {
+        bytes.drain(..2);
+    }
+    match String::from_utf8(bytes.clone()) {
+        Ok(path) if path.starts_with("git-path:") => format!("git-path:utf8:{path}"),
+        Ok(path) => path,
+        Err(_) => quote_git_path(&bytes),
+    }
+}
+
+pub fn decode_git_path(path: &str) -> Option<Vec<u8>> {
+    if let Some(path) = path.strip_prefix("git-path:utf8:") {
+        return Some(path.as_bytes().to_vec());
+    }
+    decode_c_quoted_path(path.strip_prefix("git-path:bytes:")?)
+}
+
+fn decode_c_quoted_path(path: &str) -> Option<Vec<u8>> {
+    let inner = path.strip_prefix('"')?.strip_suffix('"')?;
+    let bytes = inner.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'\\' {
+            decoded.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        index += 1;
+        let escaped = *bytes.get(index)?;
+        index += 1;
+        match escaped {
+            b'a' => decoded.push(7),
+            b'b' => decoded.push(8),
+            b't' => decoded.push(b'\t'),
+            b'n' => decoded.push(b'\n'),
+            b'v' => decoded.push(11),
+            b'f' => decoded.push(12),
+            b'r' => decoded.push(b'\r'),
+            b'\\' | b'"' => decoded.push(escaped),
+            b'0'..=b'7' => {
+                let mut value = escaped - b'0';
+                for _ in 0..2 {
+                    let Some(next @ b'0'..=b'7') = bytes.get(index).copied() else {
+                        break;
+                    };
+                    value = value.saturating_mul(8).saturating_add(next - b'0');
+                    index += 1;
+                }
+                decoded.push(value);
+            }
+            other => decoded.push(other),
+        }
+    }
+    Some(decoded)
+}
+
+fn quote_git_path(path: &[u8]) -> String {
+    let mut quoted = String::from("git-path:bytes:\"");
+    for byte in path {
+        match byte {
+            b'\\' => quoted.push_str("\\\\"),
+            b'"' => quoted.push_str("\\\""),
+            0x20..=0x7e => quoted.push(char::from(*byte)),
+            _ => quoted.push_str(&format!("\\{byte:03o}")),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -333,21 +507,55 @@ pub(crate) const EDGE_FIXTURE: &str =
 #[cfg(test)]
 mod tests {
     use super::{
-        DiffDocument, DiffLineKind, DiffTarget, EDGE_FIXTURE, FileStatus, HunkCoordinates,
-        HunkRange, Magnitude, ModeChange, PathMove,
+        DiffDocument, DiffLineKind, DiffSource, EDGE_FIXTURE, FileStatus, GitComparison,
+        HunkCoordinates, HunkRange, Magnitude, ModeChange, PatchInput, PathMove,
     };
 
     #[test]
-    fn target_descriptions_identify_every_selectable_diff() {
-        assert_eq!(DiffTarget::WorkingTree.description(), "working tree");
-        assert_eq!(DiffTarget::Staged.description(), "staged changes");
+    fn quoted_git_paths_keep_spaces_and_reversible_non_utf8_identity() {
+        let spaced = DiffDocument::parse(
+            "diff --git \"a/name with space.txt\" \"b/name with space.txt\"\n--- \"a/name with space.txt\"\n+++ \"b/name with space.txt\"\n@@ -0,0 +1 @@\n+new\n",
+        );
+        let non_utf8 = DiffDocument::parse(
+            "diff --git \"a/invalid-\\200.txt\" \"b/invalid-\\200.txt\"\n--- /dev/null\n+++ \"b/invalid-\\200.txt\"\n@@ -0,0 +1 @@\n+new\n",
+        );
+
+        assert_eq!(spaced.files[0].path, "name with space.txt");
         assert_eq!(
-            DiffTarget::Commit("abc123".into()).description(),
-            "commit abc123"
+            non_utf8.files[0].path,
+            "git-path:bytes:\"invalid-\\200.txt\""
         );
         assert_eq!(
-            DiffTarget::Range("main...HEAD".into()).description(),
+            super::decode_git_path(&non_utf8.files[0].path).unwrap(),
+            b"invalid-\x80.txt"
+        );
+    }
+
+    #[test]
+    fn source_descriptions_identify_every_selectable_diff() {
+        assert_eq!(
+            DiffSource::Git(GitComparison::Changes).description(),
+            "changes"
+        );
+        assert_eq!(
+            DiffSource::Git(GitComparison::Staged).description(),
+            "staged changes"
+        );
+        assert_eq!(
+            DiffSource::Git(GitComparison::Unstaged).description(),
+            "unstaged changes"
+        );
+        assert_eq!(
+            DiffSource::Git(GitComparison::Revision("abc123".into())).description(),
+            "revision abc123"
+        );
+        assert_eq!(
+            DiffSource::Git(GitComparison::Range("main...HEAD".into())).description(),
             "range main...HEAD"
+        );
+        assert_eq!(
+            DiffSource::Patch(PatchInput::File("review.patch".into())).description(),
+            "patch review.patch"
         );
     }
 

@@ -5,7 +5,7 @@ mod presentation;
 
 use std::io;
 
-use adapter::{cli::Args, git::diff as git_diff, runtime::Runtime, terminal::ReviaApplication};
+use adapter::{cli::Args, diff as source_diff, runtime::Runtime, terminal::ReviaApplication};
 use anyhow::{Context, Result};
 use app::{Model, input::KeyboardProtocol};
 use clap::Parser;
@@ -13,11 +13,10 @@ use clap::Parser;
 fn main() -> Result<()> {
     let args = Args::parse();
     let request = args.request();
-    let diff = git_diff::load(&args.repo, &request).with_context(|| {
+    let diff = source_diff::load(&args.repo, &request).with_context(|| {
         format!(
-            "could not load the selected {} diff from {}",
-            request.target.description(),
-            args.repo.display()
+            "could not load the selected {}",
+            request.source.description()
         )
     })?;
 
@@ -26,7 +25,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let (runtime, threads) = Runtime::open(&args.repo).with_context(|| {
+    let (runtime, threads) = Runtime::open(&args.repo, &request, &diff).with_context(|| {
         format!(
             "could not open the review thread store for {}",
             args.repo.display()

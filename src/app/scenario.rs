@@ -10,7 +10,10 @@ use crate::{
     },
     domain::{
         anchor::{Anchor, HunkLocation},
-        diff::{DiffDocument, DiffRequest, DiffTarget, LoadedDiff},
+        diff::{
+            DiffDocument, DiffProvenance, DiffRequest, DiffSource, GitComparison, LoadedDiff,
+            PatchInput,
+        },
         thread::{
             Participant, ParticipantKind, Resolution, ThreadChange, ThreadId, ThreadState,
             ThreadSuccess,
@@ -33,8 +36,12 @@ enum Trace {
 
 impl Scenario {
     fn given(raw_diff: &str, threads: ThreadState) -> Self {
+        Self::given_source(raw_diff, threads, DiffSource::Git(GitComparison::Changes))
+    }
+
+    fn given_source(raw_diff: &str, threads: ThreadState, source: DiffSource) -> Self {
         let request = DiffRequest {
-            target: DiffTarget::WorkingTree,
+            source,
             context_lines: 3,
         };
         Self {
@@ -42,7 +49,8 @@ impl Scenario {
                 request,
                 LoadedDiff {
                     text: raw_diff.into(),
-                    document: DiffDocument::parse(raw_diff),
+                    document: DiffDocument::parse(raw_diff).into(),
+                    provenance: DiffProvenance::None,
                 },
                 threads,
             ),
@@ -87,6 +95,27 @@ impl Scenario {
     fn advance_virtual_time(&mut self, milliseconds: u64) {
         self.virtual_time_ms += milliseconds;
     }
+}
+
+#[test]
+fn patch_input_disables_persistent_thread_composition_with_a_reason() {
+    let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
+    let mut scenario = Scenario::given_source(
+        raw,
+        ThreadState::default(),
+        DiffSource::Patch(PatchInput::File("review.patch".into())),
+    );
+
+    let effects = scenario.when_event(review::Event::BeginThread { always_new: true });
+
+    assert!(effects.is_empty());
+    assert_eq!(scenario.model.active_mode, ActiveMode::Review);
+    assert_eq!(
+        scenario.model.global.status.as_deref(),
+        Some(
+            "persistent thread operations are unavailable for patch input because it has no immutable Git provenance"
+        )
+    );
 }
 
 fn input(key: Key) -> PhysicalInput {
@@ -761,7 +790,8 @@ fn successful_reload_clears_stale_search_and_failed_reload_preserves_it() {
             purpose: review::ReloadPurpose::Manual,
             result: Ok(LoadedDiff {
                 text: RAW.into(),
-                document: DiffDocument::parse(RAW),
+                document: DiffDocument::parse(RAW).into(),
+                provenance: DiffProvenance::None,
             }),
         },
     );
@@ -909,8 +939,9 @@ fn effect_outcome_returns_to_update_and_clears_pending_state() {
     );
 
     let next = LoadedDiff {
-        text: String::new(),
-        document: DiffDocument::default(),
+        text: String::new().into(),
+        document: DiffDocument::default().into(),
+        provenance: DiffProvenance::None,
     };
     scenario.inject(
         ActiveMode::Review,
@@ -1437,7 +1468,8 @@ fn reload_and_context_adjustment_keep_the_closest_location_and_clamp_geometry() 
             purpose: review::ReloadPurpose::ContextChanged,
             result: Ok(LoadedDiff {
                 text: RELOADED_LONG_DIFF.into(),
-                document: DiffDocument::parse(RELOADED_LONG_DIFF),
+                document: DiffDocument::parse(RELOADED_LONG_DIFF).into(),
+                provenance: DiffProvenance::None,
             }),
         },
     );
@@ -2432,7 +2464,8 @@ fn filter_survives_geometry_context_and_successful_reload() {
             purpose: review::ReloadPurpose::ContextChanged,
             result: Ok(LoadedDiff {
                 text: FILTER_DIFF.into(),
-                document: DiffDocument::parse(FILTER_DIFF),
+                document: DiffDocument::parse(FILTER_DIFF).into(),
+                provenance: DiffProvenance::None,
             }),
         },
     );
@@ -2483,7 +2516,8 @@ fn context_reload_resolves_the_immutable_anchor_to_the_new_hunk_header() {
             purpose: review::ReloadPurpose::ContextChanged,
             result: Ok(LoadedDiff {
                 text: CONTEXT_U4_DIFF.into(),
-                document: DiffDocument::parse(CONTEXT_U4_DIFF),
+                document: DiffDocument::parse(CONTEXT_U4_DIFF).into(),
+                provenance: DiffProvenance::None,
             }),
         },
     );
@@ -2567,7 +2601,8 @@ fn ambiguous_split_hunks_choose_nearest_start_then_git_order() {
             purpose: review::ReloadPurpose::Manual,
             result: Ok(LoadedDiff {
                 text: SPLIT_HUNKS_DIFF.into(),
-                document: DiffDocument::parse(SPLIT_HUNKS_DIFF),
+                document: DiffDocument::parse(SPLIT_HUNKS_DIFF).into(),
+                provenance: DiffProvenance::None,
             }),
         },
     );
@@ -2638,7 +2673,8 @@ fn stale_effect_result_cannot_clear_or_replace_the_current_operation() {
             purpose: review::ReloadPurpose::Manual,
             result: Ok(LoadedDiff {
                 text: RAW.into(),
-                document: DiffDocument::parse(RAW),
+                document: DiffDocument::parse(RAW).into(),
+                provenance: DiffProvenance::None,
             }),
         },
     );
@@ -2652,14 +2688,15 @@ fn stale_effect_result_cannot_clear_or_replace_the_current_operation() {
         Outcome::DiffReloaded {
             purpose: review::ReloadPurpose::Manual,
             result: Ok(LoadedDiff {
-                text: String::new(),
-                document: DiffDocument::default(),
+                text: String::new().into(),
+                document: DiffDocument::default().into(),
+                provenance: DiffProvenance::None,
             }),
         },
     );
 
     assert_eq!(scenario.model.global.pending, Some(second));
-    assert_eq!(scenario.model.review.session().diff().text, RAW);
+    assert_eq!(scenario.model.review.session().diff().text.as_ref(), RAW);
     assert_eq!(
         scenario.model.global.status.as_deref(),
         Some("ignored stale operation result")
@@ -2698,7 +2735,8 @@ fn reload_drops_thread_focus_when_the_canonical_target_disappears() {
             purpose: review::ReloadPurpose::Manual,
             result: Ok(LoadedDiff {
                 text: only_b.into(),
-                document: DiffDocument::parse(only_b),
+                document: DiffDocument::parse(only_b).into(),
+                provenance: DiffProvenance::None,
             }),
         },
     );

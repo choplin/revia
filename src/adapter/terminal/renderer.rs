@@ -755,7 +755,7 @@ mod tests {
     fn complete_shell_resolves_through_urushi() {
         let semantic = SemanticView {
             header: Header {
-                comparison: "working tree".into(),
+                comparison: "changes".into(),
                 file_count: 1,
                 magnitude: Magnitude {
                     additions: 2,
@@ -820,7 +820,7 @@ mod tests {
 
         assert_eq!(resolved.size().width(), 120);
         assert_eq!(resolved.size().height(), 24);
-        assert!(text.contains("working tree"));
+        assert!(text.contains("changes"));
         assert!(text.contains("▼  src"));
         assert!(text.contains("main.rs"));
         assert!(text.contains("Nothing to review"));

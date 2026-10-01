@@ -7,10 +7,16 @@ those anchors in the current comparison when possible.
 
 ## Comparisons and parsed evidence
 
-`DiffRequest` pairs a `DiffTarget` with a context-line count. Targets cover the
-working tree, index, one commit, and a revision range. `LoadedDiff::load` invokes
-`git diff` or `git show`, retains the raw patch for print mode, and parses a
-`DiffDocument` for the TUI.
+`DiffRequest` pairs a `DiffSource` with a context-line count. A source is either
+a Git comparison (`Changes`, `Staged`, `Unstaged`, one revision, or a range) or
+an explicit patch input (file or stdin). Source adapters retain the raw patch
+for print mode and parse the same `DiffDocument` for the TUI. `Changes` means
+the complete state relative to `HEAD`: staged, unstaged, and untracked files.
+`LoadedDiff` retains either the immutable target Git object or the evidence used
+to verify a mutable snapshot. Thread creation reconstructs the diff from the
+candidate object and refuses evidence that differs from the displayed patch.
+The exact CLI and normalization rules live in
+[`design/review-inputs.md`](design/review-inputs.md).
 
 The parsed document preserves only review-relevant facts:
 
@@ -27,8 +33,8 @@ as ordinary source rows. The detailed presentation rule is in
 ## Location, anchor, and current selection
 
 `HunkLocation` is the location used by navigation and projection: one repository
-path plus one hunk header. `Anchor` adds an immutable Git revision to that
-location. The revision is the source of truth for the reviewed code even when
+path plus one hunk header. `Anchor` adds an immutable Git object ID to that
+location. The object is the source of truth for the reviewed code even when
 the current working tree later changes.
 
 `ReviewSession` owns the current `LoadedDiff` and one `ReviewCursor`. The cursor
@@ -81,8 +87,9 @@ does not claim to track edits semantically across revisions.
 
 ## Change map
 
-- Change Git invocation in `adapter::git::diff`; change patch parsing in
-  `domain::diff`, then verify adapter and parser tests together.
+- Change source routing in `adapter::diff`, Git invocation in
+  `adapter::git::diff`, or patch parsing in `domain::diff`, then verify adapter
+  and parser tests together.
 - Change selection identity or replacement behavior in `domain::review` and the
   review-mode scenarios; do not encode it in rendered rows.
 - Change lifecycle rules in `ThreadState`, then adapt `Runtime` only for the

@@ -295,7 +295,7 @@ impl Model {
 
     /// The comparison identity shown in the changeset header.
     pub fn comparison(&self) -> String {
-        self.request.target.comparison()
+        self.request.source.comparison()
     }
 
     pub fn focus(&self) -> FocusArea {
@@ -2497,7 +2497,7 @@ fn review_body(model: &Model, threads: &Threads) -> ReviewBody {
             sections: std::sync::Arc::new(Vec::new()),
         },
         empty_state: source_is_empty
-            .then(|| empty_diff_message(&model.request.target))
+            .then(|| empty_diff_message(&model.request.source))
             .or_else(|| filtered_is_empty.then(|| empty_filter_message(model.filter))),
         search_target: model.current_search_target().cloned(),
         search_query: model.search.as_ref().map(|search| search.query.clone()),
@@ -2578,10 +2578,10 @@ fn empty_filter_message(filter: ReviewFilter) -> String {
     )
 }
 
-fn empty_diff_message(target: &crate::domain::diff::DiffTarget) -> String {
+fn empty_diff_message(source: &crate::domain::diff::DiffSource) -> String {
     format!(
-        "No changes found.\nSelected diff target: {}.\nUpdate the target or make a change, then press r to reload.",
-        target.description()
+        "No changes found.\nSelected diff source: {}.\nUpdate the source or make a change, then press r to reload.",
+        source.description()
     )
 }
 

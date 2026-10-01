@@ -193,14 +193,15 @@ fn wrapped_index(current: usize, length: usize, direction: i32) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::diff::{DiffDocument, LoadedDiff};
+    use crate::domain::diff::{DiffDocument, DiffProvenance, LoadedDiff};
 
     use super::ReviewSession;
 
     fn session(text: &str) -> ReviewSession {
         ReviewSession::new(LoadedDiff {
             text: text.into(),
-            document: DiffDocument::parse(text),
+            document: DiffDocument::parse(text).into(),
+            provenance: DiffProvenance::None,
         })
     }
 
@@ -238,8 +239,9 @@ mod tests {
         session.select_hunk(1, 0);
         session.select_thread(2);
         session.replace_diff(LoadedDiff {
-            text: String::new(),
-            document: DiffDocument::default(),
+            text: String::new().into(),
+            document: DiffDocument::default().into(),
+            provenance: DiffProvenance::None,
         });
         assert_eq!(
             (
@@ -261,7 +263,8 @@ mod tests {
 
         session.replace_diff(LoadedDiff {
             text: reloaded.into(),
-            document: DiffDocument::parse(reloaded),
+            document: DiffDocument::parse(reloaded).into(),
+            provenance: DiffProvenance::None,
         });
 
         assert_eq!(session.cursor().selected_file(), 0);
@@ -284,7 +287,8 @@ mod tests {
 
         session.replace_diff(LoadedDiff {
             text: reloaded.into(),
-            document: DiffDocument::parse(reloaded),
+            document: DiffDocument::parse(reloaded).into(),
+            provenance: DiffProvenance::None,
         });
 
         assert_eq!(session.cursor().selected_file(), 0);

@@ -15,7 +15,7 @@ not a correctness requirement for anchors.
 ## Why
 
 Line-based patches are Git-native, available for every tracked file, inexpensive
-to obtain, and identical to the evidence used by commit and working-tree
+to obtain, and identical to the evidence used by revision and changes
 comparisons. The immutable revision/path/hunk anchor can always recover that
 evidence.
 
@@ -36,4 +36,3 @@ making it the source of truth.
 Revisit this decision only with representative diffs showing that the line-based
 surface materially obstructs review, an explicit parser/version and fallback
 strategy, and proof that thread identity remains line-based.
-

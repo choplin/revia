@@ -10,7 +10,7 @@ use crate::{
     },
     domain::{
         anchor::HunkLocation,
-        diff::DiffTarget,
+        diff::{DiffProvenance, DiffSource},
         thread::{ThreadChange, ThreadId, ThreadOperation, ThreadState, ThreadSuccess},
     },
 };
@@ -163,7 +163,8 @@ pub enum Outcome {
 
 #[derive(Debug, Clone)]
 pub struct UpdateInput {
-    pub target: DiffTarget,
+    pub source: DiffSource,
+    pub provenance: DiffProvenance,
     pub selected_location: Option<HunkLocation>,
     pub operation_pending: bool,
 }
@@ -300,7 +301,8 @@ fn submit(model: &mut Model, input: UpdateInput, result: &mut Update) {
     result
         .effects
         .push(Effect::ChangeThreads(ThreadOperation::Submit {
-            target: input.target,
+            source: input.source,
+            provenance: input.provenance,
             location,
             body: model.input.clone(),
             reply_to: model.reply_to,
@@ -530,7 +532,7 @@ pub fn view(model: &Model, target: Option<&str>, keyboard_protocol: KeyboardProt
 mod tests {
     use crate::{
         app::input::{BindingResolution, Key, KeyPhase, KeyboardProtocol, PhysicalInput},
-        domain::diff::DiffTarget,
+        domain::diff::{DiffProvenance, DiffSource, GitComparison},
     };
 
     use super::{Event, Model, Overlay, UpdateInput, view};
@@ -548,7 +550,8 @@ mod tests {
             model,
             event,
             UpdateInput {
-                target: DiffTarget::WorkingTree,
+                source: DiffSource::Git(GitComparison::Changes),
+                provenance: DiffProvenance::None,
                 selected_location: None,
                 operation_pending: false,
             },

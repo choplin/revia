@@ -199,7 +199,8 @@ fn update_review(model: &mut Model, event: review::Event) -> Vec<Effect> {
 
 fn update_composer(model: &mut Model, event: composer::Event) -> Vec<Effect> {
     let input = composer::UpdateInput {
-        target: model.review.request().target.clone(),
+        source: model.review.request().source.clone(),
+        provenance: model.review.session().diff().provenance.clone(),
         selected_location: model.review.projected_location(&model.global.threads),
         operation_pending: model.global.pending.is_some(),
     };
@@ -248,8 +249,17 @@ fn apply_review(model: &mut Model, result: review::Update) -> Vec<Effect> {
             review::Intent::SetStatus(status) => model.global.status = Some(status),
             review::Intent::ReplaceThreads(threads) => replace_threads(model, threads),
             review::Intent::OpenComposer { reply_to } => {
-                model.composer.begin(reply_to);
-                model.active_mode = ActiveMode::Composer;
+                if let Some(reason) = model
+                    .review
+                    .request()
+                    .source
+                    .persistent_threads_unavailable_reason()
+                {
+                    model.global.status = Some(reason.into());
+                } else {
+                    model.composer.begin(reply_to);
+                    model.active_mode = ActiveMode::Composer;
+                }
             }
             review::Intent::OpenRollup => {
                 model.rollup.prepare(&model.global.threads);

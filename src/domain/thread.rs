@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     anchor::{Anchor, HunkLocation},
-    diff::DiffTarget,
+    diff::{DiffProvenance, DiffSource},
 };
 
 /// Opaque identity for one persisted review thread.
@@ -24,7 +24,8 @@ impl std::fmt::Display for ThreadId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ThreadOperation {
     Submit {
-        target: DiffTarget,
+        source: DiffSource,
+        provenance: DiffProvenance,
         location: HunkLocation,
         body: String,
         reply_to: Option<ThreadId>,
