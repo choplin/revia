@@ -176,7 +176,7 @@ struct HunkTextKey {
     anchor: crate::domain::anchor::HunkLocation,
     header: Option<String>,
     coordinates: Option<crate::domain::diff::HunkCoordinates>,
-    lines: Arc<Vec<crate::domain::diff::DiffLine>>,
+    lines: Arc<Vec<crate::domain::diff::PatchLine>>,
     threads: Vec<crate::app::view::ThreadCard>,
     number_width: usize,
     layout: LayoutMode,
@@ -371,7 +371,7 @@ impl Renderer {
         );
         let search = match (&review.search_target, review.search_query.as_deref()) {
             (
-                Some(DiffSearchTarget::DiffLine {
+                Some(DiffSearchTarget::PatchLine {
                     location,
                     line_index,
                 }),

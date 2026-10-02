@@ -7,8 +7,10 @@
 
 use super::{
     anchor::HunkLocation,
-    diff::{DiffFile, LoadedDiff},
+    diff::{PresentedFile, ReviewPresentation},
 };
+
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReviewCursor {
@@ -33,28 +35,28 @@ impl ReviewCursor {
 
 #[derive(Debug, Clone)]
 pub struct ReviewSession {
-    diff: LoadedDiff,
+    presentation: Arc<ReviewPresentation>,
     cursor: ReviewCursor,
 }
 
 impl ReviewSession {
-    pub fn new(diff: LoadedDiff) -> Self {
+    pub fn new(presentation: Arc<ReviewPresentation>) -> Self {
         Self {
-            diff,
+            presentation,
             cursor: ReviewCursor::default(),
         }
     }
 
-    pub fn diff(&self) -> &LoadedDiff {
-        &self.diff
+    pub fn presentation(&self) -> &ReviewPresentation {
+        &self.presentation
     }
 
     pub fn cursor(&self) -> ReviewCursor {
         self.cursor
     }
 
-    pub fn file(&self) -> Option<&DiffFile> {
-        self.diff.document.files.get(self.cursor.selected_file)
+    pub fn file(&self) -> Option<&PresentedFile> {
+        self.presentation.files.get(self.cursor.selected_file)
     }
 
     pub fn selected_location(&self) -> Option<HunkLocation> {
@@ -63,7 +65,7 @@ impl ReviewSession {
         Some(HunkLocation::new(&file.path, &hunk.header))
     }
 
-    pub fn replace_diff(&mut self, diff: LoadedDiff) {
+    pub fn replace_presentation(&mut self, presentation: Arc<ReviewPresentation>) {
         let previous_file_index = self.cursor.selected_file;
         let previous_hunk_index = self.cursor.selected_hunk;
         let previous_file = self.file().map(|file| file.path.clone());
@@ -71,16 +73,15 @@ impl ReviewSession {
             .file()
             .and_then(|file| file.hunks.get(self.cursor.selected_hunk))
             .map(|hunk| (hunk.header.clone(), hunk.coordinates));
-        self.diff = diff;
+        self.presentation = presentation;
         let restored_file = previous_file.as_ref().and_then(|path| {
-            self.diff
-                .document
+            self.presentation
                 .files
                 .iter()
                 .position(|file| &file.path == path)
         });
         self.cursor.selected_file = restored_file.unwrap_or_else(|| {
-            previous_file_index.min(self.diff.document.files.len().saturating_sub(1))
+            previous_file_index.min(self.presentation.files.len().saturating_sub(1))
         });
         self.cursor.selected_hunk = self.file().map_or(0, |file| {
             if restored_file.is_none() {
@@ -124,7 +125,7 @@ impl ReviewSession {
 
     #[cfg(test)]
     pub fn move_file(&mut self, direction: i32) -> bool {
-        let count = self.diff.document.files.len();
+        let count = self.presentation.files.len();
         if count == 0 {
             return false;
         }
@@ -174,8 +175,7 @@ impl ReviewSession {
 
     #[cfg(test)]
     fn hunk_indices(&self) -> Vec<(usize, usize)> {
-        self.diff
-            .document
+        self.presentation
             .files
             .iter()
             .enumerate()
@@ -193,16 +193,12 @@ fn wrapped_index(current: usize, length: usize, direction: i32) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::diff::{DiffDocument, DiffProvenance, LoadedDiff};
+    use crate::domain::diff::ReviewPresentation;
 
     use super::ReviewSession;
 
     fn session(text: &str) -> ReviewSession {
-        ReviewSession::new(LoadedDiff {
-            text: text.into(),
-            document: DiffDocument::parse(text).into(),
-            provenance: DiffProvenance::None,
-        })
+        ReviewSession::new(ReviewPresentation::parse(text).into())
     }
 
     const TWO_FILES: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-a\n+b\n@@ -3 +3 @@\n-c\n+d\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-e\n+f\n";
@@ -238,11 +234,7 @@ mod tests {
         let mut session = session(TWO_FILES);
         session.select_hunk(1, 0);
         session.select_thread(2);
-        session.replace_diff(LoadedDiff {
-            text: String::new().into(),
-            document: DiffDocument::default().into(),
-            provenance: DiffProvenance::None,
-        });
+        session.replace_presentation(ReviewPresentation::default().into());
         assert_eq!(
             (
                 session.cursor().selected_file(),
@@ -261,11 +253,7 @@ mod tests {
         let mut session = session(original);
         session.select_hunk(1, 1);
 
-        session.replace_diff(LoadedDiff {
-            text: reloaded.into(),
-            document: DiffDocument::parse(reloaded).into(),
-            provenance: DiffProvenance::None,
-        });
+        session.replace_presentation(ReviewPresentation::parse(reloaded).into());
 
         assert_eq!(session.cursor().selected_file(), 0);
         assert_eq!(session.cursor().selected_hunk(), 1);
@@ -285,11 +273,7 @@ mod tests {
         let mut session = session(original);
         session.select_hunk(1, 0);
 
-        session.replace_diff(LoadedDiff {
-            text: reloaded.into(),
-            document: DiffDocument::parse(reloaded).into(),
-            provenance: DiffProvenance::None,
-        });
+        session.replace_presentation(ReviewPresentation::parse(reloaded).into());
 
         assert_eq!(session.cursor().selected_file(), 0);
         assert_eq!(session.cursor().selected_hunk(), 0);

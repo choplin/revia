@@ -6,38 +6,32 @@ use std::{
 
 use anyhow::{Context, Result};
 
-use crate::domain::diff::{
-    DiffDocument, DiffProvenance, DiffRequest, DiffSource, LoadedDiff, PatchInput,
-};
+use crate::domain::diff::{CapturedInput, DiffRequest, DiffSource, PatchContent, PatchInput};
 
 use super::git::diff as git_diff;
 
-pub fn load(repository: &Path, request: &DiffRequest) -> Result<LoadedDiff> {
+pub fn capture(repository: &Path, request: &DiffRequest) -> Result<CapturedInput> {
     match &request.source {
         DiffSource::Git(comparison) => {
-            git_diff::load(repository, comparison, request.context_lines)
+            git_diff::capture(repository, comparison, request.context_lines)
         }
         DiffSource::Patch(PatchInput::File(path)) => {
             let text = fs::read_to_string(path)
                 .with_context(|| format!("could not read patch file {}", path.display()))?;
-            Ok(from_text(text))
+            Ok(CapturedInput::PatchFile {
+                path: path.clone(),
+                patch: PatchContent::new(text),
+            })
         }
         DiffSource::Patch(PatchInput::Stdin) => {
             let mut text = String::new();
             io::stdin()
                 .read_to_string(&mut text)
                 .context("could not read patch from stdin")?;
-            Ok(from_text(text))
+            Ok(CapturedInput::PatchStdin {
+                patch: PatchContent::new(text),
+            })
         }
-    }
-}
-
-fn from_text(text: String) -> LoadedDiff {
-    let text = std::sync::Arc::<str>::from(text);
-    LoadedDiff {
-        document: std::sync::Arc::new(DiffDocument::parse(&text)),
-        text,
-        provenance: DiffProvenance::None,
     }
 }
 
@@ -49,11 +43,11 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::load;
+    use super::capture;
     use crate::domain::diff::{DiffRequest, DiffSource, PatchInput};
 
     #[test]
-    fn patch_file_uses_the_common_loaded_diff_representation() {
+    fn patch_file_capture_retains_its_source_and_exact_text() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -67,10 +61,9 @@ mod tests {
             context_lines: 3,
         };
 
-        let loaded = load(Path::new("."), &request).unwrap();
+        let captured = capture(Path::new("."), &request).unwrap();
 
-        assert_eq!(loaded.text.as_ref(), patch);
-        assert_eq!(loaded.document.files[0].path, "a.txt");
+        assert_eq!(captured.patch().text(), patch);
         fs::remove_file(path).unwrap();
     }
 }

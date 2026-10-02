@@ -1,34 +1,12 @@
 # Review Model
 
-The review model connects Git's patch structure to durable discussion without
-making terminal rows into identity. It has three layers: the loaded comparison,
-an immutable anchor for each discussion, and a derived projection that places
-those anchors in the current comparison when possible.
+The review model connects a diff presentation to durable discussion without
+making terminal rows into identity. It has three layers: the current review
+presentation, an immutable anchor for each discussion, and a derived projection
+that places those anchors in the current presentation when possible.
 
-## Comparisons and parsed evidence
-
-`DiffRequest` pairs a `DiffSource` with a context-line count. A source is either
-a Git comparison (`Changes`, `Staged`, `Unstaged`, one revision, or a range) or
-an explicit patch input (file or stdin). Source adapters retain the raw patch
-for print mode and parse the same `DiffDocument` for the TUI. `Changes` means
-the complete state relative to `HEAD`: staged, unstaged, and untracked files.
-`LoadedDiff` retains either the immutable target Git object or the evidence used
-to verify a mutable snapshot. Thread creation reconstructs the diff from the
-candidate object and refuses evidence that differs from the displayed patch.
-The exact CLI and normalization rules live in
-[`design/review-inputs.md`](design/review-inputs.md).
-
-The parsed document preserves only review-relevant facts:
-
-- files in Git order, including previous paths and new/deleted state;
-- rename/copy similarity, mode changes, and binary status;
-- hunk headers and parsed old/new ranges;
-- source rows classified as context, addition, deletion, or patch note; and
-- per-file and whole-comparison addition/deletion counts.
-
-Git transport rows such as object IDs are not review identity and are not shown
-as ordinary source rows. The detailed presentation rule is in
-[`design/diff-presentation.md`](design/diff-presentation.md).
+The diff representations consumed by this model are explained separately in
+[`diff-model.md`](diff-model.md).
 
 ## Location, anchor, and current selection
 
@@ -37,12 +15,14 @@ path plus one hunk header. `Anchor` adds an immutable Git object ID to that
 location. The object is the source of truth for the reviewed code even when
 the current working tree later changes.
 
-`ReviewSession` owns the current `LoadedDiff` and one `ReviewCursor`. The cursor
-selects a file, a hunk, and an inline thread index. Its transitions preserve the
-dependency between those values: selecting a file resets hunk and thread;
-selecting a hunk resets thread. Replacing a diff restores the same file and exact
-hunk when possible, then chooses the nearest hunk start in that file before
-falling back to clamped indices.
+`ReviewSession` owns the current `ReviewPresentation` and one `ReviewCursor`.
+The presentation is derived from `ReviewDiff`; neither parsed patch syntax nor
+terminal rows become session identity. The cursor selects a file, a displayed
+section, and an inline thread index. Its transitions preserve the dependency
+between those values, and replacing a presentation restores the closest
+defensible semantic selection rather than a physical row. The exact restoration
+and navigation rules are defined in
+[`design/review-navigation.md`](design/review-navigation.md).
 
 The viewport is intentionally separate. Scrolling, wrapping, responsive layout,
 and terminal rows belong to review-mode presentation state, so relayout cannot
@@ -62,34 +42,22 @@ The lifecycle has three orthogonal properties:
 - `needs_attention` is a human escalation flag. An agent cannot close a thread
   while this flag is set.
 
-`ThreadRepository` is the persistence adapter. Each successful operation clones
-the current state, applies one domain transition, writes pretty JSON to a
-temporary file, and renames it over the store. The in-memory state is replaced
-only after persistence succeeds.
+`ThreadRepository` is the persistence adapter. Domain transitions remain
+independent of storage, and the in-memory state changes only after durable
+persistence succeeds. The storage and lifecycle details are defined in
+[`design/anchors-and-threads.md`](design/anchors-and-threads.md).
 
 ## Projecting immutable anchors
 
 The persisted anchor never follows a changing diff. Review mode derives a
-current-hunk projection for display and navigation:
-
-1. match the same path and exact hunk header;
-2. otherwise, parse the anchor's old/new ranges and find same-path hunks whose
-   changed spans overlap;
-3. when several hunks overlap, prefer the smallest combined old/new start-line
-   distance, then the first candidate in Git order;
-4. if none overlaps, leave the anchor unavailable rather than attaching it to a
-   nearby but unrelated change.
-
-Filters, inline cards, attention traversal, and rollup landing all use this
-shared projection. The fallback exists because changing context can split,
-merge, or rename textual hunk headers without changing the reviewed lines. It
-does not claim to track edits semantically across revisions.
+current placement for display and navigation, and every consumer uses that
+shared projection rather than implementing its own matching. If no defensible
+placement exists, the anchor remains unavailable instead of attaching to nearby
+but unrelated content. The current matching rule is defined in
+[`design/anchors-and-threads.md`](design/anchors-and-threads.md).
 
 ## Change map
 
-- Change source routing in `adapter::diff`, Git invocation in
-  `adapter::git::diff`, or patch parsing in `domain::diff`, then verify adapter
-  and parser tests together.
 - Change selection identity or replacement behavior in `domain::review` and the
   review-mode scenarios; do not encode it in rendered rows.
 - Change lifecycle rules in `ThreadState`, then adapt `Runtime` only for the

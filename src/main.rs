@@ -13,7 +13,7 @@ use clap::Parser;
 fn main() -> Result<()> {
     let args = Args::parse();
     let request = args.request();
-    let diff = source_diff::load(&args.repo, &request).with_context(|| {
+    let captured = source_diff::capture(&args.repo, &request).with_context(|| {
         format!(
             "could not load the selected {}",
             request.source.description()
@@ -21,17 +21,17 @@ fn main() -> Result<()> {
     })?;
 
     if args.print || !io::IsTerminal::is_terminal(&io::stdout()) {
-        print!("{}", diff.text);
+        print!("{}", captured.patch().text());
         return Ok(());
     }
 
-    let (runtime, threads) = Runtime::open(&args.repo, &request, &diff).with_context(|| {
+    let (runtime, threads) = Runtime::open(&args.repo, &request, &captured).with_context(|| {
         format!(
             "could not open the review thread store for {}",
             args.repo.display()
         )
     })?;
-    let model = Model::new(request, diff, threads);
+    let model = Model::new(request, captured, threads)?;
     run_tui(model, runtime)
 }
 

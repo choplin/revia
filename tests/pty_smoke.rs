@@ -27,6 +27,21 @@ fn repository() -> std::path::PathBuf {
             .expect("could not initialize temporary Git repository")
             .success()
     );
+    for arguments in [
+        &["config", "user.name", "Revia Test"][..],
+        &["config", "user.email", "revia@example.invalid"][..],
+        &["commit", "--allow-empty", "-qm", "base"][..],
+    ] {
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&path)
+                .args(arguments)
+                .status()
+                .expect("could not prepare temporary Git repository")
+                .success()
+        );
+    }
     path
 }
 

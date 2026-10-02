@@ -23,7 +23,7 @@ use crate::{
     },
     domain::{
         anchor::HunkLocation,
-        diff::{DiffFile, DiffLine, DiffLineKind, FileStatus, HunkCoordinates, Magnitude},
+        diff::{FileStatus, HunkCoordinates, Magnitude, PatchLine, PatchLineKind, PresentedFile},
     },
 };
 
@@ -251,7 +251,7 @@ impl ReviewRowMap {
                 .flat_map(|file| &file.hunks)
                 .find(|hunk| &hunk.anchor == location)
                 .map(|hunk| hunk.start),
-            DiffSearchTarget::DiffLine {
+            DiffSearchTarget::PatchLine {
                 location,
                 line_index,
             } => self
@@ -377,7 +377,7 @@ pub(crate) fn file_boundary_for(
 
 /// Reduces one file's patch headers to the review facts that change how the
 /// change is interpreted. Everything else is Git transport and is dropped.
-pub(crate) fn file_change_notes(file: &DiffFile) -> Vec<String> {
+pub(crate) fn file_change_notes(file: &PresentedFile) -> Vec<String> {
     let mut notes = Vec::new();
     match file.change.status {
         FileStatus::Added => notes.push("new file".to_owned()),
@@ -751,7 +751,7 @@ fn wrap_thread_message(value: &str, width: usize, max_rows: usize) -> Vec<String
 }
 
 fn hunk_line_rows(
-    lines: &[DiffLine],
+    lines: &[PatchLine],
     _coordinates: Option<HunkCoordinates>,
     start: usize,
     available_width: u16,
@@ -766,16 +766,16 @@ fn hunk_line_rows(
             while line_index < lines.len() {
                 if matches!(
                     lines[line_index].kind,
-                    DiffLineKind::Removed | DiffLineKind::Added
+                    PatchLineKind::Removed | PatchLineKind::Added
                 ) {
                     let removed_start = line_index;
                     while line_index < lines.len()
-                        && lines[line_index].kind == DiffLineKind::Removed
+                        && lines[line_index].kind == PatchLineKind::Removed
                     {
                         line_index += 1;
                     }
                     let added_start = line_index;
-                    while line_index < lines.len() && lines[line_index].kind == DiffLineKind::Added
+                    while line_index < lines.len() && lines[line_index].kind == PatchLineKind::Added
                     {
                         line_index += 1;
                     }
@@ -805,7 +805,7 @@ fn hunk_line_rows(
                 .iter()
                 .map(|line| {
                     let row = cursor;
-                    let height = if line.kind == DiffLineKind::Meta
+                    let height = if line.kind == PatchLineKind::Meta
                         || !layout.wrap_lines
                         || content_width == 0
                     {
@@ -854,7 +854,7 @@ fn wrapped_row_count(value: &str, width: usize) -> usize {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NumberedLine {
     source_index: usize,
-    pub(crate) line: DiffLine,
+    pub(crate) line: PatchLine,
     pub(crate) old_number: Option<usize>,
     pub(crate) new_number: Option<usize>,
 }
@@ -866,7 +866,7 @@ pub(crate) struct SplitRow {
 }
 
 pub(crate) fn numbered_lines(
-    lines: &[DiffLine],
+    lines: &[PatchLine],
     coordinates: Option<HunkCoordinates>,
 ) -> Vec<NumberedLine> {
     let (mut old_number, mut new_number) = coordinates
@@ -878,15 +878,15 @@ pub(crate) fn numbered_lines(
         .enumerate()
         .map(|(source_index, line)| {
             let (displayed_old, displayed_new) = match line.kind {
-                DiffLineKind::Added => (None, new_number),
-                DiffLineKind::Removed => (old_number, None),
-                DiffLineKind::Context => (old_number, new_number),
-                DiffLineKind::Meta => (None, None),
+                PatchLineKind::Added => (None, new_number),
+                PatchLineKind::Removed => (old_number, None),
+                PatchLineKind::Context => (old_number, new_number),
+                PatchLineKind::Meta => (None, None),
             };
-            if matches!(line.kind, DiffLineKind::Removed | DiffLineKind::Context) {
+            if matches!(line.kind, PatchLineKind::Removed | PatchLineKind::Context) {
                 old_number = old_number.map(|number| number.saturating_add(1));
             }
-            if matches!(line.kind, DiffLineKind::Added | DiffLineKind::Context) {
+            if matches!(line.kind, PatchLineKind::Added | PatchLineKind::Context) {
                 new_number = new_number.map(|number| number.saturating_add(1));
             }
             NumberedLine {
@@ -906,14 +906,14 @@ pub(crate) fn split_rows(lines: &[NumberedLine]) -> Vec<SplitRow> {
     let mut index = 0;
     while index < lines.len() {
         match lines[index].line.kind {
-            DiffLineKind::Removed | DiffLineKind::Added => {
+            PatchLineKind::Removed | PatchLineKind::Added => {
                 let mut removed = Vec::new();
-                while index < lines.len() && lines[index].line.kind == DiffLineKind::Removed {
+                while index < lines.len() && lines[index].line.kind == PatchLineKind::Removed {
                     removed.push(lines[index].clone());
                     index += 1;
                 }
                 let mut added = Vec::new();
-                while index < lines.len() && lines[index].line.kind == DiffLineKind::Added {
+                while index < lines.len() && lines[index].line.kind == PatchLineKind::Added {
                     added.push(lines[index].clone());
                     index += 1;
                 }
@@ -924,7 +924,7 @@ pub(crate) fn split_rows(lines: &[NumberedLine]) -> Vec<SplitRow> {
                     });
                 }
             }
-            DiffLineKind::Context => {
+            PatchLineKind::Context => {
                 let line = lines[index].clone();
                 rows.push(SplitRow {
                     old: Some(line.clone()),
@@ -932,7 +932,7 @@ pub(crate) fn split_rows(lines: &[NumberedLine]) -> Vec<SplitRow> {
                 });
                 index += 1;
             }
-            DiffLineKind::Meta => {
+            PatchLineKind::Meta => {
                 rows.push(SplitRow {
                     old: Some(lines[index].clone()),
                     new: None,
@@ -945,7 +945,7 @@ pub(crate) fn split_rows(lines: &[NumberedLine]) -> Vec<SplitRow> {
 }
 
 pub(crate) fn line_number_width<'a>(
-    hunks: impl Iterator<Item = (&'a [DiffLine], Option<HunkCoordinates>)>,
+    hunks: impl Iterator<Item = (&'a [PatchLine], Option<HunkCoordinates>)>,
 ) -> usize {
     hunks
         .flat_map(|(lines, coordinates)| numbered_lines(lines, coordinates))
@@ -958,7 +958,7 @@ pub(crate) fn line_number_width<'a>(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn split_hunk_lines(
-    lines: &[DiffLine],
+    lines: &[PatchLine],
     coordinates: Option<HunkCoordinates>,
     available_width: u16,
     number_width: usize,
@@ -982,7 +982,7 @@ pub(crate) fn split_hunk_lines(
             if let Some(metadata) = row
                 .old
                 .as_ref()
-                .filter(|line| line.line.kind == DiffLineKind::Meta)
+                .filter(|line| line.line.kind == PatchLineKind::Meta)
             {
                 return metadata_row(&metadata.line.text, available_width, selected, theme);
             }
@@ -1028,7 +1028,7 @@ pub(crate) fn split_hunk_lines(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn stack_hunk_lines(
-    lines: &[DiffLine],
+    lines: &[PatchLine],
     coordinates: Option<HunkCoordinates>,
     available_width: u16,
     number_width: usize,
@@ -1044,7 +1044,7 @@ pub(crate) fn stack_hunk_lines(
     let mut rendered = Vec::new();
     let evidence = hunk_evidence(lines, search);
     for (line_index, line) in numbered_lines(lines, coordinates).into_iter().enumerate() {
-        if line.line.kind == DiffLineKind::Meta {
+        if line.line.kind == PatchLineKind::Meta {
             rendered.push(metadata_row(
                 &line.line.text,
                 available_width,
@@ -1055,7 +1055,7 @@ pub(crate) fn stack_hunk_lines(
         }
         let base = theme.diff_row_style(line_tone(line.line.kind));
         let content_rows = match line.line.kind {
-            DiffLineKind::Removed => highlighted_content_rows(
+            PatchLineKind::Removed => highlighted_content_rows(
                 &line.line.text,
                 content_width,
                 wrap,
@@ -1064,7 +1064,7 @@ pub(crate) fn stack_hunk_lines(
                 syntax.old(line.source_index),
                 theme,
             ),
-            DiffLineKind::Added => highlighted_content_rows(
+            PatchLineKind::Added => highlighted_content_rows(
                 &line.line.text,
                 content_width,
                 wrap,
@@ -1073,7 +1073,7 @@ pub(crate) fn stack_hunk_lines(
                 syntax.new_side(line.source_index),
                 theme,
             ),
-            DiffLineKind::Context => highlighted_content_rows(
+            PatchLineKind::Context => highlighted_content_rows(
                 &line.line.text,
                 content_width,
                 wrap,
@@ -1082,7 +1082,7 @@ pub(crate) fn stack_hunk_lines(
                 syntax.old(line.source_index),
                 theme,
             ),
-            DiffLineKind::Meta => unreachable!("metadata rows return above"),
+            PatchLineKind::Meta => unreachable!("metadata rows return above"),
         };
         for (index, content) in content_rows.into_iter().enumerate() {
             let first = index == 0;
@@ -1327,20 +1327,20 @@ struct LineEvidence {
     current_search: bool,
 }
 
-fn hunk_evidence(lines: &[DiffLine], search: Option<(usize, &str)>) -> Vec<LineEvidence> {
+fn hunk_evidence(lines: &[PatchLine], search: Option<(usize, &str)>) -> Vec<LineEvidence> {
     let mut evidence = vec![LineEvidence::default(); lines.len()];
     let mut index = 0;
     while index < lines.len() {
-        if lines[index].kind != DiffLineKind::Removed {
+        if lines[index].kind != PatchLineKind::Removed {
             index += 1;
             continue;
         }
         let removed_start = index;
-        while index < lines.len() && lines[index].kind == DiffLineKind::Removed {
+        while index < lines.len() && lines[index].kind == PatchLineKind::Removed {
             index += 1;
         }
         let added_start = index;
-        while index < lines.len() && lines[index].kind == DiffLineKind::Added {
+        while index < lines.len() && lines[index].kind == PatchLineKind::Added {
             index += 1;
         }
         for offset in 0..(added_start - removed_start).min(index - added_start) {
@@ -1440,21 +1440,21 @@ fn merge_evidence<'a>(
     }
 }
 
-fn line_tone(kind: DiffLineKind) -> Tone {
+fn line_tone(kind: PatchLineKind) -> Tone {
     match kind {
-        DiffLineKind::Added => Tone::ChangeAdded,
-        DiffLineKind::Removed => Tone::ChangeRemoved,
-        DiffLineKind::Context => Tone::MutedResolved,
-        DiffLineKind::Meta => Tone::Attention,
+        PatchLineKind::Added => Tone::ChangeAdded,
+        PatchLineKind::Removed => Tone::ChangeRemoved,
+        PatchLineKind::Context => Tone::MutedResolved,
+        PatchLineKind::Meta => Tone::Attention,
     }
 }
 
-fn change_marker(kind: DiffLineKind) -> char {
+fn change_marker(kind: PatchLineKind) -> char {
     match kind {
-        DiffLineKind::Added => '+',
-        DiffLineKind::Removed => '-',
-        DiffLineKind::Context => ' ',
-        DiffLineKind::Meta => '\\',
+        PatchLineKind::Added => '+',
+        PatchLineKind::Removed => '-',
+        PatchLineKind::Context => ' ',
+        PatchLineKind::Meta => '\\',
     }
 }
 
@@ -1492,7 +1492,8 @@ mod tests {
     use crate::app::view::{ThreadCard, ThreadState as SemanticThreadState};
     use crate::domain::anchor::{Anchor, HunkLocation};
     use crate::domain::diff::{
-        DiffDocument, DiffLine, DiffLineKind, EDGE_FIXTURE, HunkCoordinates, HunkRange, Magnitude,
+        EDGE_FIXTURE, HunkCoordinates, HunkRange, Magnitude, PatchLine, PatchLineKind,
+        ReviewPresentation,
     };
     use crate::domain::thread::{Participant, ParticipantKind, ThreadState};
     use crate::presentation::renderer::SemanticTheme;
@@ -1501,19 +1502,19 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
     use urushi::{Color, TextAttribute};
 
-    fn line(kind: DiffLineKind, text: &str) -> DiffLine {
-        DiffLine {
+    fn line(kind: PatchLineKind, text: &str) -> PatchLine {
+        PatchLine {
             kind,
             text: text.into(),
         }
     }
 
-    fn hunk_syntax(lines: &[DiffLine], extension: &str) -> HunkSyntax {
+    fn hunk_syntax(lines: &[PatchLine], extension: &str) -> HunkSyntax {
         SyntaxHighlighter::default().highlight_hunk(Some(extension), lines)
     }
 
     fn edge_notes(path: &str) -> Vec<String> {
-        let document = DiffDocument::parse(EDGE_FIXTURE);
+        let document = ReviewPresentation::parse(EDGE_FIXTURE);
         let file = document
             .files
             .iter()
@@ -1682,9 +1683,9 @@ mod tests {
     fn pairs_replacement_runs_and_retains_one_sided_rows() {
         let numbered = numbered_lines(
             &[
-                line(DiffLineKind::Removed, "old one"),
-                line(DiffLineKind::Removed, "old two"),
-                line(DiffLineKind::Added, "new one"),
+                line(PatchLineKind::Removed, "old one"),
+                line(PatchLineKind::Removed, "old two"),
+                line(PatchLineKind::Added, "new one"),
             ],
             Some(HunkCoordinates {
                 old: HunkRange {
@@ -1711,11 +1712,11 @@ mod tests {
     fn numbers_each_side_from_the_parsed_hunk_coordinates() {
         let lines = numbered_lines(
             &[
-                line(DiffLineKind::Context, "before"),
-                line(DiffLineKind::Removed, "old"),
-                line(DiffLineKind::Added, "new"),
-                line(DiffLineKind::Context, "after"),
-                line(DiffLineKind::Meta, "\\ No newline at end of file"),
+                line(PatchLineKind::Context, "before"),
+                line(PatchLineKind::Removed, "old"),
+                line(PatchLineKind::Added, "new"),
+                line(PatchLineKind::Context, "after"),
+                line(PatchLineKind::Meta, "\\ No newline at end of file"),
             ],
             Some(HunkCoordinates {
                 old: HunkRange {
@@ -1746,8 +1747,8 @@ mod tests {
 
     #[test]
     fn gutter_width_spans_multiple_hunks() {
-        let first = [line(DiffLineKind::Context, "first")];
-        let second = [line(DiffLineKind::Added, "second")];
+        let first = [line(PatchLineKind::Context, "first")];
+        let second = [line(PatchLineKind::Added, "second")];
         assert_eq!(
             line_number_width(
                 [
@@ -1828,9 +1829,9 @@ mod tests {
     #[test]
     fn zero_length_and_one_sided_split_ranges_keep_their_canonical_side() {
         let added = [
-            line(DiffLineKind::Added, "first"),
-            line(DiffLineKind::Added, "second"),
-            line(DiffLineKind::Meta, "\\ No newline at end of file"),
+            line(PatchLineKind::Added, "first"),
+            line(PatchLineKind::Added, "second"),
+            line(PatchLineKind::Meta, "\\ No newline at end of file"),
         ];
         let syntax = hunk_syntax(&added, "txt");
         let rendered = split_hunk_lines(
@@ -1862,7 +1863,7 @@ mod tests {
         assert_eq!(rendered[2].matches("no newline at EOF").count(), 1);
         assert_eq!(UnicodeWidthStr::width(rendered[2].as_str()), 48);
 
-        let removed = [line(DiffLineKind::Removed, "gone")];
+        let removed = [line(PatchLineKind::Removed, "gone")];
         let syntax = hunk_syntax(&removed, "txt");
         let rendered = split_hunk_lines(
             &removed,
@@ -1895,9 +1896,9 @@ mod tests {
     #[test]
     fn split_and_stack_compose_syntax_pair_search_and_selected_hunk_evidence() {
         let lines = [
-            line(DiffLineKind::Context, "let stable = 1;"),
-            line(DiffLineKind::Removed, "let timeout = 30;"),
-            line(DiffLineKind::Added, "let timeout = 60;"),
+            line(PatchLineKind::Context, "let stable = 1;"),
+            line(PatchLineKind::Removed, "let timeout = 30;"),
+            line(PatchLineKind::Added, "let timeout = 60;"),
         ];
         let coordinates = Some(HunkCoordinates {
             old: HunkRange {
@@ -1989,10 +1990,10 @@ mod tests {
     #[test]
     fn split_uses_independent_syntax_state_for_old_and_new_sides() {
         let changed = [
-            line(DiffLineKind::Removed, "/* old side remains open"),
-            line(DiffLineKind::Added, "let replacement = 1;"),
+            line(PatchLineKind::Removed, "/* old side remains open"),
+            line(PatchLineKind::Added, "let replacement = 1;"),
         ];
-        let clean = [line(DiffLineKind::Added, "let replacement = 1;")];
+        let clean = [line(PatchLineKind::Added, "let replacement = 1;")];
         let semantic_theme = SemanticTheme::from_no_color(None);
         let changed_syntax = hunk_syntax(&changed, "rs");
         let clean_syntax = hunk_syntax(&clean, "rs");
@@ -2073,9 +2074,9 @@ mod tests {
     #[test]
     fn layouts_compose_selection_syntax_search_and_intraline_evidence() {
         let lines = [
-            line(DiffLineKind::Context, "let stable = 1;"),
-            line(DiffLineKind::Removed, "let timeout = 30;"),
-            line(DiffLineKind::Added, "let timeout = 60;"),
+            line(PatchLineKind::Context, "let stable = 1;"),
+            line(PatchLineKind::Removed, "let timeout = 30;"),
+            line(PatchLineKind::Added, "let timeout = 60;"),
         ];
         let coordinates = Some(HunkCoordinates {
             old: HunkRange {
@@ -2159,8 +2160,8 @@ mod tests {
     #[test]
     fn no_color_and_narrow_split_keep_non_color_change_and_search_evidence() {
         let lines = [
-            line(DiffLineKind::Removed, "let timeout = 30;"),
-            line(DiffLineKind::Added, "let timeout = 60;"),
+            line(PatchLineKind::Removed, "let timeout = 30;"),
+            line(PatchLineKind::Added, "let timeout = 60;"),
         ];
         let syntax = hunk_syntax(&lines, "rs");
         for layout in ["split", "stack"] {

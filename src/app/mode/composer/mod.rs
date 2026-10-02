@@ -9,8 +9,7 @@ use crate::{
         view::{ComposerOverlay, Overlay},
     },
     domain::{
-        anchor::HunkLocation,
-        diff::{DiffProvenance, DiffSource},
+        anchor::{AnchorBasis, HunkLocation},
         thread::{ThreadChange, ThreadId, ThreadOperation, ThreadState, ThreadSuccess},
     },
 };
@@ -163,8 +162,7 @@ pub enum Outcome {
 
 #[derive(Debug, Clone)]
 pub struct UpdateInput {
-    pub source: DiffSource,
-    pub provenance: DiffProvenance,
+    pub anchor_basis: AnchorBasis,
     pub selected_location: Option<HunkLocation>,
     pub operation_pending: bool,
 }
@@ -301,8 +299,7 @@ fn submit(model: &mut Model, input: UpdateInput, result: &mut Update) {
     result
         .effects
         .push(Effect::ChangeThreads(ThreadOperation::Submit {
-            source: input.source,
-            provenance: input.provenance,
+            anchor_basis: Box::new(input.anchor_basis),
             location,
             body: model.input.clone(),
             reply_to: model.reply_to,
@@ -532,7 +529,7 @@ pub fn view(model: &Model, target: Option<&str>, keyboard_protocol: KeyboardProt
 mod tests {
     use crate::{
         app::input::{BindingResolution, Key, KeyPhase, KeyboardProtocol, PhysicalInput},
-        domain::diff::{DiffProvenance, DiffSource, GitComparison},
+        domain::anchor::AnchorBasis,
     };
 
     use super::{Event, Model, Overlay, UpdateInput, view};
@@ -550,8 +547,7 @@ mod tests {
             model,
             event,
             UpdateInput {
-                source: DiffSource::Git(GitComparison::Changes),
-                provenance: DiffProvenance::None,
+                anchor_basis: AnchorBasis::Unavailable,
                 selected_location: None,
                 operation_pending: false,
             },

@@ -1,7 +1,7 @@
 //! Deterministic Multilayer Elm application and Root coordinator.
 
 use crate::domain::{
-    diff::{DiffRequest, LoadedDiff},
+    diff::{CapturedInput, DiffRequest},
     thread::{Resolution, ThreadState},
 };
 
@@ -24,15 +24,19 @@ pub struct Model {
 }
 
 impl Model {
-    pub fn new(request: DiffRequest, diff: LoadedDiff, threads: ThreadState) -> Self {
-        Self {
+    pub fn new(
+        request: DiffRequest,
+        captured: CapturedInput,
+        threads: ThreadState,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
             global: global::Model::new(threads),
-            review: review::Model::new(request, diff),
+            review: review::Model::new(request, captured)?,
             composer: composer::Model::default(),
             help: help::Model::default(),
             rollup: rollup::Model::default(),
             active_mode: ActiveMode::Review,
-        }
+        })
     }
 
     pub fn is_running(&self) -> bool {
@@ -157,15 +161,21 @@ fn dispatch_effect_result(model: &mut Model, result: EffectResult) -> Vec<Effect
     match (result.owner, result.outcome) {
         (ActiveMode::Review, Outcome::DiffReloaded { purpose, result }) => update_review(
             model,
-            review::Event::EffectCompleted(review::Outcome::DiffReloaded { purpose, result }),
+            review::Event::EffectCompleted(Box::new(review::Outcome::DiffReloaded {
+                purpose,
+                result,
+            })),
         ),
         (ActiveMode::Review, Outcome::ThreadsChanged { result }) => update_review(
             model,
-            review::Event::EffectCompleted(review::Outcome::ThreadsChanged { result }),
+            review::Event::EffectCompleted(Box::new(review::Outcome::ThreadsChanged { result })),
         ),
         (ActiveMode::Review, Outcome::ThreadResolved { id, result }) => update_review(
             model,
-            review::Event::EffectCompleted(review::Outcome::ThreadResolved { id, result }),
+            review::Event::EffectCompleted(Box::new(review::Outcome::ThreadResolved {
+                id,
+                result,
+            })),
         ),
         (ActiveMode::Composer, Outcome::ThreadsChanged { result }) => update_composer(
             model,
@@ -199,8 +209,10 @@ fn update_review(model: &mut Model, event: review::Event) -> Vec<Effect> {
 
 fn update_composer(model: &mut Model, event: composer::Event) -> Vec<Effect> {
     let input = composer::UpdateInput {
-        source: model.review.request().source.clone(),
-        provenance: model.review.session().diff().provenance.clone(),
+        anchor_basis: crate::domain::anchor::AnchorBasis::from_capture(
+            model.review.captured(),
+            model.review.request().context_lines,
+        ),
         selected_location: model.review.projected_location(&model.global.threads),
         operation_pending: model.global.pending.is_some(),
     };
@@ -542,8 +554,8 @@ pub fn view(model: &Model) -> semantic::View {
         &model.global,
         global::ViewInput {
             comparison: model.review.comparison(),
-            file_count: model.review.session().diff().document.files.len(),
-            magnitude: model.review.session().diff().document.magnitude(),
+            file_count: model.review.session().presentation().files.len(),
+            magnitude: model.review.session().presentation().magnitude(),
             active_filter: model.review.filter().label(),
             context,
             target,

@@ -1,9 +1,14 @@
 # Diff Presentation
 
+## Question
+
+How does Revia present semantic file changes without losing review evidence
+when layout, context, or terminal size changes?
+
 ## Rule
 
-The normal review surface presents Git's semantic changes, not its patch
-transport. Split and stack layouts must expose the same source rows, old/new
+The normal review surface presents semantic file changes, not patch transport.
+Split and stack layouts must expose the same source rows, old/new
 line numbers, row kind, syntax, search state, intraline evidence, and clipping
 state. Layout may rearrange evidence but may not remove it.
 
@@ -22,11 +27,11 @@ border/label differences still carry workflow meaning.
 
 ## Parsed facts and hidden transport
 
-`domain::diff` parses file status, paths, rename/copy similarity, mode changes, binary
-state, hunk coordinates, patch notes, and addition/deletion counts before
-presentation. The review stream hides `diff --git`, object-index, `---`, and
-`+++` rows. It retains new/deleted, rename/copy, mode, binary, missing-newline,
-and hunk-range facts in reviewer-facing labels.
+The diff pipeline interprets file status, paths, rename/copy similarity, mode
+changes, binary state, source coordinates, patch notes, and addition/deletion
+counts before presentation. The review stream hides `diff --git`, object-index,
+`---`, and `+++` rows. It retains new/deleted, rename/copy, mode, binary,
+missing-newline, and range facts in reviewer-facing labels.
 
 The changeset header identifies the comparison, file count, total additions and
 deletions, and active filter. File boundaries and rail items retain unique fitted
@@ -35,16 +40,18 @@ magnitude.
 
 ## Source rows
 
-Each source row keeps stable old/new line-number gutters derived from parsed
-hunk coordinates. Split gives each side a complete number/kind/code cell around
-one divider; stack keeps old and new numbers beside one code stream. Missing
-sides remain blank rather than collapsing a gutter.
+Each source row keeps stable old/new line-number gutters. Complete text diffs
+derive them from `TextDocument` line indexes and the semantic change map;
+patch-shaped diffs derive them from parsed hunk coordinates. Split gives each
+side a complete number/kind/code cell around one divider; stack keeps old and
+new numbers beside one code stream. Missing sides remain blank rather than
+collapsing a gutter.
 
 Deletion/addition runs may be paired for display. Intraline comparison tokenizes
 identifier/number runs, whitespace runs, and punctuation graphemes, computes a
 short edit sequence, then refines replacements at grapheme boundaries. Pairing
-is presentation evidence only; it does not change Git's row identity or claim
-that Git supplied a correspondence.
+is presentation evidence only; it does not change source-row identity or claim
+that the captured patch supplied a correspondence.
 
 Tabs expand to four-column stops. Clipping and wrapping operate at Unicode
 grapheme boundaries and terminal-cell width. A clipped line has a visible edge

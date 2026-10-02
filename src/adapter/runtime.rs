@@ -1,6 +1,6 @@
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Mutex,
 };
 
 use crate::{
@@ -13,7 +13,8 @@ use crate::{
     },
     app::{Effect, EffectResult, Outcome},
     domain::{
-        diff::{DiffProvenance, DiffRequest, DiffSource, GitComparison, LoadedDiff, PatchInput},
+        anchor::{AnchorBasis, MutableGitComparison},
+        diff::{CapturedInput, ContentId, DiffRequest, DiffSource, PatchInput},
         thread::{
             Participant, ParticipantKind, ThreadChange, ThreadOperation, ThreadState, ThreadSuccess,
         },
@@ -23,13 +24,13 @@ use crate::{
 pub struct Runtime {
     repository: PathBuf,
     threads: Option<ThreadRepository>,
-    stdin_patch: Option<LoadedDiff>,
+    stdin_patch: Option<CapturedInput>,
     snapshot_cache: Mutex<Option<SnapshotCache>>,
 }
 
 struct SnapshotCache {
-    source: DiffSource,
-    expected_document: Arc<crate::domain::diff::DiffDocument>,
+    comparison: MutableGitComparison,
+    expected_content: ContentId,
     object: String,
 }
 
@@ -37,7 +38,7 @@ impl Runtime {
     pub fn open(
         repository: &Path,
         request: &DiffRequest,
-        initial_diff: &LoadedDiff,
+        initial_capture: &CapturedInput,
     ) -> anyhow::Result<(Self, ThreadState)> {
         let (threads, state) = if request.source.supports_persistent_threads() {
             let (repository, state) = ThreadRepository::open(repository)?;
@@ -45,8 +46,7 @@ impl Runtime {
         } else {
             (None, ThreadState::default())
         };
-        let stdin_patch = matches!(request.source, DiffSource::Patch(PatchInput::Stdin))
-            .then(|| initial_diff.clone());
+        let stdin_patch = initial_capture.is_stdin().then(|| initial_capture.clone());
         Ok((
             Self {
                 repository: repository.to_owned(),
@@ -99,18 +99,18 @@ impl Runtime {
         }
     }
 
-    fn reload(&self, request: &DiffRequest) -> anyhow::Result<LoadedDiff> {
+    fn reload(&self, request: &DiffRequest) -> anyhow::Result<CapturedInput> {
         if matches!(request.source, DiffSource::Patch(PatchInput::Stdin)) {
             return self.stdin_patch.clone().ok_or_else(|| {
                 anyhow::anyhow!("the original stdin patch is unavailable for reload")
             });
         }
-        let loaded = source_diff::load(&self.repository, request)?;
+        let captured = source_diff::capture(&self.repository, request)?;
         *self
             .snapshot_cache
             .lock()
             .map_err(|_| anyhow::anyhow!("the snapshot cache is unavailable"))? = None;
-        Ok(loaded)
+        Ok(captured)
     }
 
     fn resolve_thread(
@@ -142,8 +142,7 @@ impl Runtime {
         let mut state = current.clone();
         let success = match operation {
             ThreadOperation::Submit {
-                source,
-                provenance,
+                anchor_basis,
                 location,
                 body,
                 reply_to,
@@ -160,24 +159,20 @@ impl Runtime {
                     ThreadSuccess::Replied
                 } else {
                     let anchors = AnchorStore::new(&self.repository);
-                    let anchor = match source {
-                        DiffSource::Git(_) => match provenance {
-                            DiffProvenance::GitObject(object) => {
+                    let anchor = match *anchor_basis {
+                        AnchorBasis::GitObject(object) => {
+                            anchors.object(&object, location.path(), location.hunk_header())
+                        }
+                        AnchorBasis::MutableGit {
+                            comparison,
+                            expected_content,
+                            context_lines,
+                        } => self
+                            .snapshot_mutable(&comparison, expected_content, context_lines)
+                            .and_then(|object| {
                                 anchors.object(&object, location.path(), location.hunk_header())
-                            }
-                            DiffProvenance::MutableGit {
-                                expected_document,
-                                context_lines,
-                            } => self
-                                .snapshot_mutable(&source, &expected_document, context_lines)
-                                .and_then(|object| {
-                                    anchors.object(&object, location.path(), location.hunk_header())
-                                }),
-                            DiffProvenance::None => Err(anyhow::anyhow!(
-                                "the loaded diff has no immutable Git provenance"
-                            )),
-                        },
-                        DiffSource::Patch(_) => return Err(patch_persistence_error()),
+                            }),
+                        AnchorBasis::Unavailable => return Err(patch_persistence_error()),
                     }
                     .map_err(|error| format!("could not post thread: {error}"))?;
                     let id = state.post(
@@ -229,8 +224,8 @@ impl Runtime {
 
     fn snapshot_mutable(
         &self,
-        source: &DiffSource,
-        expected_document: &Arc<crate::domain::diff::DiffDocument>,
+        comparison: &MutableGitComparison,
+        expected_content: ContentId,
         context_lines: usize,
     ) -> anyhow::Result<String> {
         let mut cache = self
@@ -238,59 +233,41 @@ impl Runtime {
             .lock()
             .map_err(|_| anyhow::anyhow!("the snapshot cache is unavailable"))?;
         if let Some(cached) = cache.as_ref()
-            && &cached.source == source
-            && cached.expected_document.as_ref() == expected_document.as_ref()
+            && &cached.comparison == comparison
+            && cached.expected_content == expected_content
         {
             return Ok(cached.object.clone());
         }
 
         let store = AnchorStore::new(&self.repository);
-        let object = match source {
-            DiffSource::Git(GitComparison::Changes) => store.snapshot_changes(),
-            DiffSource::Git(GitComparison::Staged) => store.snapshot_index(),
-            DiffSource::Git(GitComparison::Unstaged) => store.snapshot_working_tree(),
-            DiffSource::Git(GitComparison::Revision(_) | GitComparison::Range(_)) => {
-                anyhow::bail!("immutable Git comparisons do not require a snapshot")
-            }
-            DiffSource::Patch(_) => anyhow::bail!("patch input cannot create a Git snapshot"),
+        let object = match comparison {
+            MutableGitComparison::Changes { .. } => store.snapshot_changes(),
+            MutableGitComparison::Staged { .. } => store.snapshot_index(),
+            MutableGitComparison::Unstaged => store.snapshot_working_tree(),
         }
         .map_err(|error| {
             anyhow::anyhow!(
                 "this comparison cannot be persisted as an immutable Git snapshot: {error}"
             )
         })?;
-        let DiffSource::Git(comparison) = source else {
-            unreachable!("patch input returned before snapshot verification")
-        };
-        let snapshot = crate::adapter::git::diff::snapshot_document(
+        let snapshot = crate::adapter::git::diff::snapshot_patch(
             &self.repository,
             comparison,
             &object,
             context_lines,
         )?;
-        if !same_evidence(expected_document, &snapshot) {
+        if expected_content != snapshot.content_id() {
             anyhow::bail!(
                 "this comparison cannot be persisted because an immutable Git snapshot cannot represent the displayed evidence"
             );
         }
         *cache = Some(SnapshotCache {
-            source: source.clone(),
-            expected_document: expected_document.clone(),
+            comparison: comparison.clone(),
+            expected_content,
             object: object.clone(),
         });
         Ok(object)
     }
-}
-
-fn same_evidence(
-    left: &crate::domain::diff::DiffDocument,
-    right: &crate::domain::diff::DiffDocument,
-) -> bool {
-    let mut left = left.files.iter().collect::<Vec<_>>();
-    let mut right = right.files.iter().collect::<Vec<_>>();
-    left.sort_by(|a, b| a.path.cmp(&b.path));
-    right.sort_by(|a, b| a.path.cmp(&b.path));
-    left == right
 }
 
 fn patch_persistence_error() -> String {
@@ -317,19 +294,17 @@ mod tests {
     };
 
     use super::Runtime;
-    use crate::domain::diff::{
-        DiffDocument, DiffProvenance, DiffRequest, DiffSource, GitComparison, LoadedDiff,
-        PatchInput,
+    use crate::domain::{
+        anchor::AnchorBasis,
+        diff::{CapturedInput, DiffRequest, DiffSource, GitComparison, PatchContent, PatchInput},
     };
 
     #[test]
     fn stdin_patch_reload_reuses_the_normalized_initial_source() {
         let text =
             "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n";
-        let initial = LoadedDiff {
-            text: text.into(),
-            document: DiffDocument::parse(text).into(),
-            provenance: DiffProvenance::None,
+        let initial = CapturedInput::PatchStdin {
+            patch: PatchContent::new(text),
         };
         let request = DiffRequest {
             source: DiffSource::Patch(PatchInput::Stdin),
@@ -344,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn mutable_snapshot_matches_the_loaded_diff_and_is_reused_after_later_edits() {
+    fn mutable_snapshot_matches_the_capture_and_is_reused_after_later_edits() {
         let repository = std::env::temp_dir().join(format!(
             "revia-runtime-{}",
             SystemTime::now()
@@ -372,31 +347,33 @@ mod tests {
         git(&["config", "user.email", "revia@example.invalid"]);
         fs::write(repository.join("example.txt"), "staged\n").unwrap();
         git(&["add", "example.txt"]);
+        git(&["commit", "-qm", "base"]);
         fs::write(repository.join("example.txt"), "working\n").unwrap();
         let request = DiffRequest {
             source: DiffSource::Git(GitComparison::Changes),
             context_lines: 3,
         };
-        let initial = crate::adapter::diff::load(&repository, &request).unwrap();
-        let DiffProvenance::MutableGit {
-            expected_document,
-            context_lines,
-        } = &initial.provenance
+        let initial = crate::adapter::diff::capture(&repository, &request).unwrap();
+        let AnchorBasis::MutableGit {
+            comparison,
+            expected_content,
+            ..
+        } = AnchorBasis::from_capture(&initial, request.context_lines)
         else {
-            panic!("changes must carry mutable comparison evidence");
+            panic!("changes capture must produce mutable anchor evidence");
         };
         let (runtime, _) = Runtime::open(&repository, &request, &initial).unwrap();
 
         let object = runtime
-            .snapshot_mutable(&request.source, expected_document, *context_lines)
+            .snapshot_mutable(&comparison, expected_content, request.context_lines)
             .unwrap();
         fs::write(repository.join("example.txt"), "later\n").unwrap();
         let reused = runtime
-            .snapshot_mutable(&request.source, expected_document, *context_lines)
+            .snapshot_mutable(&comparison, expected_content, request.context_lines)
             .unwrap();
         let (fresh_runtime, _) = Runtime::open(&repository, &request, &initial).unwrap();
         let stale =
-            fresh_runtime.snapshot_mutable(&request.source, expected_document, *context_lines);
+            fresh_runtime.snapshot_mutable(&comparison, expected_content, request.context_lines);
 
         assert_eq!(object, reused);
         assert_eq!(

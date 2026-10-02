@@ -11,8 +11,8 @@ use crate::{
     domain::{
         anchor::{Anchor, HunkLocation},
         diff::{
-            DiffDocument, DiffProvenance, DiffRequest, DiffSource, GitComparison, LoadedDiff,
-            PatchInput,
+            CapturedGitComparison, CapturedGitInput, CapturedInput, DiffRequest, DiffSource,
+            GitComparison, PatchContent, PatchInput,
         },
         thread::{
             Participant, ParticipantKind, Resolution, ThreadChange, ThreadId, ThreadState,
@@ -40,20 +40,13 @@ impl Scenario {
     }
 
     fn given_source(raw_diff: &str, threads: ThreadState, source: DiffSource) -> Self {
+        let captured = captured_for(&source, raw_diff);
         let request = DiffRequest {
             source,
             context_lines: 3,
         };
         Self {
-            model: Model::new(
-                request,
-                LoadedDiff {
-                    text: raw_diff.into(),
-                    document: DiffDocument::parse(raw_diff).into(),
-                    provenance: DiffProvenance::None,
-                },
-                threads,
-            ),
+            model: Model::new(request, captured, threads).unwrap(),
             trace: Vec::new(),
             virtual_time_ms: 0,
         }
@@ -95,6 +88,54 @@ impl Scenario {
     fn advance_virtual_time(&mut self, milliseconds: u64) {
         self.virtual_time_ms += milliseconds;
     }
+}
+
+fn captured_for(source: &DiffSource, text: &str) -> CapturedInput {
+    let patch = PatchContent::new(text);
+    match source {
+        DiffSource::Git(comparison) => {
+            let comparison = match comparison {
+                GitComparison::Changes => CapturedGitComparison::Changes {
+                    head: "test-head".into(),
+                    patch,
+                },
+                GitComparison::Staged => CapturedGitComparison::Staged {
+                    head: "test-head".into(),
+                    patch,
+                },
+                GitComparison::Unstaged => CapturedGitComparison::Unstaged {
+                    head: "test-head".into(),
+                    patch,
+                },
+                GitComparison::Revision(requested) => CapturedGitComparison::Revision {
+                    requested: requested.clone(),
+                    commit: "test-commit".into(),
+                    patch,
+                },
+                GitComparison::Range(requested) => CapturedGitComparison::Range {
+                    requested: requested.clone(),
+                    left: "test-left".into(),
+                    right: "test-right".into(),
+                    base: "test-base".into(),
+                    target: "test-right".into(),
+                    patch,
+                },
+            };
+            let parsed = crate::domain::diff::ParsedPatch::parse(comparison.patch()).unwrap();
+            let evidence =
+                vec![crate::domain::diff::CapturedFileEvidence::PatchOnly; parsed.files().len()];
+            CapturedInput::Git(CapturedGitInput::new(".".into(), comparison, evidence))
+        }
+        DiffSource::Patch(PatchInput::File(path)) => CapturedInput::PatchFile {
+            path: path.clone(),
+            patch,
+        },
+        DiffSource::Patch(PatchInput::Stdin) => CapturedInput::PatchStdin { patch },
+    }
+}
+
+fn captured_changes(text: &str) -> CapturedInput {
+    captured_for(&DiffSource::Git(GitComparison::Changes), text)
 }
 
 #[test]
@@ -788,11 +829,7 @@ fn successful_reload_clears_stale_search_and_failed_reload_preserves_it() {
         ActiveMode::Review,
         Outcome::DiffReloaded {
             purpose: review::ReloadPurpose::Manual,
-            result: Ok(LoadedDiff {
-                text: RAW.into(),
-                document: DiffDocument::parse(RAW).into(),
-                provenance: DiffProvenance::None,
-            }),
+            result: Ok(captured_changes(RAW)),
         },
     );
     assert_eq!(scenario.model.review.search_summary(), None);
@@ -938,11 +975,7 @@ fn effect_outcome_returns_to_update_and_clears_pending_state() {
         Some(PendingEffectKind::ReloadDiff)
     );
 
-    let next = LoadedDiff {
-        text: String::new().into(),
-        document: DiffDocument::default().into(),
-        provenance: DiffProvenance::None,
-    };
+    let next = captured_changes("");
     scenario.inject(
         ActiveMode::Review,
         Outcome::DiffReloaded {
@@ -960,8 +993,7 @@ fn effect_outcome_returns_to_update_and_clears_pending_state() {
             .model
             .review
             .session()
-            .diff()
-            .document
+            .presentation()
             .files
             .is_empty()
     );
@@ -970,7 +1002,7 @@ fn effect_outcome_returns_to_update_and_clears_pending_state() {
 #[test]
 fn failed_outcome_clears_pending_state_without_replacing_session() {
     let mut scenario = Scenario::given(RAW, ThreadState::default());
-    let original_diff = scenario.model.review.session().diff().text.clone();
+    let original_diff = scenario.model.review.captured().content_id();
     scenario.when_event(review::Event::AdjustContext(1));
 
     scenario.inject(
@@ -986,7 +1018,7 @@ fn failed_outcome_clears_pending_state_without_replacing_session() {
         scenario.model.global.status.as_deref(),
         Some("could not reload diff: boom")
     );
-    assert_eq!(scenario.model.review.session().diff().text, original_diff);
+    assert_eq!(scenario.model.review.captured().content_id(), original_diff);
 }
 
 #[test]
@@ -1466,11 +1498,7 @@ fn reload_and_context_adjustment_keep_the_closest_location_and_clamp_geometry() 
         ActiveMode::Review,
         Outcome::DiffReloaded {
             purpose: review::ReloadPurpose::ContextChanged,
-            result: Ok(LoadedDiff {
-                text: RELOADED_LONG_DIFF.into(),
-                document: DiffDocument::parse(RELOADED_LONG_DIFF).into(),
-                provenance: DiffProvenance::None,
-            }),
+            result: Ok(captured_changes(RELOADED_LONG_DIFF)),
         },
     );
 
@@ -2462,11 +2490,7 @@ fn filter_survives_geometry_context_and_successful_reload() {
         ActiveMode::Review,
         Outcome::DiffReloaded {
             purpose: review::ReloadPurpose::ContextChanged,
-            result: Ok(LoadedDiff {
-                text: FILTER_DIFF.into(),
-                document: DiffDocument::parse(FILTER_DIFF).into(),
-                provenance: DiffProvenance::None,
-            }),
+            result: Ok(captured_changes(FILTER_DIFF)),
         },
     );
     assert_eq!(
@@ -2514,11 +2538,7 @@ fn context_reload_resolves_the_immutable_anchor_to_the_new_hunk_header() {
         ActiveMode::Review,
         Outcome::DiffReloaded {
             purpose: review::ReloadPurpose::ContextChanged,
-            result: Ok(LoadedDiff {
-                text: CONTEXT_U4_DIFF.into(),
-                document: DiffDocument::parse(CONTEXT_U4_DIFF).into(),
-                provenance: DiffProvenance::None,
-            }),
+            result: Ok(captured_changes(CONTEXT_U4_DIFF)),
         },
     );
 
@@ -2599,11 +2619,7 @@ fn ambiguous_split_hunks_choose_nearest_start_then_git_order() {
         ActiveMode::Review,
         Outcome::DiffReloaded {
             purpose: review::ReloadPurpose::Manual,
-            result: Ok(LoadedDiff {
-                text: SPLIT_HUNKS_DIFF.into(),
-                document: DiffDocument::parse(SPLIT_HUNKS_DIFF).into(),
-                provenance: DiffProvenance::None,
-            }),
+            result: Ok(captured_changes(SPLIT_HUNKS_DIFF)),
         },
     );
 
@@ -2671,11 +2687,7 @@ fn stale_effect_result_cannot_clear_or_replace_the_current_operation() {
         ActiveMode::Review,
         Outcome::DiffReloaded {
             purpose: review::ReloadPurpose::Manual,
-            result: Ok(LoadedDiff {
-                text: RAW.into(),
-                document: DiffDocument::parse(RAW).into(),
-                provenance: DiffProvenance::None,
-            }),
+            result: Ok(captured_changes(RAW)),
         },
     );
 
@@ -2687,16 +2699,12 @@ fn stale_effect_result_cannot_clear_or_replace_the_current_operation() {
         ActiveMode::Review,
         Outcome::DiffReloaded {
             purpose: review::ReloadPurpose::Manual,
-            result: Ok(LoadedDiff {
-                text: String::new().into(),
-                document: DiffDocument::default().into(),
-                provenance: DiffProvenance::None,
-            }),
+            result: Ok(captured_changes("")),
         },
     );
 
     assert_eq!(scenario.model.global.pending, Some(second));
-    assert_eq!(scenario.model.review.session().diff().text.as_ref(), RAW);
+    assert_eq!(scenario.model.review.captured().patch().text(), RAW);
     assert_eq!(
         scenario.model.global.status.as_deref(),
         Some("ignored stale operation result")
@@ -2733,11 +2741,7 @@ fn reload_drops_thread_focus_when_the_canonical_target_disappears() {
         ActiveMode::Review,
         Outcome::DiffReloaded {
             purpose: review::ReloadPurpose::Manual,
-            result: Ok(LoadedDiff {
-                text: only_b.into(),
-                document: DiffDocument::parse(only_b).into(),
-                provenance: DiffProvenance::None,
-            }),
+            result: Ok(captured_changes(only_b)),
         },
     );
 

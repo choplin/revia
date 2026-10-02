@@ -1,5 +1,52 @@
 //! Immutable review locations and Git-backed anchor identity.
 
+use super::diff::{CapturedGitComparison, CapturedInput, ContentId};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MutableGitComparison {
+    Changes { head: String },
+    Staged { head: String },
+    Unstaged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnchorBasis {
+    GitObject(String),
+    MutableGit {
+        comparison: MutableGitComparison,
+        expected_content: ContentId,
+        context_lines: usize,
+    },
+    Unavailable,
+}
+
+impl AnchorBasis {
+    pub fn from_capture(captured: &CapturedInput, context_lines: usize) -> Self {
+        let Some(comparison) = captured.git_comparison() else {
+            return Self::Unavailable;
+        };
+        match comparison {
+            CapturedGitComparison::Revision { commit, .. } => Self::GitObject(commit.clone()),
+            CapturedGitComparison::Range { target, .. } => Self::GitObject(target.clone()),
+            CapturedGitComparison::Changes { head, .. } => Self::MutableGit {
+                comparison: MutableGitComparison::Changes { head: head.clone() },
+                expected_content: captured.content_id(),
+                context_lines,
+            },
+            CapturedGitComparison::Staged { head, .. } => Self::MutableGit {
+                comparison: MutableGitComparison::Staged { head: head.clone() },
+                expected_content: captured.content_id(),
+                context_lines,
+            },
+            CapturedGitComparison::Unstaged { .. } => Self::MutableGit {
+                comparison: MutableGitComparison::Unstaged,
+                expected_content: captured.content_id(),
+                context_lines,
+            },
+        }
+    }
+}
+
 /// The visible review target within one diff: a file and one hunk header.
 ///
 /// This deliberately excludes a revision. An `Anchor` adds immutable Git

@@ -2,7 +2,7 @@ use crate::{
     app::mode::{ActiveMode, review::ReloadPurpose},
     domain::{
         anchor::HunkLocation,
-        diff::{DiffRequest, LoadedDiff},
+        diff::{CapturedInput, DiffRequest},
         thread::{ThreadChange, ThreadId, ThreadOperation},
     },
 };
@@ -49,7 +49,7 @@ pub struct EffectResult {
 pub enum Outcome {
     DiffReloaded {
         purpose: ReloadPurpose,
-        result: Result<LoadedDiff, String>,
+        result: Result<CapturedInput, String>,
     },
     ThreadsChanged {
         result: Result<ThreadChange, String>,

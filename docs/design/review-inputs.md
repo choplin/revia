@@ -1,13 +1,13 @@
 # Review Inputs
 
-Revia primarily reviews comparisons from Git repositories. It also accepts an
-existing unified patch from a file or stdin when the review input is already
-available as a patch.
+## Question
+
+Which review inputs does Revia accept, and what comparison does each input mean?
 
 ## Rule
 
-Review input has two independent levels: a source and that source's comparison
-or input. The canonical CLI makes both explicit:
+Review input has two levels: a source and that source's comparison or input. The
+canonical CLI makes both explicit:
 
 ```text
 revia git changes
@@ -31,49 +31,27 @@ A positional value is never inferred to be a patch file. File input remains
 `revia patch <FILE>` whether or not a same-named file currently exists.
 
 `Changes` is the complete current state relative to `HEAD`: staged changes,
-unstaged tracked changes, and untracked files. `Revision` accepts a commit-ish
-and displays the patch introduced by its resolved commit. Two-dot ranges compare
-their endpoints; three-dot ranges compare the merge base with the right endpoint.
+unstaged tracked changes, and untracked files. `Staged` compares `HEAD` with the
+index. `Unstaged` compares the index with the working tree and excludes
+untracked files.
 
-Every form normalizes into `DiffSource`, then every acquisition adapter produces
-the same `LoadedDiff` containing raw patch text, parsed evidence, and provenance
-needed to verify persistent anchors. Raw print, the TUI, reload, and thread
-anchoring consume that representation rather than independently choosing what
-was reviewed.
+`Revision` accepts a commit-ish and displays the patch introduced by its
+resolved commit. `A..B` compares the two resolved endpoints. `A...B` compares
+their merge base with the resolved right endpoint. The caller's spelling and
+the resolved Git objects remain distinct.
+
+Patch file and stdin input contain an already-produced patch. Revia does not
+infer a repository or fabricate Git provenance for them.
 
 ## Why
 
 The old target flags mixed Git as a provider with several comparison modes.
-That made common invocations hard to remember and made patch input look like a
-special Git target. Source-specific commands keep the domain boundary explicit,
-while shortcuts preserve the shortest paths without consulting filesystem state
-or introducing ambiguous inference.
+Source-specific commands keep that boundary explicit, while shortcuts preserve
+the shortest common paths without consulting filesystem state or introducing
+ambiguous inference.
 
-Keeping the caller's revision spelling in the request makes headers and reload
-recognizable. Git resolves revision operands before acquisition, so immutable
-comparisons retain their exact target object. Mutable comparisons retain the
-loaded patch as verification evidence. Before their first thread is persisted,
-Revia creates an immutable candidate snapshot, reconstructs its diff, and
-refuses the post unless it represents the displayed evidence. The verified
-snapshot is reused for later threads from that loaded view.
-
-Tracked evidence comes from Git's working-tree-aware diff commands, preserving
-conflict and dirty-submodule output. `Changes` adds untracked files with one
-no-index diff over a private hard-link mirror, including empty files without one
-subprocess per path or writing blobs to the repository. Acquisition operates
-from the repository root, so starting Revia in a subdirectory does not narrow
-the review accidentally.
-
-## Persistence boundary
-
-Git comparisons can establish immutable repository provenance. Patch files and
-stdin cannot, so their initial implementation disables persistent thread
-operations and explains that boundary in the UI. Patch input never creates a Git
-snapshot. Introducing persistence for patch sources requires a separate,
-provider-independent immutable provenance design.
-
-Reload repeats the normalized request. A patch file is reread; stdin reuses the
-initially loaded patch because the stream is not replayable.
+Using `Changes` consistently in the CLI, domain, and UI gives the default input
+one meaning: all current changes relative to `HEAD`.
 
 ## Rejected alternatives
 
@@ -85,3 +63,7 @@ initially loaded patch because the stream is not replayable.
   shortcut differ from the canonical revision operation.
 - Creating Git snapshots for patch input fabricates provenance the input does
   not possess.
+
+The choice to retain source-specific capture identity is explained in
+[`captured-input.md`](captured-input.md). Coherent observation of mutable Git
+state is explained in [`mutable-git-input.md`](mutable-git-input.md).

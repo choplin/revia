@@ -4,7 +4,7 @@ use crate::{
     app::view_state::{FocusArea, LayoutMode},
     domain::{
         anchor::HunkLocation,
-        diff::{DiffLine, FileChange, HunkCoordinates, Magnitude},
+        diff::{FileChange, HunkCoordinates, Magnitude, PatchLine},
         thread::ThreadId,
     },
 };
@@ -92,7 +92,7 @@ pub enum DiffSearchTarget {
     HunkHeader {
         location: HunkLocation,
     },
-    DiffLine {
+    PatchLine {
         location: HunkLocation,
         line_index: usize,
     },
@@ -168,7 +168,7 @@ pub struct ReviewHunk {
     pub header: Option<String>,
     pub coordinates: Option<HunkCoordinates>,
     pub selected: bool,
-    pub lines: Arc<Vec<DiffLine>>,
+    pub lines: Arc<Vec<PatchLine>>,
     pub threads: Vec<ThreadCard>,
 }
 

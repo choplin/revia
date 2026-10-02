@@ -9,16 +9,18 @@ anchors. Persistent discussions are unavailable for patch input because it has
 no immutable repository provenance. Revia does not stage, edit, or commit
 tracked content.
 
-Three documents expand the main architectural units:
+Five documents expand the main architectural units:
 
-- [`review-model.md`](review-model.md) explains parsed diffs, immutable anchors,
-  thread state, persistence, and projection onto a current diff.
+- [`diff-model.md`](diff-model.md) explains captured input, parsed patch syntax,
+  semantic file diffs, and review presentation.
+- [`review-model.md`](review-model.md) explains selection, immutable anchors,
+  thread state, and projection onto a current diff.
 - [`review-surface.md`](review-surface.md) explains the single review stream,
   semantic navigation, filtering, searching, and responsive presentation.
 - [`tui-architecture.md`](tui-architecture.md) explains the Multilayer Elm
   application, effect boundary, semantic view, and Urushi runtime adapter.
 - [`design/review-inputs.md`](design/review-inputs.md) defines source-specific
-  commands, shortcut normalization, and acquisition boundaries.
+  commands, shortcut normalization, and capture boundaries.
 
 Precise rules and their rationale live under [`design/`](design/). The
 [`decision log`](decision-log.md) records when those rules changed without
@@ -30,9 +32,15 @@ duplicating their current definitions.
 CLI arguments
     |
     v
-DiffRequest -- source adapter --> LoadedDiff --> app::Model
-                  |                 ^
-                  +-- Git/patch ----+
+DiffRequest -- source adapter --> CapturedInput -- parse --> ParsedPatch
+                                      |                        |
+                                      +-- verified file states-+
+                                                               |
+                                                               v
+                                                          ReviewDiff
+                                                               |
+                                                               v
+                                                ReviewPresentation --> app::Model
                                              /            \
 physical input / surface -------------------/              \
                                                             v
@@ -55,10 +63,11 @@ physical input / surface -------------------/              \
 ```
 
 `main` composes the application. `adapter::cli` turns Clap arguments into a
-renderer-independent `DiffRequest`; `adapter::diff` routes acquisition to Git,
-a patch file, or stdin; and `domain::diff` parses the resulting patch into
-`LoadedDiff`. When `--print` is used or stdout is not a terminal, `main` writes
-the raw loaded patch and does not open the review store or TUI.
+renderer-independent `DiffRequest`; `adapter::diff` captures the exact result
+from Git, a patch file, or stdin; and the diff pipeline parses syntax, derives
+review meaning, and builds the current presentation. When `--print` is used or
+stdout is not a terminal, `main` writes the captured patch text and does not
+open the review store or TUI.
 
 The interactive path opens `Runtime`, builds the persistent Root model, and
 hands both to `adapter::terminal::ReviaApplication`. Urushi owns terminal input,
@@ -98,9 +107,9 @@ import application, presentation, terminal, filesystem, process, or clock APIs.
 | Area | Owner | Boundary |
 | --- | --- | --- |
 | CLI transport | `adapter::cli` | Normalizes canonical source commands and shortcuts into one request; it does not load data. |
-| Diff acquisition | `adapter::diff` and `adapter::git::diff` | Routes by source, owns Git's command-line representation and patch reads, and returns one common loaded representation. |
+| Diff capture | `adapter::diff` and `adapter::git::diff` | Routes by source, captures the exact patch, and obtains any complete file sides through the same resolved Git comparison. Mutable sides are accepted only after verification against the captured change. |
 | Review identity and lifecycle | `domain::{anchor, review, thread}` | Owns immutable locations, current selection, and thread transitions without I/O or rendering concerns. |
-| Diff parsing | `domain::diff` | Produces files, hunks, lines, file-change facts, and magnitude from patch text. |
+| Diff parsing and interpretation | `domain::diff` | Separates format-specific syntax from complete or patch-shaped reviewer-facing file changes. |
 | Deterministic application | `app` and `app::mode` | Resolves input, updates persistent state, coordinates cross-slice intents, and declares effects without performing I/O. |
 | External operations | `adapter::runtime` and `adapter::git` | Runs Git, filesystem, persistence, and clock operations and returns typed outcomes. |
 | Semantic screen | `app::view` and mode `view` functions | Describes visible roles and content without Urushi layout types. |
@@ -139,6 +148,8 @@ are defined in [`design/anchors-and-threads.md`](design/anchors-and-threads.md).
 - Git's line-based patch remains the authoritative review evidence. Structural
   rendering may only be an optional projection; see
   [`design/structural-diff.md`](design/structural-diff.md).
+- Captured input, parsed syntax, semantic diff, and presentation are distinct
+  representations; see [`diff-model.md`](diff-model.md).
 - A review target is semantic (`path` plus hunk identity), never a terminal row
   or cell coordinate.
 - Persisted anchors are immutable. Projection onto a reloaded diff is derived

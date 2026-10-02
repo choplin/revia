@@ -14,7 +14,10 @@ use crate::{
     },
     domain::{
         anchor::HunkLocation,
-        diff::{DiffHunk, DiffLineKind, DiffRequest, HunkCoordinates, HunkRange, LoadedDiff},
+        diff::{
+            CapturedInput, DiffRequest, HunkCoordinates, HunkRange, PatchLineKind,
+            PresentedSection, ReviewPresentation, build_review,
+        },
         review::{ReviewCursor, ReviewSession},
         thread::{
             Resolution, ReviewThread, ThreadChange, ThreadId, ThreadOperation,
@@ -30,6 +33,7 @@ const TARGET_REVEAL_MARGIN: usize = 2;
 #[derive(Debug)]
 pub struct Model {
     request: DiffRequest,
+    captured: CapturedInput,
     session: ReviewSession,
     view: ViewState,
     sidebar_visible: bool,
@@ -264,10 +268,12 @@ pub struct SearchSummary {
 }
 
 impl Model {
-    pub fn new(request: DiffRequest, diff: LoadedDiff) -> Self {
-        Self {
+    pub fn new(request: DiffRequest, captured: CapturedInput) -> anyhow::Result<Self> {
+        let (_, presentation) = build_review(&captured, request.context_lines)?;
+        Ok(Self {
             request,
-            session: ReviewSession::new(diff),
+            captured,
+            session: ReviewSession::new(presentation),
             view: ViewState::default(),
             sidebar_visible: true,
             show_hunk_headers: true,
@@ -282,7 +288,7 @@ impl Model {
             filter: ReviewFilter::AllChanges,
             projection_revision: 0,
             row_map_cache: RefCell::new(None),
-        }
+        })
     }
 
     pub fn request(&self) -> &DiffRequest {
@@ -291,6 +297,10 @@ impl Model {
 
     pub fn session(&self) -> &ReviewSession {
         &self.session
+    }
+
+    pub fn captured(&self) -> &CapturedInput {
+        &self.captured
     }
 
     /// The comparison identity shown in the changeset header.
@@ -392,8 +402,7 @@ impl Model {
 
     fn visible_hunks(&self, threads: &Threads) -> Vec<(usize, usize)> {
         self.session
-            .diff()
-            .document
+            .presentation()
             .files
             .iter()
             .enumerate()
@@ -412,7 +421,7 @@ impl Model {
 
     fn visible_files(&self, threads: &Threads) -> Vec<usize> {
         if self.filter == ReviewFilter::AllChanges {
-            return (0..self.session.diff().document.files.len()).collect();
+            return (0..self.session.presentation().files.len()).collect();
         }
         let mut files = Vec::new();
         for (file, _) in self.visible_hunks(threads) {
@@ -429,7 +438,7 @@ impl Model {
             return visible_files
                 .into_iter()
                 .filter_map(|file_index| {
-                    let file = self.session.diff().document.files.get(file_index)?;
+                    let file = self.session.presentation().files.get(file_index)?;
                     Some(FileRailNode::file(
                         file.path.clone(),
                         file.path.clone(),
@@ -442,7 +451,7 @@ impl Model {
 
         let mut roots = Vec::new();
         for file_index in visible_files {
-            let Some(file) = self.session.diff().document.files.get(file_index) else {
+            let Some(file) = self.session.presentation().files.get(file_index) else {
                 continue;
             };
             let components = file
@@ -480,8 +489,7 @@ impl Model {
             .or_else(|| {
                 let path = &self
                     .session
-                    .diff()
-                    .document
+                    .presentation()
                     .files
                     .get(self.session.cursor().selected_file())?
                     .path;
@@ -522,8 +530,7 @@ impl Model {
     fn resolve_current_location(&self, anchor: &HunkLocation) -> Option<HunkLocation> {
         let file = self
             .session
-            .diff()
-            .document
+            .presentation()
             .files
             .iter()
             .find(|file| file.path == anchor.path())?;
@@ -562,8 +569,7 @@ impl Model {
         let thread_id = visible_threads.get(thread_position).map(|thread| thread.id);
         let raw_hunk_position = self
             .session
-            .diff()
-            .document
+            .presentation()
             .files
             .iter()
             .take(self.session.cursor().selected_file())
@@ -588,8 +594,7 @@ impl Model {
         let exact = preferred.location.as_ref().and_then(|location| {
             visible.iter().position(|(file_index, hunk_index)| {
                 self.session
-                    .diff()
-                    .document
+                    .presentation()
                     .files
                     .get(*file_index)
                     .and_then(|file| file.hunks.get(*hunk_index).map(|hunk| (file, hunk)))
@@ -605,8 +610,7 @@ impl Model {
                 .min_by_key(|(_, (file_index, hunk_index))| {
                     let position = self
                         .session
-                        .diff()
-                        .document
+                        .presentation()
                         .files
                         .iter()
                         .take(*file_index)
@@ -671,8 +675,7 @@ impl Model {
         };
         let Some((file_index, file)) = self
             .session
-            .diff()
-            .document
+            .presentation()
             .files
             .iter()
             .enumerate()
@@ -758,8 +761,7 @@ impl Model {
         let location = self.projected_location(threads)?;
         let file = self
             .session
-            .diff()
-            .document
+            .presentation()
             .files
             .iter()
             .find(|file| file.path == location.path())?;
@@ -787,7 +789,7 @@ impl Model {
         let position = visible_files
             .iter()
             .position(|file| *file == selected_file)?;
-        let file = self.session.diff().document.files.get(selected_file)?;
+        let file = self.session.presentation().files.get(selected_file)?;
         Some(format!(
             "file {}/{}: {}",
             position + 1,
@@ -914,8 +916,7 @@ impl Model {
         };
         let target = self
             .session
-            .diff()
-            .document
+            .presentation()
             .files
             .iter()
             .enumerate()
@@ -997,8 +998,7 @@ impl Model {
             DiffSearchTarget::FilePath { path } => {
                 if let Some(file_index) = self
                     .session
-                    .diff()
-                    .document
+                    .presentation()
                     .files
                     .iter()
                     .position(|file| &file.path == path)
@@ -1007,11 +1007,10 @@ impl Model {
                 }
             }
             DiffSearchTarget::HunkHeader { location }
-            | DiffSearchTarget::DiffLine { location, .. } => {
+            | DiffSearchTarget::PatchLine { location, .. } => {
                 let target = self
                     .session
-                    .diff()
-                    .document
+                    .presentation()
                     .files
                     .iter()
                     .enumerate()
@@ -1083,7 +1082,7 @@ pub enum Event {
     ReloadDiff,
     ToggleHunkHeaders,
     ToggleWrap,
-    EffectCompleted(Outcome),
+    EffectCompleted(Box<Outcome>),
 }
 
 impl Event {
@@ -1124,7 +1123,7 @@ pub enum Effect {
 pub enum Outcome {
     DiffReloaded {
         purpose: ReloadPurpose,
-        result: Result<LoadedDiff, String>,
+        result: Result<CapturedInput, String>,
     },
     ThreadsChanged {
         result: Result<ThreadChange, String>,
@@ -1339,7 +1338,7 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
             let scroll = model.view.resolved_scroll(rows.total_rows(), visible_rows);
             model.search = Some(SearchState {
                 query: String::new(),
-                entries: diff_search_entries(model.session.diff()),
+                entries: diff_search_entries(model.session.presentation()),
                 matches: Vec::new(),
                 selected: None,
                 editing: true,
@@ -1604,7 +1603,7 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
                     if let Some(file) = model
                         .visible_files(input.threads)
                         .into_iter()
-                        .filter_map(|index| model.session.diff().document.files.get(index))
+                        .filter_map(|index| model.session.presentation().files.get(index))
                         .find(|file| file.path.starts_with(&prefix))
                     {
                         model.file_rail_target = Some(FileRailTarget::File(file.path.clone()));
@@ -1872,7 +1871,7 @@ pub fn update(model: &mut Model, event: Event, input: UpdateInput<'_>) -> Update
             );
         }
         Event::EffectCompleted(outcome) => {
-            apply_outcome(model, input.threads, outcome, &mut result)
+            apply_outcome(model, input.threads, *outcome, &mut result)
         }
     }
     result
@@ -1898,8 +1897,7 @@ fn move_focus(model: &mut Model, threads: &Threads, result: &mut Update) {
         if next == FocusArea::Files {
             model.file_rail_target = model
                 .session
-                .diff()
-                .document
+                .presentation()
                 .files
                 .get(model.session.cursor().selected_file())
                 .map(|file| FileRailTarget::File(file.path.clone()));
@@ -1960,7 +1958,7 @@ fn all_file_directories(model: &Model, threads: &Threads) -> BTreeSet<String> {
     let directories = model
         .visible_files(threads)
         .into_iter()
-        .filter_map(|index| model.session.diff().document.files.get(index))
+        .filter_map(|index| model.session.presentation().files.get(index))
         .flat_map(|file| {
             let components = file.path.split('/').collect::<Vec<_>>();
             (1..components.len()).map(move |end| components[..end].join("/"))
@@ -1969,7 +1967,7 @@ fn all_file_directories(model: &Model, threads: &Threads) -> BTreeSet<String> {
     let top_level_items = model
         .visible_files(threads)
         .into_iter()
-        .filter_map(|index| model.session.diff().document.files.get(index))
+        .filter_map(|index| model.session.presentation().files.get(index))
         .filter_map(|file| file.path.split('/').next())
         .collect::<BTreeSet<_>>();
     if top_level_items.len() > 1 {
@@ -2002,7 +2000,15 @@ fn apply_outcome(model: &mut Model, threads: &Threads, outcome: Outcome, result:
             purpose,
             result: outcome,
         } => match outcome {
-            Ok(diff) => {
+            Ok(captured) => {
+                let Ok((_diff, presentation)) =
+                    build_review(&captured, model.request.context_lines)
+                else {
+                    result.intents.push(Intent::SetStatus(
+                        "could not interpret the reloaded diff".into(),
+                    ));
+                    return;
+                };
                 let search_was_active = model.search.take().is_some();
                 let preserve_end = model.view.scroll_from_end.is_some();
                 let viewport_anchor = (!preserve_end).then(|| model.viewport_anchor(threads));
@@ -2015,7 +2021,8 @@ fn apply_outcome(model: &mut Model, threads: &Threads, outcome: Outcome, result:
                         ))
                     })
                     .flatten();
-                model.session.replace_diff(diff);
+                model.captured = captured;
+                model.session.replace_presentation(presentation);
                 model.invalidate_projection();
                 let semantic_selection = model.semantic_selection(threads);
                 model.reconcile_projection(threads, semantic_selection);
@@ -2254,9 +2261,9 @@ fn search_position_status(search: &SearchState, prefix: &str) -> String {
     }
 }
 
-fn diff_search_entries(diff: &LoadedDiff) -> Vec<SearchEntry> {
+fn diff_search_entries(diff: &ReviewPresentation) -> Vec<SearchEntry> {
     let mut entries = Vec::new();
-    for file in &diff.document.files {
+    for file in &diff.files {
         entries.push(SearchEntry {
             normalized: file.path.to_lowercase(),
             target: DiffSearchTarget::FilePath {
@@ -2274,7 +2281,7 @@ fn diff_search_entries(diff: &LoadedDiff) -> Vec<SearchEntry> {
             for (line_index, line) in hunk.lines.iter().enumerate() {
                 entries.push(SearchEntry {
                     normalized: line.text.to_lowercase(),
-                    target: DiffSearchTarget::DiffLine {
+                    target: DiffSearchTarget::PatchLine {
                         location: location.clone(),
                         line_index,
                     },
@@ -2289,8 +2296,7 @@ fn restore_search_origin(model: &mut Model, origin: SearchOrigin, threads: &Thre
     model.filter = origin.filter;
     if let Some(file) = model
         .session
-        .diff()
-        .document
+        .presentation()
         .files
         .get(origin.cursor.selected_file())
     {
@@ -2318,8 +2324,7 @@ fn restore_search_origin(model: &mut Model, origin: SearchOrigin, threads: &Thre
 fn attention_ids_in_git_order(model: &Model, threads: &Threads) -> Vec<ThreadId> {
     model
         .session
-        .diff()
-        .document
+        .presentation()
         .files
         .iter()
         .flat_map(|file| {
@@ -2336,7 +2341,7 @@ fn attention_ids_in_git_order(model: &Model, threads: &Threads) -> Vec<ThreadId>
         .collect()
 }
 
-fn hunk_change_overlaps(anchor: HunkCoordinates, hunk: &DiffHunk) -> bool {
+fn hunk_change_overlaps(anchor: HunkCoordinates, hunk: &PresentedSection) -> bool {
     let Some(coordinates) = hunk.coordinates else {
         return false;
     };
@@ -2346,19 +2351,19 @@ fn hunk_change_overlaps(anchor: HunkCoordinates, hunk: &DiffHunk) -> bool {
     let mut new_change = None;
     for line in hunk.lines.iter() {
         match line.kind {
-            DiffLineKind::Removed => {
+            PatchLineKind::Removed => {
                 extend_range(&mut old_change, old_line);
                 old_line = old_line.saturating_add(1);
             }
-            DiffLineKind::Added => {
+            PatchLineKind::Added => {
                 extend_range(&mut new_change, new_line);
                 new_line = new_line.saturating_add(1);
             }
-            DiffLineKind::Context => {
+            PatchLineKind::Context => {
                 old_line = old_line.saturating_add(1);
                 new_line = new_line.saturating_add(1);
             }
-            DiffLineKind::Meta => {}
+            PatchLineKind::Meta => {}
         }
     }
     old_change.is_some_and(|range| ranges_overlap(anchor.old, range))
@@ -2413,7 +2418,7 @@ pub fn view(model: &Model, input: ViewInput<'_>) -> View {
                 .into_iter()
                 .filter_map(|row| {
                     let kind = if let Some(file_index) = row.file_index {
-                        let file = model.session.diff().document.files.get(file_index)?;
+                        let file = model.session.presentation().files.get(file_index)?;
                         let file_threads = file
                             .hunks
                             .iter()
@@ -2484,7 +2489,7 @@ pub fn view(model: &Model, input: ViewInput<'_>) -> View {
 }
 
 fn review_body(model: &Model, threads: &Threads) -> ReviewBody {
-    let source_is_empty = model.session.diff().document.files.is_empty();
+    let source_is_empty = model.session.presentation().files.is_empty();
     let visible_hunks = model.visible_hunks(threads);
     let filtered_is_empty = !source_is_empty && visible_hunks.is_empty();
     ReviewBody {
@@ -2503,8 +2508,7 @@ fn review_body(model: &Model, threads: &Threads) -> ReviewBody {
         search_query: model.search.as_ref().map(|search| search.query.clone()),
         files: model
             .session
-            .diff()
-            .document
+            .presentation()
             .files
             .iter()
             .enumerate()

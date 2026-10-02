@@ -9,7 +9,7 @@ use tree_sitter_highlight::{
     HighlightConfiguration, HighlightEvent, Highlighter as TreeSitterHighlighter,
 };
 
-use crate::domain::diff::{DiffLine, DiffLineKind};
+use crate::domain::diff::{PatchLine, PatchLineKind};
 
 const HIGHLIGHT_NAMES: &[&str] = &[
     "attribute",
@@ -100,7 +100,11 @@ impl Default for SyntaxHighlighter {
 }
 
 impl SyntaxHighlighter {
-    pub(crate) fn highlight_hunk(&self, extension: Option<&str>, lines: &[DiffLine]) -> HunkSyntax {
+    pub(crate) fn highlight_hunk(
+        &self,
+        extension: Option<&str>,
+        lines: &[PatchLine],
+    ) -> HunkSyntax {
         if let Some(configuration) = self.tree_sitter_configuration(extension) {
             HunkSyntax {
                 old: self.highlight_tree_sitter_side(configuration, lines, SourceSide::Old),
@@ -117,7 +121,7 @@ impl SyntaxHighlighter {
     fn highlight_tree_sitter_side(
         &self,
         configuration: &HighlightConfiguration,
-        lines: &[DiffLine],
+        lines: &[PatchLine],
         side: SourceSide,
     ) -> Vec<Option<SyntaxLine>> {
         let mut source = String::new();
@@ -181,7 +185,7 @@ impl SyntaxHighlighter {
     fn highlight_syntect_side(
         &self,
         extension: Option<&str>,
-        lines: &[DiffLine],
+        lines: &[PatchLine],
         side: SourceSide,
     ) -> Vec<Option<SyntaxLine>> {
         let syntax = extension
@@ -330,10 +334,10 @@ enum SourceSide {
 }
 
 impl SourceSide {
-    fn includes(self, kind: DiffLineKind) -> bool {
+    fn includes(self, kind: PatchLineKind) -> bool {
         match self {
-            Self::Old => matches!(kind, DiffLineKind::Removed | DiffLineKind::Context),
-            Self::New => matches!(kind, DiffLineKind::Added | DiffLineKind::Context),
+            Self::Old => matches!(kind, PatchLineKind::Removed | PatchLineKind::Context),
+            Self::New => matches!(kind, PatchLineKind::Added | PatchLineKind::Context),
         }
     }
 }
