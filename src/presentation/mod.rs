@@ -52,7 +52,10 @@ struct FileRows {
     index: usize,
     magnitude: Magnitude,
     notes: Vec<String>,
+    /// Includes the separator row that belongs between this and the prior file.
     start: usize,
+    /// The first row that should be aligned to the top for this file.
+    header_start: usize,
     end: usize,
     hunks: Vec<HunkRows>,
 }
@@ -219,7 +222,7 @@ impl ReviewRowMap {
                 self.files
                     .iter()
                     .find(|file| file.selected)
-                    .map(|file| file.start.saturating_add(1))
+                    .map(|file| file.header_start)
             })
     }
 
@@ -227,7 +230,7 @@ impl ReviewRowMap {
         self.files
             .iter()
             .find(|file| file.selected)
-            .map(|file| file.start)
+            .map(|file| file.header_start)
     }
 
     pub(crate) fn selected_hunk_range(&self) -> Option<std::ops::Range<usize>> {
@@ -244,7 +247,7 @@ impl ReviewRowMap {
                 .files
                 .iter()
                 .find(|file| &file.path == path)
-                .map(|file| file.start.saturating_add(1)),
+                .map(|file| file.header_start),
             DiffSearchTarget::HunkHeader { location } => self
                 .files
                 .iter()
@@ -300,8 +303,9 @@ pub(crate) fn review_row_map(
     let mut files = Vec::with_capacity(review.files.len());
     for (file_index, file) in review.files.iter().enumerate() {
         let file_start = cursor;
-        cursor = cursor
-            .saturating_add(1 + file_boundary_for(file, &review.files, available_width).rows());
+        let header_start = cursor.saturating_add(file_separator_rows(file_index));
+        cursor = header_start
+            .saturating_add(file_boundary_for(file, &review.files, available_width).rows());
         let number_width = line_number_width(
             file.hunks
                 .iter()
@@ -346,6 +350,7 @@ pub(crate) fn review_row_map(
             magnitude: file.magnitude,
             notes: file.notes.clone(),
             start: file_start,
+            header_start,
             end: cursor.max(file_start + 1),
             hunks,
         });
@@ -354,6 +359,11 @@ pub(crate) fn review_row_map(
         total_rows: cursor,
         files,
     }
+}
+
+/// Separators belong between visible files, never before the first one.
+pub(crate) fn file_separator_rows(file_index: usize) -> usize {
+    usize::from(file_index > 0)
 }
 
 /// The file boundary as the viewport row map sees it.

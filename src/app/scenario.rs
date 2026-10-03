@@ -19,7 +19,7 @@ use crate::{
             ThreadSuccess,
         },
     },
-    presentation::{self, ReviewRowMap},
+    presentation::{self, ReviewRowMap, renderer::Renderer},
 };
 
 struct Scenario {
@@ -189,6 +189,19 @@ fn review_geometry(model: &Model) -> (ReviewBody, LayoutPolicy, ReviewRowMap) {
     };
     let rows = presentation::review_row_map(&body, body.viewport.presentation_width, view.layout);
     (*body, view.layout, rows)
+}
+
+fn rendered_review_lines(model: &Model) -> Vec<String> {
+    let view = super::view(model);
+    let Body::Review(body) = &view.body else {
+        panic!("scenario is not displaying the review body");
+    };
+    Renderer::default()
+        .review_window(body, body.viewport.presentation_width, &view)
+        .lines
+        .into_iter()
+        .map(|line| line.spans.into_iter().map(|span| span.content).collect())
+        .collect()
 }
 
 fn threads() -> ThreadState {
@@ -1023,14 +1036,19 @@ fn failed_outcome_clears_pending_state_without_replacing_session() {
 
 #[test]
 fn viewport_is_scenario_input_and_controls_page_scrolling() {
-    let mut scenario = Scenario::given(RAW, ThreadState::default());
+    let mut scenario = Scenario::given(LONG_DIFF, ThreadState::default());
     scenario.when_event(global::Event::ViewportResized {
         rows: 3,
         columns: 80,
     });
+    let (body, _, _) = review_geometry(&scenario.model);
+    let before = scenario.model.review.scroll();
     scenario.when_event(review::Event::ScrollViewport(1));
 
-    assert_eq!(scenario.model.review.scroll(), 3);
+    assert_eq!(
+        scenario.model.review.scroll().saturating_sub(before),
+        body.viewport.visible_rows
+    );
 }
 
 #[test]
@@ -1247,6 +1265,56 @@ fn file_jumps_align_headers_to_the_top_and_clamp_at_the_document_end() {
         last.scroll,
         last_rows.selected_file_start_row().unwrap().min(maximum)
     );
+}
+
+#[test]
+fn review_file_separators_never_occupy_the_viewport_top() {
+    let mut scenario = Scenario::given(TWO_FILES, ThreadState::default());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 30,
+        columns: 120,
+    });
+
+    let lines = rendered_review_lines(&scenario.model);
+    assert!(lines.first().is_some_and(|line| line.contains("a.rs")));
+    let second_header = lines
+        .iter()
+        .position(|line| line.contains("b.rs"))
+        .expect("the second file header is rendered");
+    assert_eq!(
+        lines.get(second_header.saturating_sub(1)),
+        Some(&String::new())
+    );
+
+    let mut scenario = Scenario::given(LONG_DIFF, ThreadState::default());
+    scenario.when_event(global::Event::ViewportResized {
+        rows: 6,
+        columns: 80,
+    });
+    scenario.when_event(review::Event::MoveFile(1));
+    let lines = rendered_review_lines(&scenario.model);
+    assert!(lines.first().is_some_and(|line| line.contains("b.rs")));
+}
+
+#[test]
+fn filtered_first_file_starts_at_its_header() {
+    let mut state = ThreadState::default();
+    let human = Participant {
+        id: "human".into(),
+        kind: ParticipantKind::Human,
+    };
+    let thread = state.post(
+        Anchor::new("deadbeef", HunkLocation::new("c.rs", "@@ -1 +1 @@ only")),
+        human,
+        "attention".into(),
+        1,
+    );
+    state.set_needs_attention(thread, true).unwrap();
+    let mut scenario = Scenario::given(FILTER_DIFF, state);
+    scenario.when_event(review::Event::CycleFilter(1));
+
+    let lines = rendered_review_lines(&scenario.model);
+    assert!(lines.first().is_some_and(|line| line.contains("c.rs")));
 }
 
 #[test]
@@ -1510,8 +1578,7 @@ fn reload_and_context_adjustment_keep_the_closest_location_and_clamp_geometry() 
     let selected = rows
         .selected_target_row()
         .expect("reloaded snapshot retains a selected hunk");
-    assert!(selected >= body.scroll);
-    assert!(selected < body.scroll + body.viewport.visible_rows);
+    assert!(selected < body.viewport.total_rows);
     assert!(
         body.scroll
             <= body

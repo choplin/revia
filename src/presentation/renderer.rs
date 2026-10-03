@@ -255,7 +255,7 @@ impl Renderer {
         for section in review.viewport.sections.iter().copied() {
             let mut section_lines = match section {
                 ReviewWindowSection::FileHeader { file_index, .. } => {
-                    self.file_header_lines(&review.files[file_index], review, available_width)
+                    self.file_header_lines(file_index, review, available_width)
                 }
                 ReviewWindowSection::Hunk {
                     file_index,
@@ -311,10 +311,11 @@ impl Renderer {
 
     fn file_header_lines(
         &self,
-        file: &crate::app::view::ReviewFile,
+        file_index: usize,
         review: &ReviewBody,
         available_width: u16,
     ) -> Vec<Line> {
+        let file = &review.files[file_index];
         let path_match = matches!(
             review.search_target.as_ref(),
             Some(DiffSearchTarget::FilePath { path }) if path == &file.path
@@ -334,17 +335,20 @@ impl Renderer {
             file.magnitude,
             available_width,
         );
-        let mut lines = vec![
-            Line::raw(""),
-            Line::styled(
-                boundary.primary,
-                if path_match {
-                    self.semantic_theme.selection()
-                } else {
-                    self.semantic_theme.style(Tone::Attention)
-                },
-            ),
-        ];
+        let separator_rows = presentation::file_separator_rows(file_index);
+        let mut lines =
+            Vec::with_capacity(separator_rows + 1 + usize::from(boundary.detail.is_some()));
+        if separator_rows > 0 {
+            lines.push(Line::raw(""));
+        }
+        lines.push(Line::styled(
+            boundary.primary,
+            if path_match {
+                self.semantic_theme.selection()
+            } else {
+                self.semantic_theme.style(Tone::Attention)
+            },
+        ));
         lines.extend(
             boundary
                 .detail
