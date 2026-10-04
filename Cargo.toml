@@ -28,3 +28,6 @@ unicode-segmentation = "1.13"
 
 [target.'cfg(unix)'.dependencies]
 urushi-terminal = { version = "0.1.0", default-features = false }
+
+[dev-dependencies]
+tempfile = "3.23"

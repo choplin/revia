@@ -286,18 +286,14 @@ fn human() -> Participant {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::Path,
-        process::Command,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::{fs, path::Path, process::Command};
 
     use super::Runtime;
     use crate::domain::{
         anchor::AnchorBasis,
         diff::{CapturedInput, DiffRequest, DiffSource, GitComparison, PatchContent, PatchInput},
     };
+    use crate::test_support::temp_dir;
 
     #[test]
     fn stdin_patch_reload_reuses_the_normalized_initial_source() {
@@ -320,18 +316,12 @@ mod tests {
 
     #[test]
     fn mutable_snapshot_matches_the_capture_and_is_reused_after_later_edits() {
-        let repository = std::env::temp_dir().join(format!(
-            "revia-runtime-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir(&repository).unwrap();
+        let temporary = temp_dir("runtime");
+        let repository = temporary.path();
         let git = |arguments: &[&str]| {
             let output = Command::new("git")
                 .arg("-C")
-                .arg(&repository)
+                .arg(repository)
                 .args(arguments)
                 .output()
                 .unwrap();
@@ -353,7 +343,7 @@ mod tests {
             source: DiffSource::Git(GitComparison::Changes),
             context_lines: 3,
         };
-        let initial = crate::adapter::diff::capture(&repository, &request).unwrap();
+        let initial = crate::adapter::diff::capture(repository, &request).unwrap();
         let AnchorBasis::MutableGit {
             comparison,
             expected_content,
@@ -362,7 +352,7 @@ mod tests {
         else {
             panic!("changes capture must produce mutable anchor evidence");
         };
-        let (runtime, _) = Runtime::open(&repository, &request, &initial).unwrap();
+        let (runtime, _) = Runtime::open(repository, &request, &initial).unwrap();
 
         let object = runtime
             .snapshot_mutable(&comparison, expected_content, request.context_lines)
@@ -371,7 +361,7 @@ mod tests {
         let reused = runtime
             .snapshot_mutable(&comparison, expected_content, request.context_lines)
             .unwrap();
-        let (fresh_runtime, _) = Runtime::open(&repository, &request, &initial).unwrap();
+        let (fresh_runtime, _) = Runtime::open(repository, &request, &initial).unwrap();
         let stale =
             fresh_runtime.snapshot_mutable(&comparison, expected_content, request.context_lines);
 
@@ -388,6 +378,5 @@ mod tests {
         );
         runtime.reload(&request).unwrap();
         assert!(runtime.snapshot_cache.lock().unwrap().is_none());
-        fs::remove_dir_all(repository).unwrap();
     }
 }

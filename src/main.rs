@@ -2,6 +2,8 @@ mod adapter;
 mod app;
 mod domain;
 mod presentation;
+#[cfg(test)]
+mod test_support;
 
 use std::io;
 

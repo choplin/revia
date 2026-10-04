@@ -599,13 +599,7 @@ fn output_text(output: Output, kind: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::{Path, PathBuf},
-        process::Command,
-        sync::atomic::{AtomicU64, Ordering},
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::{fs, path::Path, process::Command};
 
     use super::capture;
     use crate::domain::anchor::MutableGitComparison;
@@ -613,27 +607,21 @@ mod tests {
         CapturedGitComparison, CapturedInput, CompleteFileDiff, FileDiff, FileStatus,
         GitComparison, ReviewPresentation, build_review,
     };
+    use crate::test_support::temp_dir;
 
     fn presentation(captured: &CapturedInput) -> std::sync::Arc<ReviewPresentation> {
         build_review(captured, 3).unwrap().1
     }
 
-    static REPOSITORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
     struct Repository {
-        path: PathBuf,
+        temporary: tempfile::TempDir,
     }
 
     impl Repository {
         fn new() -> Self {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let sequence = REPOSITORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!("revia-diff-{nonce}-{sequence}"));
-            fs::create_dir(&path).unwrap();
-            let repository = Self { path };
+            let repository = Self {
+                temporary: temp_dir("diff"),
+            };
             repository.git(["init", "-q"]);
             repository.git(["config", "user.name", "Revia Test"]);
             repository.git(["config", "user.email", "revia@example.invalid"]);
@@ -641,17 +629,17 @@ mod tests {
         }
 
         fn path(&self) -> &Path {
-            &self.path
+            self.temporary.path()
         }
 
         fn write(&self, path: &str, body: &str) {
-            fs::write(self.path.join(path), body).unwrap();
+            fs::write(self.path().join(path), body).unwrap();
         }
 
         fn git<const N: usize>(&self, arguments: [&str; N]) -> String {
             let output = Command::new("git")
                 .arg("-C")
-                .arg(&self.path)
+                .arg(self.path())
                 .args(arguments)
                 .output()
                 .unwrap();
@@ -661,12 +649,6 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
             String::from_utf8(output.stdout).unwrap().trim().to_owned()
-        }
-    }
-
-    impl Drop for Repository {
-        fn drop(&mut self) {
-            fs::remove_dir_all(&self.path).unwrap();
         }
     }
 

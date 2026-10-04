@@ -66,40 +66,28 @@ fn git_common_dir(repository: &Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        process::Command,
-        sync::atomic::{AtomicU64, Ordering},
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::process::Command;
 
     use crate::domain::{
         anchor::{Anchor, HunkLocation},
         thread::{Participant, ParticipantKind, Resolution},
     };
+    use crate::test_support::temp_dir;
 
     use super::{ThreadRepository, now_ms};
 
-    static REPOSITORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-    fn repository() -> std::path::PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let sequence = REPOSITORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("revia-thread-{nonce}-{sequence}"));
-        fs::create_dir_all(&path).unwrap();
+    fn repository() -> tempfile::TempDir {
+        let temporary = temp_dir("thread");
         assert!(
             Command::new("git")
                 .arg("init")
                 .arg("-q")
-                .arg(&path)
+                .arg(temporary.path())
                 .status()
                 .unwrap()
                 .success()
         );
-        path
+        temporary
     }
 
     fn human() -> Participant {
@@ -123,7 +111,7 @@ mod tests {
     #[test]
     fn persists_orthogonal_lifecycle_and_enforces_human_escalation() {
         let repository = repository();
-        let (repository_adapter, mut state) = ThreadRepository::open(&repository).unwrap();
+        let (repository_adapter, mut state) = ThreadRepository::open(repository.path()).unwrap();
         let id = state.post(
             anchor(),
             human(),
@@ -136,7 +124,7 @@ mod tests {
         state.close(id, &human()).unwrap();
         repository_adapter.persist(&state).unwrap();
 
-        let (_, restored) = ThreadRepository::open(&repository).unwrap();
+        let (_, restored) = ThreadRepository::open(repository.path()).unwrap();
         let thread = &restored.threads()[0];
         assert_eq!(thread.resolution, Resolution::Resolved);
         assert!(thread.outdated);
@@ -146,7 +134,7 @@ mod tests {
     #[test]
     fn normal_threads_can_be_closed_and_reopened_by_any_participant() {
         let repository = repository();
-        let (repository_adapter, mut state) = ThreadRepository::open(&repository).unwrap();
+        let (repository_adapter, mut state) = ThreadRepository::open(repository.path()).unwrap();
         let id = state.post(
             anchor(),
             human(),

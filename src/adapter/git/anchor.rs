@@ -209,7 +209,8 @@ fn nonce() -> Result<u128> {
 mod tests {
     use std::{fs, path::Path, process::Command};
 
-    use super::{AnchorStore, nonce};
+    use super::AnchorStore;
+    use crate::test_support::temp_dir;
 
     fn git<const N: usize>(repository: &Path, arguments: [&str; N]) -> String {
         let output = Command::new("git")
@@ -228,20 +229,20 @@ mod tests {
 
     #[test]
     fn materialized_changes_anchor_exact_untracked_content_without_touching_the_index() {
-        let repository = std::env::temp_dir().join(format!("revia-anchor-{}", nonce().unwrap()));
-        fs::create_dir(&repository).unwrap();
-        git(&repository, ["init", "-q"]);
-        git(&repository, ["config", "user.name", "Revia Test"]);
+        let temporary = temp_dir("anchor");
+        let repository = temporary.path();
+        git(repository, ["init", "-q"]);
+        git(repository, ["config", "user.name", "Revia Test"]);
         git(
-            &repository,
+            repository,
             ["config", "user.email", "revia@example.invalid"],
         );
         fs::write(repository.join("tracked.rs"), "fn old() {}\n").unwrap();
-        git(&repository, ["add", "."]);
-        git(&repository, ["commit", "-qm", "base"]);
+        git(repository, ["add", "."]);
+        git(repository, ["commit", "-qm", "base"]);
         fs::write(repository.join("untracked.rs"), "fn new_file() {}\n").unwrap();
-        let index_before = git(&repository, ["diff", "--cached"]);
-        let store = AnchorStore::new(&repository);
+        let index_before = git(repository, ["diff", "--cached"]);
+        let store = AnchorStore::new(repository);
 
         let object = store.snapshot_changes().unwrap();
         let anchor = store
@@ -249,24 +250,23 @@ mod tests {
             .unwrap();
 
         assert_eq!(store.resolve_file(&anchor).unwrap(), "fn new_file() {}\n");
-        assert_eq!(git(&repository, ["diff", "--cached"]), index_before);
-        fs::remove_dir_all(repository).unwrap();
+        assert_eq!(git(repository, ["diff", "--cached"]), index_before);
     }
 
     #[test]
     fn legacy_marker_like_utf8_path_still_resolves_as_a_literal_filename() {
-        let repository = std::env::temp_dir().join(format!("revia-anchor-{}", nonce().unwrap()));
-        fs::create_dir(&repository).unwrap();
-        git(&repository, ["init", "-q"]);
-        git(&repository, ["config", "user.name", "Revia Test"]);
+        let temporary = temp_dir("anchor");
+        let repository = temporary.path();
+        git(repository, ["init", "-q"]);
+        git(repository, ["config", "user.name", "Revia Test"]);
         git(
-            &repository,
+            repository,
             ["config", "user.email", "revia@example.invalid"],
         );
         fs::write(repository.join("git-path:utf8:foo"), "legacy\n").unwrap();
-        git(&repository, ["add", "."]);
-        git(&repository, ["commit", "-qm", "base"]);
-        let head = git(&repository, ["rev-parse", "HEAD"]);
+        git(repository, ["add", "."]);
+        git(repository, ["commit", "-qm", "base"]);
+        let head = git(repository, ["rev-parse", "HEAD"]);
         let json = format!(
             r#"{{"revision":"{}","path":"git-path:utf8:foo","hunk_header":"@@ -0,0 +1 @@"}}"#,
             head.trim()
@@ -274,9 +274,8 @@ mod tests {
         let anchor: crate::domain::anchor::Anchor = serde_json::from_str(&json).unwrap();
 
         assert_eq!(
-            AnchorStore::new(&repository).resolve_file(&anchor).unwrap(),
+            AnchorStore::new(repository).resolve_file(&anchor).unwrap(),
             "legacy\n"
         );
-        fs::remove_dir_all(repository).unwrap();
     }
 }

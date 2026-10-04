@@ -37,22 +37,16 @@ pub fn capture(repository: &Path, request: &DiffRequest) -> Result<CapturedInput
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::Path,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::{fs, path::Path};
 
     use super::capture;
     use crate::domain::diff::{DiffRequest, DiffSource, PatchInput};
+    use crate::test_support::temp_dir;
 
     #[test]
     fn patch_file_capture_retains_its_source_and_exact_text() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("revia-patch-{nonce}.patch"));
+        let temporary = temp_dir("patch");
+        let path = temporary.path().join("review.patch");
         let patch =
             "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n";
         fs::write(&path, patch).unwrap();
@@ -64,6 +58,5 @@ mod tests {
         let captured = capture(Path::new("."), &request).unwrap();
 
         assert_eq!(captured.patch().text(), patch);
-        fs::remove_file(path).unwrap();
     }
 }
