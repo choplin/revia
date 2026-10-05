@@ -27,13 +27,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let (runtime, threads) = Runtime::open(&args.repo, &request, &captured).with_context(|| {
-        format!(
-            "could not open the review thread store for {}",
-            args.repo.display()
-        )
-    })?;
-    let model = Model::new(request, captured, threads)?;
+    let runtime = Runtime::viewer(&args.repo, &captured);
+    let model = Model::viewer(request, captured)?;
     run_tui(model, runtime)
 }
 

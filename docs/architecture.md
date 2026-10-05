@@ -4,10 +4,12 @@ This is the starting point for developers changing Revia. Revia is an
 interactive terminal UI for reviewing Git diffs. Git repository comparisons
 are its primary input; an existing unified patch can also be reviewed from a
 file or stdin. Revia lets a reviewer navigate either input as one ordered
-changeset. Git sources can store discussions against immutable Git-backed hunk
-anchors. Persistent discussions are unavailable for patch input because it has
-no immutable repository provenance. Revia does not stage, edit, or commit
-tracked content.
+changeset and does not stage, edit, or commit tracked content.
+
+The 0.1.0 release exposes the standalone viewing foundation only. Its production
+composition creates empty collaboration state, has no bindings into comment or
+thread flows, and never opens the thread repository. Thread, anchor, composer,
+and rollup code remains as implementation material for later releases.
 
 Five documents expand the main architectural units:
 
@@ -62,14 +64,15 @@ physical input / surface -------------------/              \
                                                 urushi::View
 ```
 
-`main` composes the application. `adapter::cli` turns Clap arguments into a
+`main` composes the viewer-only application. `adapter::cli` turns Clap arguments into a
 renderer-independent `DiffRequest`; `adapter::diff` captures the exact result
 from Git, a patch file, or stdin; and the diff pipeline parses syntax, derives
 review meaning, and builds the current presentation. When `--print` is used or
 stdout is not a terminal, `main` writes the captured patch text and does not
 open the review store or TUI.
 
-The interactive path opens `Runtime`, builds the persistent Root model, and
+The interactive path builds a viewer `Runtime` and a Root model with empty
+collaboration state, then
 hands both to `adapter::terminal::ReviaApplication`. Urushi owns terminal input,
 surface updates, effect execution, drawing, and session restoration. Revia owns
 the meaning of input, state transitions, external operations, and the semantic
@@ -88,7 +91,7 @@ src/
   presentation/    semantic-view to styled-text transformations
   adapter/
     diff.rs         source router for Git, patch files, and stdin
-    git/            Git commands, thread persistence, and wall-clock access
+    git/            Git commands and retained post-0.1 review adapters
     terminal/       Urushi application and physical view construction
     cli.rs          Clap argument transport
     runtime.rs      app::Effect interpreter
@@ -124,24 +127,17 @@ the only place that coordinates slices and changes the active mode.
 
 ## Side effects and repository writes
 
-"Read-only" means Revia never changes the reviewed working tree, index, or
-commits. Review metadata still has to be durable:
+The 0.1.0 viewer reads diffs and committed content through Git subprocesses but
+does not change the reviewed working tree, index, commits, private refs, or
+Revia metadata. Git comparisons, patch files, and stdin all use the same
+viewer-only startup boundary. In particular, startup does not inspect or create
+`<git-common-dir>/revia/threads.json`.
 
-- diffs and committed content are read through Git subprocesses;
-- immutable Git comparisons retain their resolved target object; mutable views
-  snapshot on first thread submission and accept that object only when its
-  reconstructed diff matches the displayed evidence, then reuse and protect it
-  with a `refs/revia/snapshots/*` ref;
-- thread state is atomically replaced at
-  `<git-common-dir>/revia/threads.json`.
-
-Patch files and stdin do not open this store or create Git snapshots. Their TUI
-keeps reload and navigation available, but rejects persistent thread operations
-with the missing-provenance reason.
-
-Using the common Git directory makes review state and protected snapshots shared
-by all worktrees of the same repository. The precise anchor and lifecycle rules
-are defined in [`design/anchors-and-threads.md`](design/anchors-and-threads.md).
+The retained post-0.1 anchor and thread adapters can create protected snapshots
+and persist thread state when exercised directly by their internal tests. They
+are not reachable from the 0.1.0 application composition. Their intended
+contract remains documented in
+[`design/anchors-and-threads.md`](design/anchors-and-threads.md).
 
 ## Architectural invariants
 

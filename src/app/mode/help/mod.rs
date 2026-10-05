@@ -178,7 +178,6 @@ fn help_text(context: Context) -> String {
         Context::SearchResults => "search results",
     };
     let search = marker(context == Context::SearchResults);
-    let thread = marker(context == Context::Threads);
     let rail = marker(context == Context::Files);
     let stream = marker(context != Context::Files);
     let vertical_navigation = if context == Context::Files {
@@ -192,7 +191,7 @@ fn help_text(context: Context) -> String {
         Context::Review | Context::Files => "Quit review",
     };
     format!(
-        "Commands from: {context_label}\n◆ available here   · unavailable in this context\n\nNavigation\n◆ j / k, ↑ / ↓ — {vertical_navigation}\n◆ f / Space, b — Page down / up\n◆ d / u — Half-page down / up\n◆ g / G — Jump to first / last diff row\n◆ [ / ] — Previous / next hunk\n{stream} , / . — Previous / next file\n{rail} , / . — Previous / next file-tree page\n{rail} < / >, Home / End — Jump to first / last file-tree item\n◆ / — Search the full diff\n{search} n / N — Previous / next match (wraps)\n\nView\n◆ F — Cycle review filter\n◆ A — Show all changes\n◆ 1 / 2 / 0 — Split / stack / automatic layout\n◆ s — Toggle file list\n{rail} Enter — Open a file or collapse / expand a directory\n{rail} ← / → — Switch between file tree and diff\n{rail} ` — Toggle flat / tree file view\n{rail} - / = — Collapse / expand all file directories\n◆ m — Toggle file headers\n◆ w — Toggle line wrapping\n{stream} = / - — More / less diff context\n◆ r — Reload and keep the current filter\n\nReview actions\n◆ Tab — Switch between diff and file list\n◆ t / T — Open next / previous thread\n◆ c / C — Reply / start a comment\n{thread} x / R — Resolve / reopen the selected thread\n{thread} a / o — Set attention / open flags\n{thread} e — Fold resolved comments\n◆ {{ / }} — Previous / next item needing attention\n◆ v — Open thread rollup\n\nGlobal / exit\n◆ ? — Open or close this help\n◆ q — Quit review\n◆ Esc — {search_exit}\n\nIn help\n◆ j / k — Scroll by row\n◆ f / b — Scroll by page\n◆ g / G — Jump to top / bottom\n◆ Esc / ? — Close help and return to {context_label}"
+        "Commands from: {context_label}\n◆ available here   · unavailable in this context\n\nNavigation\n◆ j / k, ↑ / ↓ — {vertical_navigation}\n◆ f / Space, b — Page down / up\n◆ d / u — Half-page down / up\n◆ g / G — Jump to first / last diff row\n◆ [ / ] — Previous / next hunk\n{stream} , / . — Previous / next file\n{rail} , / . — Previous / next file-tree page\n{rail} < / >, Home / End — Jump to first / last file-tree item\n◆ / — Search the full diff\n{search} n / N — Previous / next match (wraps)\n◆ Tab — Switch between diff and file list\n\nView\n◆ 1 / 2 / 0 — Split / stack / automatic layout\n◆ s — Toggle file list\n{rail} Enter — Open a file or collapse / expand a directory\n{rail} ← / → — Switch between file tree and diff\n{rail} ` — Toggle flat / tree file view\n{rail} - / = — Collapse / expand all file directories\n◆ m — Toggle file headers\n◆ w — Toggle line wrapping\n{stream} = / - — More / less diff context\n◆ r — Reload the diff\n\nGlobal / exit\n◆ ? — Open or close this help\n◆ q — Quit review\n◆ Esc — {search_exit}\n\nIn help\n◆ j / k — Scroll by row\n◆ f / b — Scroll by page\n◆ g / G — Jump to top / bottom\n◆ Esc / ? — Close help and return to {context_label}"
     )
 }
 
@@ -307,12 +306,14 @@ mod tests {
     }
 
     #[test]
-    fn review_help_names_the_current_comment_view_and_wrap_commands() {
+    fn viewer_help_lists_only_reachable_diff_commands() {
         let help = help_text(Context::Review);
-        assert!(help.contains("c / C — Reply / start a comment"));
         assert!(help.contains("1 / 2 / 0 — Split / stack / automatic layout"));
         assert!(help.contains("w — Toggle line wrapping"));
-        assert!(!help.contains("Esc quit review"));
+        assert!(help.contains("r — Reload the diff"));
+        for unavailable in ["comment", "thread", "attention", "rollup", "filter"] {
+            assert!(!help.to_ascii_lowercase().contains(unavailable));
+        }
     }
 
     #[test]

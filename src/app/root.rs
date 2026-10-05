@@ -24,7 +24,20 @@ pub struct Model {
 }
 
 impl Model {
+    pub fn viewer(request: DiffRequest, captured: CapturedInput) -> anyhow::Result<Self> {
+        Self::from_threads(request, captured, ThreadState::default())
+    }
+
+    #[cfg(test)]
     pub fn new(
+        request: DiffRequest,
+        captured: CapturedInput,
+        threads: ThreadState,
+    ) -> anyhow::Result<Self> {
+        Self::from_threads(request, captured, threads)
+    }
+
+    fn from_threads(
         request: DiffRequest,
         captured: CapturedInput,
         threads: ThreadState,
@@ -556,7 +569,6 @@ pub fn view(model: &Model) -> semantic::View {
             comparison: model.review.comparison(),
             file_count: model.review.session().presentation().files.len(),
             magnitude: model.review.session().presentation().magnitude(),
-            active_filter: model.review.filter().label(),
             context,
             target,
             selected_thread_available,

@@ -35,27 +35,14 @@ struct SnapshotCache {
 }
 
 impl Runtime {
-    pub fn open(
-        repository: &Path,
-        request: &DiffRequest,
-        initial_capture: &CapturedInput,
-    ) -> anyhow::Result<(Self, ThreadState)> {
-        let (threads, state) = if request.source.supports_persistent_threads() {
-            let (repository, state) = ThreadRepository::open(repository)?;
-            (Some(repository), state)
-        } else {
-            (None, ThreadState::default())
-        };
+    pub fn viewer(repository: &Path, initial_capture: &CapturedInput) -> Self {
         let stdin_patch = initial_capture.is_stdin().then(|| initial_capture.clone());
-        Ok((
-            Self {
-                repository: repository.to_owned(),
-                threads,
-                stdin_patch,
-                snapshot_cache: Mutex::new(None),
-            },
-            state,
-        ))
+        Self {
+            repository: repository.to_owned(),
+            threads: None,
+            stdin_patch,
+            snapshot_cache: Mutex::new(None),
+        }
     }
 
     pub fn perform(&self, effect: Effect, current_threads: &ThreadState) -> EffectResult {
@@ -306,12 +293,56 @@ mod tests {
             source: DiffSource::Patch(PatchInput::Stdin),
             context_lines: 3,
         };
-        let (runtime, threads) = Runtime::open(Path::new("."), &request, &initial).unwrap();
+        let runtime = Runtime::viewer(Path::new("."), &initial);
 
         let reloaded = runtime.reload(&request).unwrap();
 
         assert_eq!(reloaded, initial);
-        assert!(threads.threads().is_empty());
+    }
+
+    #[test]
+    fn viewer_startup_does_not_read_or_create_review_metadata() {
+        let temporary = temp_dir("viewer-startup");
+        let repository = temporary.path();
+        let git = |arguments: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(repository)
+                .args(arguments)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Revia Test"]);
+        git(&["config", "user.email", "revia@example.invalid"]);
+        fs::write(repository.join("example.txt"), "before\n").unwrap();
+        git(&["add", "example.txt"]);
+        git(&["commit", "-qm", "base"]);
+        fs::write(repository.join("example.txt"), "after\n").unwrap();
+
+        let metadata = repository.join(".git/revia/threads.json");
+        fs::create_dir_all(metadata.parent().unwrap()).unwrap();
+        fs::write(&metadata, b"not valid JSON").unwrap();
+
+        let request = DiffRequest {
+            source: DiffSource::Git(GitComparison::Changes),
+            context_lines: 3,
+        };
+        let git_capture = crate::adapter::diff::capture(repository, &request).unwrap();
+        let patch_capture = CapturedInput::PatchStdin {
+            patch: PatchContent::new(git_capture.patch().text()),
+        };
+
+        let _git_runtime = Runtime::viewer(repository, &git_capture);
+        let _patch_runtime = Runtime::viewer(repository, &patch_capture);
+
+        assert_eq!(fs::read(&metadata).unwrap(), b"not valid JSON");
+        assert!(!metadata.with_extension("json.tmp").exists());
     }
 
     #[test]
@@ -352,7 +383,7 @@ mod tests {
         else {
             panic!("changes capture must produce mutable anchor evidence");
         };
-        let (runtime, _) = Runtime::open(repository, &request, &initial).unwrap();
+        let runtime = Runtime::viewer(repository, &initial);
 
         let object = runtime
             .snapshot_mutable(&comparison, expected_content, request.context_lines)
@@ -361,7 +392,7 @@ mod tests {
         let reused = runtime
             .snapshot_mutable(&comparison, expected_content, request.context_lines)
             .unwrap();
-        let (fresh_runtime, _) = Runtime::open(repository, &request, &initial).unwrap();
+        let fresh_runtime = Runtime::viewer(repository, &initial);
         let stale =
             fresh_runtime.snapshot_mutable(&comparison, expected_content, request.context_lines);
 

@@ -14,6 +14,10 @@ pub struct ThreadRepository {
 }
 
 impl ThreadRepository {
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "retained for post-0.1 thread persistence")
+    )]
     pub fn open(repository: &Path) -> Result<(Self, ThreadState)> {
         let common_dir = git_common_dir(repository)?;
         let path = common_dir.join("revia").join("threads.json");
@@ -44,6 +48,10 @@ pub fn now_ms() -> Result<u128> {
         .as_millis())
 }
 
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "retained for post-0.1 thread persistence")
+)]
 fn git_common_dir(repository: &Path) -> Result<PathBuf> {
     let output = Command::new("git")
         .arg("-C")

@@ -5,6 +5,11 @@ Root model owns Global state and every mode-local model. The active mode selects
 which local program receives input; it does not create or destroy that mode's
 state.
 
+The 0.1.0 release composes the review and help programs as a standalone viewer.
+Composer, rollup, and thread-oriented events remain in the source for later
+releases, but have no 0.1.0 bindings and receive no restored thread state at
+startup.
+
 ## Persistent slices
 
 | Slice | Owns |
@@ -67,7 +72,9 @@ work in the mode's vocabulary; Root lifts them into one operation-oriented
 `app::Effect` vocabulary.
 
 `Runtime` is the only interpreter for Git, filesystem, anchor, thread-store, and
-wall-clock operations. Each effect receives an operation ID and owning mode.
+wall-clock operations. The 0.1.0 viewer constructor does not open a thread
+store; retained thread effects fail closed if invoked outside the shipped
+binding surface. Each effect receives an operation ID and owning mode.
 Global records one pending operation, and accepts a completion only when ID,
 owner, and operation kind all match. The typed outcome is then lowered back into
 the owner's local `Outcome` and re-enters that mode's update function.

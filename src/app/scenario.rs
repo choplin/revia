@@ -390,7 +390,7 @@ fn shared_navigation_acts_from_the_rail_without_taking_its_focus() {
 #[test]
 fn scrolling_keeps_a_selected_inline_thread_focused() {
     let mut scenario = Scenario::given(RAW, threads());
-    scenario.when_input(input(Key::Char('t')));
+    scenario.when_event(review::Event::MoveThread(1));
     assert_eq!(scenario.model.review.focus(), FocusArea::Threads);
 
     scenario.when_input(input(Key::Char('d')));
@@ -752,7 +752,7 @@ fn search_editing_handles_unicode_backspace_and_escape_repeat_without_unwinding(
 #[test]
 fn cancelling_search_restores_inline_thread_focus_and_target() {
     let mut scenario = Scenario::given(RAW, threads());
-    scenario.when_input(input(Key::Char('t')));
+    scenario.when_event(review::Event::MoveThread(1));
     assert_eq!(scenario.model.review.focus(), FocusArea::Threads);
     let thread = scenario
         .model
@@ -874,7 +874,8 @@ fn help_marks_invocation_commands_and_returns_to_search_location() {
     assert!(text.contains("◆ n / N — Previous / next match (wraps)"));
     assert!(text.contains("Navigation"));
     assert!(text.contains("View"));
-    assert!(text.contains("Review actions"));
+    assert!(!text.to_ascii_lowercase().contains("comment"));
+    assert!(!text.to_ascii_lowercase().contains("thread"));
 
     scenario.when_input(input(Key::Esc));
     assert_eq!(scenario.model.active_mode, ActiveMode::Review);
@@ -886,28 +887,17 @@ fn help_marks_invocation_commands_and_returns_to_search_location() {
 }
 
 #[test]
-fn help_emphasizes_thread_commands_only_for_a_thread_target() {
-    let mut scenario = Scenario::given(RAW, threads());
+fn help_never_advertises_post_release_review_commands() {
+    let mut scenario = Scenario::given(RAW, ThreadState::default());
     scenario.when_input(input(Key::Char('?')));
     let Some(Overlay::Help(help)) = super::view(&scenario.model).overlay else {
         panic!("help overlay is visible");
     };
     let text = help.lines.join("\n");
     assert!(text.contains("Commands from: diff"));
-    assert!(text.contains("· x / R — Resolve / reopen the selected thread"));
-    scenario.when_input(input(Key::Esc));
-
-    scenario.when_input(input(Key::Char('t')));
-    let footer = super::view(&scenario.model).footer.contextual_keys.text;
-    assert!(footer.contains("x resolve"));
-    scenario.when_input(input(Key::Char('?')));
-    let Some(Overlay::Help(help)) = super::view(&scenario.model).overlay else {
-        panic!("help overlay is visible");
-    };
-    let text = help.lines.join("\n");
-    assert!(text.contains("Commands from: inline thread"));
-    assert!(text.contains("◆ x / R — Resolve / reopen the selected thread"));
-    assert!(text.contains("◆ a / o — Set attention / open flags"));
+    for unavailable in ["comment", "thread", "attention", "rollup", "filter"] {
+        assert!(!text.to_ascii_lowercase().contains(unavailable));
+    }
 }
 
 #[test]
@@ -1630,7 +1620,7 @@ fn scenario_trace_uses_virtual_time_without_wall_clock_dependency() {
 fn escape_unwinds_each_transient_mode_before_review_can_quit() {
     let mut scenario = Scenario::given(RAW, threads());
 
-    scenario.when_input(input(Key::Char('c')));
+    scenario.when_event(review::Event::BeginThread { always_new: false });
     assert_eq!(scenario.model.active_mode, ActiveMode::Composer);
     scenario.when_input(input(Key::Esc));
     assert_eq!(scenario.model.active_mode, ActiveMode::Review);
@@ -1650,7 +1640,7 @@ fn escape_unwinds_each_transient_mode_before_review_can_quit() {
         Some("closed keyboard help")
     );
 
-    scenario.when_input(input(Key::Char('v')));
+    scenario.when_event(review::Event::ShowRollup);
     assert_eq!(scenario.model.active_mode, ActiveMode::Rollup);
     scenario.when_input(input(Key::Esc));
     assert_eq!(scenario.model.active_mode, ActiveMode::Review);
@@ -1668,7 +1658,7 @@ fn escape_unwinds_each_transient_mode_before_review_can_quit() {
 fn q_only_quits_from_review() {
     let mut scenario = Scenario::given(RAW, threads());
 
-    scenario.when_input(input(Key::Char('c')));
+    scenario.when_event(review::Event::BeginThread { always_new: false });
     assert!(matches!(
         scenario.when_input(input(Key::Char('q'))),
         BindingResolution::Override(())
@@ -1688,7 +1678,7 @@ fn q_only_quits_from_review() {
     assert!(scenario.model.is_running());
     scenario.when_input(input(Key::Esc));
 
-    scenario.when_input(input(Key::Char('v')));
+    scenario.when_event(review::Event::ShowRollup);
     assert_eq!(
         scenario.when_input(input(Key::Char('q'))),
         BindingResolution::Consume
@@ -1722,13 +1712,13 @@ fn one_review_cursor_drives_file_hunk_thread_and_diff_targets() {
     );
 
     scenario.when_input(input(Key::Char(',')));
-    scenario.when_input(input(Key::Char('t')));
+    scenario.when_event(review::Event::MoveThread(1));
     assert_eq!(scenario.model.review.focus(), FocusArea::Threads);
     let view = super::view(&scenario.model);
     assert!(view.footer.current_context.text.contains("thread #0"));
     assert!(view.footer.contextual_keys.text.contains("x resolve"));
 
-    scenario.when_input(input(Key::Char('t')));
+    scenario.when_event(review::Event::MoveThread(1));
     assert!(
         scenario
             .model
@@ -1737,7 +1727,7 @@ fn one_review_cursor_drives_file_hunk_thread_and_diff_targets() {
             .as_deref()
             .is_some_and(|status| status.contains("thread target: #1 (2/2)"))
     );
-    scenario.when_input(input(Key::Char('T')));
+    scenario.when_event(review::Event::MoveThread(-1));
     assert!(
         scenario
             .model
@@ -1794,8 +1784,8 @@ fn lifecycle_cards_fold_deterministically_and_actions_follow_the_visible_target(
     );
     assert!(presentation::thread_card_rows(&cards[2], 54, true).len() > 1);
 
-    scenario.when_input(input(Key::Char('t')));
-    scenario.when_input(input(Key::Char('t')));
+    scenario.when_event(review::Event::MoveThread(1));
+    scenario.when_event(review::Event::MoveThread(1));
     let view = super::view(&scenario.model);
     let Body::Review(review) = view.body else {
         panic!("review body")
@@ -1805,7 +1795,7 @@ fn lifecycle_cards_fold_deterministically_and_actions_follow_the_visible_target(
         presentation::thread_card_rows(&review.files[0].hunks[0].threads[1], 54, false).len() > 1
     );
 
-    scenario.when_input(input(Key::Char('e')));
+    scenario.when_event(review::Event::ToggleThreadExpansion);
     scenario.when_input(input(Key::Tab));
     let view = super::view(&scenario.model);
     let Body::Review(review) = view.body else {
@@ -1814,8 +1804,8 @@ fn lifecycle_cards_fold_deterministically_and_actions_follow_the_visible_target(
     assert!(!review.files[0].hunks[0].threads[1].active);
     assert!(review.files[0].hunks[0].threads[1].expanded);
 
-    scenario.when_input(input(Key::Char('t')));
-    scenario.when_input(input(Key::Char('e')));
+    scenario.when_event(review::Event::MoveThread(1));
+    scenario.when_event(review::Event::ToggleThreadExpansion);
     scenario.when_input(input(Key::Tab));
     let view = super::view(&scenario.model);
     let Body::Review(review) = view.body else {
@@ -1826,8 +1816,8 @@ fn lifecycle_cards_fold_deterministically_and_actions_follow_the_visible_target(
         1
     );
 
-    scenario.when_input(input(Key::Char('t')));
-    scenario.when_input(input(Key::Char('R')));
+    scenario.when_event(review::Event::MoveThread(1));
+    scenario.when_event(review::Event::ReopenThread);
     let effects = scenario.trace.iter().rev().find_map(|trace| match trace {
         Trace::Effect(effect) => Some(effect),
         Trace::Event(_) => None,
@@ -1842,13 +1832,17 @@ fn lifecycle_cards_fold_deterministically_and_actions_follow_the_visible_target(
 }
 
 #[test]
-fn contextual_keys_follow_mode_and_visible_thread_availability() {
+fn viewer_contextual_keys_expose_only_reachable_operations() {
     let mut empty = Scenario::given(RAW, ThreadState::default());
     let view = super::view(&empty.model);
-    assert!(view.footer.contextual_keys.text.contains("c comment"));
-    assert!(!view.footer.contextual_keys.text.contains("x resolve"));
-    // With no threads to address, Tab steps over the thread region and lands on
-    // the file rail instead of refusing to move.
+    let keys = view.footer.contextual_keys.text;
+    assert!(keys.contains("q exit"));
+    assert!(keys.contains("? help"));
+    assert!(keys.contains("[/] hunk"));
+    for unavailable in ["comment", "thread", "attention", "rollup", "filter"] {
+        assert!(!keys.to_ascii_lowercase().contains(unavailable));
+    }
+
     empty.when_input(input(Key::Tab));
     assert_eq!(empty.model.review.focus(), FocusArea::Files);
     assert_eq!(
@@ -1857,33 +1851,28 @@ fn contextual_keys_follow_mode_and_visible_thread_availability() {
     );
     empty.when_input(input(Key::Tab));
     assert_eq!(empty.model.review.focus(), FocusArea::Review);
+}
 
-    empty.when_input(input(Key::Char('c')));
-    let view = super::view(&empty.model);
-    assert_eq!(
-        view.footer.contextual_keys.text,
-        "Esc cancel · Ctrl-J post · Enter newline"
-    );
-    empty.when_input(input(Key::Esc));
-    empty.when_input(input(Key::Char('?')));
-    let view = super::view(&empty.model);
-    assert!(view.footer.contextual_keys.text.starts_with("Esc/? close"));
-    empty.when_input(input(Key::Esc));
-    empty.when_input(input(Key::Char('v')));
-    let view = super::view(&empty.model);
-    assert!(view.footer.contextual_keys.text.contains("no targets"));
-    assert!(
-        view.footer
-            .current_context
-            .text
-            .contains("Target: no threads")
-    );
+#[test]
+fn review_and_thread_keys_are_unbound_on_the_viewer_surface() {
+    let mut scenario = Scenario::given(RAW, ThreadState::default());
+    for key in [
+        'c', 'C', 't', 'T', 'x', 'R', 'a', 'o', 'e', '{', '}', 'v', 'F', 'A',
+    ] {
+        assert_eq!(
+            scenario.when_input(input(Key::Char(key))),
+            BindingResolution::Unbound,
+            "{key} must not enter a post-0.1 review workflow"
+        );
+        assert_eq!(scenario.model.active_mode, ActiveMode::Review);
+        assert!(scenario.model.global.pending.is_none());
+    }
 }
 
 #[test]
 fn composer_edits_multiline_unicode_at_a_real_cursor_and_confirms_discard() {
     let mut scenario = Scenario::given(RAW, ThreadState::default());
-    scenario.when_input(input(Key::Char('c')));
+    scenario.when_event(review::Event::BeginThread { always_new: false });
     for character in "ab画".chars() {
         scenario.when_input(input(Key::Char(character)));
     }
@@ -1917,12 +1906,12 @@ fn composer_edits_multiline_unicode_at_a_real_cursor_and_confirms_discard() {
 #[test]
 fn composer_keeps_empty_and_failed_submissions_open_for_retry() {
     let mut scenario = Scenario::given(RAW, threads());
-    scenario.when_input(input(Key::Char('t')));
+    scenario.when_event(review::Event::MoveThread(1));
     let reply_to = scenario
         .model
         .review
         .selected_thread_id(&scenario.model.global.threads);
-    scenario.when_input(input(Key::Char('c')));
+    scenario.when_event(review::Event::BeginThread { always_new: false });
     assert_eq!(scenario.model.composer.reply_to(), reply_to);
 
     scenario.when_input(input(Key::Submit));
@@ -1983,7 +1972,7 @@ fn composer_grows_then_scrolls_and_reflows_across_narrow_resizes() {
         rows: 6,
         columns: 48,
     });
-    scenario.when_input(input(Key::Char('c')));
+    scenario.when_event(review::Event::BeginThread { always_new: false });
     for character in "one 画面 two three four five six seven\neight\nnine\nten".chars() {
         scenario.when_input(input(Key::Char(character)));
     }
@@ -2044,10 +2033,10 @@ fn handled_view_and_unavailable_actions_report_results() {
     );
 
     let effects = scenario.when_input(input(Key::Char('x')));
-    assert_eq!(effects, BindingResolution::Handle(()));
+    assert_eq!(effects, BindingResolution::Unbound);
     assert_eq!(
         scenario.model.global.status.as_deref(),
-        Some("could not close thread: select a thread with t first")
+        Some("line wrapping enabled")
     );
     assert_eq!(scenario.model.global.pending, None);
 
@@ -2068,11 +2057,9 @@ fn handled_view_and_unavailable_actions_report_results() {
         empty.model.global.status.as_deref(),
         Some("cannot move hunks: this diff has no hunks")
     );
-    empty.when_input(input(Key::Char('v')));
-    empty.when_input(input(Key::Enter));
     assert_eq!(
-        empty.model.global.status.as_deref(),
-        Some("cannot jump: rollup has no threads")
+        empty.when_input(input(Key::Char('v'))),
+        BindingResolution::Unbound
     );
 
     // Keep the explicit layout type exercised in the scenario contract.
@@ -2124,9 +2111,9 @@ fn pending_operation_rejects_duplicate_mutation_and_remains_visible() {
 #[test]
 fn thread_mutation_reports_pending_failure_and_success_for_visible_target() {
     let mut scenario = Scenario::given(RAW, threads());
-    scenario.when_input(input(Key::Char('t')));
+    scenario.when_event(review::Event::MoveThread(1));
 
-    scenario.when_input(input(Key::Char('x')));
+    scenario.when_event(review::Event::CloseThread);
     assert_eq!(
         scenario.model.global.pending.map(|pending| pending.kind),
         Some(PendingEffectKind::ChangeThreads)
@@ -2146,7 +2133,7 @@ fn thread_mutation_reports_pending_failure_and_success_for_visible_target() {
         Some("could not close thread: denied")
     );
 
-    scenario.when_input(input(Key::Char('x')));
+    scenario.when_event(review::Event::CloseThread);
     let mut changed = scenario.model.global.threads.clone();
     let id = changed.ordered_ids()[0];
     let human = Participant {
@@ -2175,6 +2162,22 @@ fn thread_mutation_reports_pending_failure_and_success_for_visible_target() {
             .thread(id)
             .map(|thread| &thread.resolution),
         Some(Resolution::Resolved)
+    ));
+}
+
+#[test]
+fn retained_outdated_event_stays_covered_without_a_viewer_binding() {
+    let mut scenario = Scenario::given(RAW, threads());
+    scenario.when_event(review::Event::MoveThread(1));
+
+    let effects = scenario.when_event(review::Event::ToggleOutdated);
+
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::ChangeThreads {
+            operation: crate::domain::thread::ThreadOperation::SetOutdated { value: true, .. },
+            ..
+        }]
     ));
 }
 
@@ -2278,10 +2281,6 @@ fn review_filters_project_semantic_state_in_git_order() {
     assert_eq!(
         scenario.model.review.filter(),
         review::ReviewFilter::AllChanges
-    );
-    assert_eq!(
-        super::view(&scenario.model).header.active_filter,
-        "All changes"
     );
 }
 
@@ -2564,10 +2563,6 @@ fn filter_survives_geometry_context_and_successful_reload() {
         scenario.model.review.filter(),
         review::ReviewFilter::ThreadedHunks
     );
-    assert_eq!(
-        super::view(&scenario.model).header.active_filter,
-        "Threaded hunks"
-    );
     scenario.when_event(review::Event::ReloadDiff);
     scenario.inject(
         ActiveMode::Review,
@@ -2799,7 +2794,7 @@ fn reload_drops_thread_focus_when_the_canonical_target_disappears() {
         3,
     );
     let mut scenario = Scenario::given(TWO_FILES, state);
-    scenario.when_input(input(Key::Char('t')));
+    scenario.when_event(review::Event::MoveThread(1));
     assert_eq!(scenario.model.review.focus(), FocusArea::Threads);
     scenario.when_event(review::Event::ReloadDiff);
 
@@ -2820,7 +2815,7 @@ fn reload_drops_thread_focus_when_the_canonical_target_disappears() {
             .text
             .contains("b.rs")
     );
-    scenario.when_input(input(Key::Char('x')));
+    scenario.when_event(review::Event::CloseThread);
     assert_eq!(scenario.model.global.pending, None);
     assert_eq!(
         scenario.model.global.status.as_deref(),
@@ -2835,7 +2830,7 @@ fn pending_reload_rejects_composer_entry_without_moving_the_target() {
     scenario.when_event(review::Event::ReloadDiff);
     let pending = scenario.model.global.pending;
 
-    scenario.when_input(input(Key::Char('c')));
+    scenario.when_event(review::Event::BeginThread { always_new: false });
 
     assert_eq!(scenario.model.active_mode, ActiveMode::Review);
     assert_eq!(scenario.model.review.selected_location(), location);
@@ -2850,7 +2845,7 @@ fn pending_reload_rejects_composer_entry_without_moving_the_target() {
 fn repeated_modal_keys_cannot_unwind_more_than_one_state() {
     let mut scenario = Scenario::given(RAW, threads());
 
-    scenario.when_input(input(Key::Char('c')));
+    scenario.when_event(review::Event::BeginThread { always_new: false });
     scenario.when_input(input(Key::Esc));
     scenario.when_input(repeated(Key::Esc));
     assert_eq!(scenario.model.active_mode, ActiveMode::Review);
@@ -2861,7 +2856,7 @@ fn repeated_modal_keys_cannot_unwind_more_than_one_state() {
     assert_eq!(scenario.model.active_mode, ActiveMode::Help);
     scenario.when_input(input(Key::Esc));
 
-    scenario.when_input(input(Key::Char('v')));
+    scenario.when_event(review::Event::ShowRollup);
     scenario.when_input(repeated(Key::Char('v')));
     assert_eq!(scenario.model.active_mode, ActiveMode::Rollup);
     assert!(scenario.model.is_running());
@@ -2884,7 +2879,7 @@ fn narrow_footer_and_rail_feedback_remain_truthful() {
     assert!(view.footer.current_context.text.contains("a.rs"));
     assert!(view.footer.current_context.text.contains("rail hidden"));
 
-    scenario.when_input(input(Key::Char('t')));
+    scenario.when_event(review::Event::MoveThread(1));
     let view = super::view(&scenario.model);
     assert!(view.footer.current_context.text.contains("thread #0"));
     assert!(view.footer.contextual_keys.text.contains("Tab diff"));

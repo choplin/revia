@@ -345,6 +345,7 @@ impl Model {
         self.viewport_columns
     }
 
+    #[cfg(test)]
     pub fn filter(&self) -> ReviewFilter {
         self.filter
     }
@@ -1044,7 +1045,9 @@ impl Model {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
+    #[cfg_attr(not(test), allow(dead_code, reason = "retained post-0.1 filter"))]
     CycleFilter(i32),
+    #[cfg_attr(not(test), allow(dead_code, reason = "retained post-0.1 filter"))]
     ShowAllChanges,
     BeginSearch,
     InsertSearchCharacter(char),
@@ -1057,25 +1060,64 @@ pub enum Event {
     ScrollRows(i16),
     ScrollViewport(i16),
     ScrollHalfViewport(i16),
-    JumpToDiffEdge { end: bool },
+    JumpToDiffEdge {
+        end: bool,
+    },
     MoveHunk(i32),
     MoveFile(i32),
     MoveFileRail(i32),
     MoveFileRailPage(i32),
-    JumpToFileRailEdge { end: bool },
+    JumpToFileRailEdge {
+        end: bool,
+    },
     EnterFileRailTarget,
     ToggleFileTree,
     CollapseFileTree,
     ExpandFileTree,
     AdjustContext(i32),
-    BeginThread { always_new: bool },
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "retained post-0.1 thread action")
+    )]
+    BeginThread {
+        always_new: bool,
+    },
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "retained post-0.1 thread action")
+    )]
     MoveThread(i32),
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "retained post-0.1 thread action")
+    )]
     CloseThread,
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "retained post-0.1 thread action")
+    )]
     ReopenThread,
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "retained post-0.1 thread action")
+    )]
     ToggleAttention,
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "retained post-0.1 thread action")
+    )]
     ToggleOutdated,
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "retained post-0.1 thread action")
+    )]
     ToggleThreadExpansion,
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "retained post-0.1 attention traversal")
+    )]
     MoveAttention(i32),
+    #[cfg_attr(not(test), allow(dead_code, reason = "retained post-0.1 rollup"))]
     ShowRollup,
     SetLayout(LayoutMode),
     ToggleSidebar,
@@ -1222,10 +1264,6 @@ pub fn bindings(model: &Model, input: PhysicalInput) -> BindingResolution<Event>
                 | Key::Char('[')
                 | Key::Char('.')
                 | Key::Char(',')
-                | Key::Char('t')
-                | Key::Char('T')
-                | Key::Char('}')
-                | Key::Char('{')
                 | Key::Char('n')
                 | Key::Char('N')
         )
@@ -1241,12 +1279,7 @@ pub fn bindings(model: &Model, input: PhysicalInput) -> BindingResolution<Event>
         return BindingResolution::Handle(event);
     }
     match input.key {
-        Key::Esc if model.focus() == FocusArea::Threads => {
-            BindingResolution::Handle(Event::CycleFocus)
-        }
         Key::Char('q') | Key::Esc | Key::Char('?') => BindingResolution::Delegate,
-        Key::Char('F') => BindingResolution::Handle(Event::CycleFilter(1)),
-        Key::Char('A') => BindingResolution::Handle(Event::ShowAllChanges),
         Key::Char('/') => BindingResolution::Handle(Event::BeginSearch),
         Key::Char('n') => BindingResolution::Handle(Event::MoveSearch(1)),
         Key::Char('N') => BindingResolution::Handle(Event::MoveSearch(-1)),
@@ -1270,18 +1303,6 @@ pub fn bindings(model: &Model, input: PhysicalInput) -> BindingResolution<Event>
         Key::Char(',') => BindingResolution::Handle(Event::MoveFile(-1)),
         Key::Char('=') => BindingResolution::Handle(Event::AdjustContext(1)),
         Key::Char('-') => BindingResolution::Handle(Event::AdjustContext(-1)),
-        Key::Char('c') => BindingResolution::Handle(Event::BeginThread { always_new: false }),
-        Key::Char('C') => BindingResolution::Handle(Event::BeginThread { always_new: true }),
-        Key::Char('t') => BindingResolution::Handle(Event::MoveThread(1)),
-        Key::Char('T') => BindingResolution::Handle(Event::MoveThread(-1)),
-        Key::Char('x') => BindingResolution::Handle(Event::CloseThread),
-        Key::Char('R') => BindingResolution::Handle(Event::ReopenThread),
-        Key::Char('a') => BindingResolution::Handle(Event::ToggleAttention),
-        Key::Char('o') => BindingResolution::Handle(Event::ToggleOutdated),
-        Key::Char('e') => BindingResolution::Handle(Event::ToggleThreadExpansion),
-        Key::Char('}') => BindingResolution::Handle(Event::MoveAttention(1)),
-        Key::Char('{') => BindingResolution::Handle(Event::MoveAttention(-1)),
-        Key::Char('v') => BindingResolution::Handle(Event::ShowRollup),
         Key::Char('1') => BindingResolution::Handle(Event::SetLayout(LayoutMode::Split)),
         Key::Char('2') => BindingResolution::Handle(Event::SetLayout(LayoutMode::Stack)),
         Key::Char('0') => BindingResolution::Handle(Event::SetLayout(LayoutMode::Auto)),

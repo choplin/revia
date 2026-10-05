@@ -701,14 +701,10 @@ pub(crate) fn rollup_text(
     Document::from(lines)
 }
 
-/// Cells the comparison label keeps before the active filter is dropped from
-/// the changeset header.
-const COMPARISON_FLOOR: usize = 12;
-
 /// The changeset header: comparison identity, file count, and total magnitude.
 ///
-/// Every width keeps all three. The comparison label is shortened and then the
-/// active filter is dropped before any number is given up.
+/// Every width keeps all three, shortening the comparison label before any
+/// number is given up.
 pub(crate) fn header_text(view: &View, width: u16, size: ShellSize) -> String {
     let header = &view.header;
     let magnitude = presentation::format_magnitude(header.magnitude);
@@ -719,24 +715,11 @@ pub(crate) fn header_text(view: &View, width: u16, size: ShellSize) -> String {
     let facts = format!("{files}{separator}{magnitude}");
     let width = usize::from(width);
     let separator_width = UnicodeWidthStr::width(separator);
-    let comparison_floor = UnicodeWidthStr::width(header.comparison.as_str()).min(COMPARISON_FLOOR);
-    let filter = format!("{separator}{}", header.active_filter);
-    let filter = if comparison_floor
-        .saturating_add(separator_width)
-        .saturating_add(UnicodeWidthStr::width(facts.as_str()))
-        .saturating_add(UnicodeWidthStr::width(filter.as_str()))
-        <= width
-    {
-        filter
-    } else {
-        String::new()
-    };
     let comparison_width = width
         .saturating_sub(UnicodeWidthStr::width(facts.as_str()))
-        .saturating_sub(UnicodeWidthStr::width(filter.as_str()))
         .saturating_sub(separator_width);
     let comparison = truncate_end(&header.comparison, comparison_width);
-    truncate_end(&format!("{comparison}{separator}{facts}{filter}"), width)
+    truncate_end(&format!("{comparison}{separator}{facts}"), width)
 }
 
 #[cfg(test)]

@@ -5,6 +5,10 @@ not a collection of independent file viewers. Files, hunks, source rows, and
 inline discussions appear in Git order, so direct jumps change the current
 target without discarding changeset context.
 
+The 0.1.0 release exposes only the viewing portion of this model. Its physical
+bindings omit the collaboration capabilities described below until a later
+release can ship them as a coherent workflow.
+
 ## Stable regions
 
 The shell gives fixed roles to a header, an optional file rail, the review body,

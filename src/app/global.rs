@@ -126,7 +126,6 @@ pub struct ViewInput {
     pub comparison: String,
     pub file_count: usize,
     pub magnitude: crate::domain::diff::Magnitude,
-    pub active_filter: &'static str,
     pub context: SurfaceContext,
     pub target: Option<String>,
     pub selected_thread_available: bool,
@@ -145,7 +144,6 @@ pub fn view(model: &Model, input: ViewInput) -> View {
             comparison: input.comparison,
             file_count: input.file_count,
             magnitude: input.magnitude,
-            active_filter: input.active_filter.into(),
         },
         footer: Footer {
             current_context: CurrentContext {
@@ -271,22 +269,8 @@ fn context_keys(
     width: u16,
 ) -> String {
     let (required, optional): (&[&str], &[&str]) = match context {
-        SurfaceContext::Review if selected_thread_available => (
-            &["q exit", "c comment", "? help"],
-            &[
-                "j/k rows",
-                "[/] hunk",
-                "1/2 layout",
-                "w wrap",
-                "/ search",
-                "t/T thread",
-                ",/. file",
-                "F filter",
-                "A all",
-            ],
-        ),
         SurfaceContext::Review => (
-            &["q exit", "c comment", "? help"],
+            &["q exit", "? help"],
             &[
                 "j/k rows",
                 "[/] hunk",
@@ -295,8 +279,6 @@ fn context_keys(
                 "/ search",
                 ",/. file",
                 "Tab rail",
-                "F filter",
-                "A all",
             ],
         ),
         SurfaceContext::Threads if selected_thread_resolved => (

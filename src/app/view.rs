@@ -20,15 +20,11 @@ pub struct View {
 }
 
 /// The opening frame: which comparison is under review and how large it is.
-///
-/// Discussion aggregation deliberately lives elsewhere; magnitude must not be
-/// displaced by collaboration counters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     pub comparison: String,
     pub file_count: usize,
     pub magnitude: Magnitude,
-    pub active_filter: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

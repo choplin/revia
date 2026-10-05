@@ -471,10 +471,7 @@ fn help_document(lines: &[String], theme: SemanticTheme) -> Document {
 }
 
 fn is_help_heading(line: &str) -> bool {
-    matches!(
-        line,
-        "Navigation" | "View" | "Review actions" | "Global / exit" | "In help"
-    )
+    matches!(line, "Navigation" | "View" | "Global / exit" | "In help")
 }
 
 fn composer_editor(composer: &crate::app::view::ComposerOverlay) -> View {
@@ -761,7 +758,6 @@ mod tests {
                     additions: 2,
                     deletions: 1,
                 },
-                active_filter: "all".into(),
             },
             file_rail: Some(FileRail {
                 selected: Some(1),
