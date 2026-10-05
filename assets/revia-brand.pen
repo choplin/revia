@@ -1,0 +1,2571 @@
+{
+  "version": "2.18",
+  "children": [
+    {
+      "type": "frame",
+      "id": "XNP8y",
+      "x": 1380,
+      "y": 4120,
+      "name": "repository-context/readme/revia-brand/final",
+      "clip": true,
+      "width": 1280,
+      "height": 720,
+      "fill": "$brand-ink",
+      "layout": "none",
+      "children": [
+        {
+          "type": "frame",
+          "id": "Y5jhDu",
+          "x": 642,
+          "y": 112,
+          "name": "Review Loop",
+          "width": 604,
+          "height": 496,
+          "layout": "none",
+          "children": [
+            {
+              "type": "path",
+              "id": "X9gdm",
+              "x": 0,
+              "y": 0,
+              "name": "Forward Arc",
+              "geometry": "M181.23 215.91a124 124 0 0 1 233.91-16.36",
+              "viewBox": [
+                0,
+                0,
+                604,
+                496
+              ],
+              "width": 604,
+              "height": 496,
+              "stroke": "$brand-violet",
+              "strokeWidth": 10,
+              "strokeLinecap": "round"
+            },
+            {
+              "type": "path",
+              "id": "snSDy",
+              "x": 0,
+              "y": 0,
+              "name": "Forward Arrowhead",
+              "geometry": "M403.32 202.45l18.97 19.77 2.95-29.54z",
+              "viewBox": [
+                0,
+                0,
+                604,
+                496
+              ],
+              "fill": "$brand-violet",
+              "width": 604,
+              "height": 496,
+              "stroke": "$brand-violet",
+              "strokeWidth": 2,
+              "strokeLinejoin": "round"
+            },
+            {
+              "type": "path",
+              "id": "Ukogl",
+              "x": 0,
+              "y": 0,
+              "name": "Return Arc",
+              "geometry": "M420.77 280.09a124 124 0 0 1-233.91 16.36",
+              "viewBox": [
+                0,
+                0,
+                604,
+                496
+              ],
+              "width": 604,
+              "height": 496,
+              "stroke": "$brand-coral",
+              "strokeWidth": 10,
+              "strokeLinecap": "round"
+            },
+            {
+              "type": "path",
+              "id": "AHz6A",
+              "x": 0,
+              "y": 0,
+              "name": "Return Arrowhead",
+              "geometry": "M198.68 293.55l-18.97-19.77-2.95 29.54z",
+              "viewBox": [
+                0,
+                0,
+                604,
+                496
+              ],
+              "fill": "$brand-coral",
+              "width": 604,
+              "height": 496,
+              "stroke": "$brand-coral",
+              "strokeWidth": 2,
+              "strokeLinejoin": "round"
+            },
+            {
+              "type": "frame",
+              "id": "zvlHX",
+              "x": 89,
+              "y": 204,
+              "name": "AI-made Change Node",
+              "width": 88,
+              "height": 88,
+              "fill": "$brand-raised",
+              "cornerRadius": 44,
+              "stroke": "$brand-line",
+              "strokeWidth": 1.5,
+              "layout": "none",
+              "children": [
+                {
+                  "type": "rectangle",
+                  "cornerRadius": 3,
+                  "id": "LHy8Z",
+                  "x": 20,
+                  "y": 24,
+                  "name": "Removed Lines",
+                  "fill": "$brand-coral",
+                  "width": 48,
+                  "height": 6
+                },
+                {
+                  "type": "rectangle",
+                  "cornerRadius": 3,
+                  "id": "Xn0tX",
+                  "x": 20,
+                  "y": 41,
+                  "name": "Added Lines",
+                  "fill": "$brand-sage",
+                  "width": 36,
+                  "height": 6
+                },
+                {
+                  "type": "rectangle",
+                  "cornerRadius": 3,
+                  "id": "YSwoh",
+                  "x": 20,
+                  "y": 58,
+                  "name": "Context Lines",
+                  "fill": "$brand-muted",
+                  "width": 52,
+                  "height": 6
+                }
+              ]
+            },
+            {
+              "type": "ellipse",
+              "id": "EsMpS",
+              "x": 229,
+              "y": 176,
+              "name": "Halo",
+              "fill": "#7587FF14",
+              "width": 144,
+              "height": 144,
+              "stroke": "#7587FF55",
+              "strokeWidth": 1
+            },
+            {
+              "type": "frame",
+              "id": "J3Ax8",
+              "x": 245,
+              "y": 192,
+              "name": "Revia Node",
+              "width": 112,
+              "height": 112,
+              "fill": "$brand-raised",
+              "cornerRadius": 56,
+              "stroke": "$brand-violet",
+              "strokeWidth": 2,
+              "layout": "vertical",
+              "justifyContent": "center",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "xrCqd",
+                  "name": "Revia Wordmark",
+                  "fill": "$brand-bone",
+                  "content": "revia",
+                  "fontFamily": "Geist Mono",
+                  "fontSize": 26,
+                  "fontWeight": "500"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "sR30N",
+              "x": 425,
+              "y": 204,
+              "name": "Human Decision Node",
+              "width": 88,
+              "height": 88,
+              "fill": "$brand-raised",
+              "cornerRadius": 44,
+              "stroke": "$brand-line",
+              "strokeWidth": 1.5,
+              "layout": "vertical",
+              "padding": [
+                0,
+                0,
+                0,
+                6
+              ],
+              "justifyContent": "center",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "yeIr1",
+                  "name": "Decision Icon",
+                  "width": 36,
+                  "height": 36,
+                  "icon": "user-check",
+                  "library": "lucide",
+                  "fill": "$brand-bone"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "X6iFTr",
+              "x": 0,
+              "y": 228,
+              "name": "Change Label Group",
+              "width": 82,
+              "height": 40,
+              "layout": "vertical",
+              "justifyContent": "center",
+              "alignItems": "end",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "WEcHr",
+                  "name": "Change Label",
+                  "fill": "$brand-bone",
+                  "content": "AI-MADE\nCHANGE",
+                  "lineHeight": 1.25,
+                  "textAlign": "right",
+                  "fontFamily": "Geist Mono",
+                  "fontSize": 14,
+                  "fontWeight": "650"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "mYT6n",
+              "x": 520,
+              "y": 228,
+              "name": "Decision Label Group",
+              "width": 82,
+              "height": 40,
+              "layout": "vertical",
+              "justifyContent": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "Qo27Y",
+                  "name": "Decision Label",
+                  "fill": "$brand-bone",
+                  "content": "HUMAN\nDECISION",
+                  "lineHeight": 1.25,
+                  "fontFamily": "Geist Mono",
+                  "fontSize": 14,
+                  "fontWeight": "650"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "id": "aXy5L",
+              "x": 161,
+              "y": 84,
+              "name": "Forward Path Label",
+              "fill": "$brand-violet",
+              "textGrowth": "fixed-width",
+              "width": 280,
+              "content": "EXPLAIN · INSPECT",
+              "textAlign": "center",
+              "fontFamily": "Geist Mono",
+              "fontSize": 14,
+              "fontWeight": "650",
+              "letterSpacing": 1
+            },
+            {
+              "type": "text",
+              "id": "O4mvmc",
+              "x": 161,
+              "y": 394,
+              "name": "Return Path Label",
+              "fill": "$brand-coral",
+              "textGrowth": "fixed-width",
+              "width": 280,
+              "content": "QUESTION · REVISE",
+              "textAlign": "center",
+              "fontFamily": "Geist Mono",
+              "fontSize": 14,
+              "fontWeight": "650",
+              "letterSpacing": 1
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "I7q6NT",
+          "x": 64,
+          "y": 52,
+          "name": "Brand Lockup",
+          "gap": 14,
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "frame",
+              "id": "M6iCr",
+              "name": "Revia Mark Small (Diff)",
+              "width": 44,
+              "height": 44,
+              "fill": "$brand-raised",
+              "cornerRadius": 11,
+              "stroke": "$brand-line",
+              "strokeWidth": 1,
+              "layout": "none",
+              "children": [
+                {
+                  "type": "path",
+                  "id": "B0f8ri",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Forward Arc",
+                  "geometry": "M51.1 105.95a80 80 0 0 1 148.8-13.02",
+                  "viewBox": [
+                    0,
+                    0,
+                    256,
+                    256
+                  ],
+                  "width": 44,
+                  "height": 44,
+                  "stroke": "$brand-violet",
+                  "strokeWidth": 3.09375,
+                  "strokeLinecap": "round"
+                },
+                {
+                  "type": "path",
+                  "id": "uH6dP",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Forward Head",
+                  "geometry": "M184.62 100.38l22.94 19.26 7.62-34.16z",
+                  "viewBox": [
+                    0,
+                    0,
+                    256,
+                    256
+                  ],
+                  "fill": "$brand-violet",
+                  "width": 44,
+                  "height": 44,
+                  "stroke": "$brand-violet",
+                  "strokeWidth": 0.6875,
+                  "strokeLinejoin": "round"
+                },
+                {
+                  "type": "path",
+                  "id": "H15mL",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Return Arc",
+                  "geometry": "M204.9 150.05a80 80 0 0 1-148.8 13.02",
+                  "viewBox": [
+                    0,
+                    0,
+                    256,
+                    256
+                  ],
+                  "width": 44,
+                  "height": 44,
+                  "stroke": "$brand-coral",
+                  "strokeWidth": 3.09375,
+                  "strokeLinecap": "round"
+                },
+                {
+                  "type": "path",
+                  "id": "wEVJd",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Return Head",
+                  "geometry": "M71.38 155.62l-22.94-19.26-7.62 34.16z",
+                  "viewBox": [
+                    0,
+                    0,
+                    256,
+                    256
+                  ],
+                  "fill": "$brand-coral",
+                  "width": 44,
+                  "height": 44,
+                  "stroke": "$brand-coral",
+                  "strokeWidth": 0.6875,
+                  "strokeLinejoin": "round"
+                },
+                {
+                  "type": "frame",
+                  "id": "pEJaf",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Diff Lines",
+                  "width": 44,
+                  "height": 44,
+                  "layout": "vertical",
+                  "gap": 2,
+                  "justifyContent": "center",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "GKfOd",
+                      "name": "Removed Row",
+                      "width": 12,
+                      "height": 2,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1,
+                          "id": "H27wfu",
+                          "name": "Removed",
+                          "fill": "$brand-coral",
+                          "width": 9,
+                          "height": 2
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "rZpP1",
+                      "name": "Added Row",
+                      "width": 12,
+                      "height": 2,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1,
+                          "id": "j5uSZ",
+                          "name": "Added",
+                          "fill": "$brand-sage",
+                          "width": 7,
+                          "height": 2
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "DWGc2",
+                      "name": "Context Row",
+                      "width": 12,
+                      "height": 2,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1,
+                          "id": "cyArc",
+                          "name": "Context",
+                          "fill": "$brand-muted",
+                          "width": 11,
+                          "height": 2
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "id": "rXMxt",
+              "name": "Wordmark",
+              "fill": "$brand-bone",
+              "content": "revia",
+              "fontFamily": "Geist Mono",
+              "fontSize": 24,
+              "fontWeight": "500"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "RTXa5",
+          "x": 64,
+          "y": 186,
+          "name": "Hero Copy",
+          "width": 560,
+          "layout": "vertical",
+          "gap": 28,
+          "children": [
+            {
+              "type": "text",
+              "id": "jNy7V",
+              "name": "Eyebrow",
+              "fill": "$brand-violet",
+              "content": "TERMINAL-FIRST REVIEW FOR AI-MADE CHANGES",
+              "fontFamily": "Geist Mono",
+              "fontSize": 15,
+              "fontWeight": "650",
+              "letterSpacing": 1.1
+            },
+            {
+              "type": "text",
+              "id": "k6qX40",
+              "name": "Headline",
+              "fill": "$brand-bone",
+              "content": "Understand\nwhat you ship.",
+              "lineHeight": 1.05,
+              "fontFamily": "Geist Mono",
+              "fontSize": 68,
+              "fontWeight": "500",
+              "letterSpacing": -2
+            },
+            {
+              "type": "text",
+              "id": "Y7IPOC",
+              "name": "Body",
+              "fill": "$brand-muted",
+              "textGrowth": "fixed-width",
+              "width": "fill_container",
+              "content": "Question AI-made changes, inspect the evidence, and make a decision you can own.",
+              "lineHeight": 1.45,
+              "fontFamily": "Geist",
+              "fontSize": 22,
+              "fontWeight": "normal"
+            },
+            {
+              "type": "frame",
+              "id": "Y9bRt1",
+              "name": "Command Spacer",
+              "padding": [
+                8,
+                0,
+                0,
+                0
+              ],
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "XmxSL",
+                  "name": "Command Chip",
+                  "fill": "$brand-raised",
+                  "cornerRadius": 10,
+                  "stroke": "$brand-line",
+                  "strokeWidth": 1,
+                  "gap": 12,
+                  "padding": [
+                    12,
+                    18
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "E1ffMh",
+                      "name": "Prompt",
+                      "fill": "$brand-violet",
+                      "content": "$",
+                      "fontFamily": "Geist Mono",
+                      "fontSize": 17,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "text",
+                      "id": "EYOCq",
+                      "name": "Command",
+                      "fill": "$brand-bone",
+                      "content": "revia git changes",
+                      "fontFamily": "Geist Mono",
+                      "fontSize": 17,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "rectangle",
+                      "id": "BL7Ab",
+                      "name": "Cursor",
+                      "fill": "$brand-bone",
+                      "width": 9,
+                      "height": 20
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "rQ1Gy",
+      "x": 1380,
+      "y": 4960,
+      "name": "repository-context/readme/revia-brand/icon",
+      "reusable": true,
+      "width": 256,
+      "height": 256,
+      "fill": "$brand-ink",
+      "cornerRadius": 60,
+      "stroke": "$brand-line",
+      "strokeWidth": 2,
+      "layout": "none",
+      "children": [
+        {
+          "type": "frame",
+          "id": "o6WBcR",
+          "x": 78,
+          "y": 78,
+          "name": "Center",
+          "width": 100,
+          "height": 100,
+          "layout": "vertical",
+          "gap": 9,
+          "padding": [
+            0,
+            22
+          ],
+          "justifyContent": "center",
+          "children": [
+            {
+              "type": "rectangle",
+              "cornerRadius": 5,
+              "id": "exxKh",
+              "name": "Removed",
+              "fill": "$brand-coral",
+              "width": 44,
+              "height": 10
+            },
+            {
+              "type": "rectangle",
+              "cornerRadius": 5,
+              "id": "X09iM",
+              "name": "Added",
+              "fill": "$brand-sage",
+              "width": 32,
+              "height": 10
+            },
+            {
+              "type": "rectangle",
+              "cornerRadius": 5,
+              "id": "FBci7",
+              "name": "Context",
+              "fill": "$brand-muted",
+              "width": 54,
+              "height": 10
+            }
+          ]
+        },
+        {
+          "type": "path",
+          "id": "yF6gN",
+          "x": 0,
+          "y": 0,
+          "name": "Forward Arc",
+          "geometry": "M51.1 105.95a80 80 0 0 1 148.8-13.02",
+          "viewBox": [
+            0,
+            0,
+            256,
+            256
+          ],
+          "width": 256,
+          "height": 256,
+          "stroke": "$brand-violet",
+          "strokeWidth": 18,
+          "strokeLinecap": "round"
+        },
+        {
+          "type": "path",
+          "id": "Lba6w",
+          "x": 0,
+          "y": 0,
+          "name": "Forward Head",
+          "geometry": "M184.62 100.38l22.94 19.26 7.62-34.16z",
+          "viewBox": [
+            0,
+            0,
+            256,
+            256
+          ],
+          "fill": "$brand-violet",
+          "width": 256,
+          "height": 256,
+          "stroke": "$brand-violet",
+          "strokeWidth": 4,
+          "strokeLinejoin": "round"
+        },
+        {
+          "type": "path",
+          "id": "l98un4",
+          "x": 0,
+          "y": 0,
+          "name": "Return Arc",
+          "geometry": "M204.9 150.05a80 80 0 0 1-148.8 13.02",
+          "viewBox": [
+            0,
+            0,
+            256,
+            256
+          ],
+          "width": 256,
+          "height": 256,
+          "stroke": "$brand-coral",
+          "strokeWidth": 18,
+          "strokeLinecap": "round"
+        },
+        {
+          "type": "path",
+          "id": "rFAus",
+          "x": 0,
+          "y": 0,
+          "name": "Return Head",
+          "geometry": "M71.38 155.62l-22.94-19.26-7.62 34.16z",
+          "viewBox": [
+            0,
+            0,
+            256,
+            256
+          ],
+          "fill": "$brand-coral",
+          "width": 256,
+          "height": 256,
+          "stroke": "$brand-coral",
+          "strokeWidth": 4,
+          "strokeLinejoin": "round"
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "Bq9Lu",
+      "x": 1380,
+      "y": 5296,
+      "name": "repository-context/readme/revia-hero-readme/candidate-1",
+      "clip": true,
+      "width": 1280,
+      "height": 480,
+      "fill": "$brand-ink",
+      "layout": "none",
+      "children": [
+        {
+          "type": "frame",
+          "id": "Nb48P",
+          "x": 642,
+          "y": -15,
+          "name": "Review Loop",
+          "width": 604,
+          "height": 496,
+          "layout": "none",
+          "children": [
+            {
+              "type": "path",
+              "id": "W0kaP",
+              "x": 0,
+              "y": 0,
+              "name": "Forward Arc",
+              "geometry": "M181.23 215.91a124 124 0 0 1 233.91-16.36",
+              "viewBox": [
+                0,
+                0,
+                604,
+                496
+              ],
+              "width": 604,
+              "height": 496,
+              "stroke": "$brand-violet",
+              "strokeWidth": 10,
+              "strokeLinecap": "round"
+            },
+            {
+              "type": "path",
+              "id": "VTI6L",
+              "x": 0,
+              "y": 0,
+              "name": "Forward Arrowhead",
+              "geometry": "M403.32 202.45l18.97 19.77 2.95-29.54z",
+              "viewBox": [
+                0,
+                0,
+                604,
+                496
+              ],
+              "fill": "$brand-violet",
+              "width": 604,
+              "height": 496,
+              "stroke": "$brand-violet",
+              "strokeWidth": 2,
+              "strokeLinejoin": "round"
+            },
+            {
+              "type": "path",
+              "id": "O35dF",
+              "x": 0,
+              "y": 0,
+              "name": "Return Arc",
+              "geometry": "M420.77 280.09a124 124 0 0 1-233.91 16.36",
+              "viewBox": [
+                0,
+                0,
+                604,
+                496
+              ],
+              "width": 604,
+              "height": 496,
+              "stroke": "$brand-coral",
+              "strokeWidth": 10,
+              "strokeLinecap": "round"
+            },
+            {
+              "type": "path",
+              "id": "LzfNu",
+              "x": 0,
+              "y": 0,
+              "name": "Return Arrowhead",
+              "geometry": "M198.68 293.55l-18.97-19.77-2.95 29.54z",
+              "viewBox": [
+                0,
+                0,
+                604,
+                496
+              ],
+              "fill": "$brand-coral",
+              "width": 604,
+              "height": 496,
+              "stroke": "$brand-coral",
+              "strokeWidth": 2,
+              "strokeLinejoin": "round"
+            },
+            {
+              "type": "frame",
+              "id": "hykF4",
+              "x": 89,
+              "y": 204,
+              "name": "AI-made Change Node",
+              "width": 88,
+              "height": 88,
+              "fill": "$brand-raised",
+              "cornerRadius": 44,
+              "stroke": "$brand-line",
+              "strokeWidth": 1.5,
+              "layout": "none",
+              "children": [
+                {
+                  "type": "rectangle",
+                  "cornerRadius": 3,
+                  "id": "KfXv3",
+                  "x": 20,
+                  "y": 24,
+                  "name": "Removed Lines",
+                  "fill": "$brand-coral",
+                  "width": 48,
+                  "height": 6
+                },
+                {
+                  "type": "rectangle",
+                  "cornerRadius": 3,
+                  "id": "ZFgi6",
+                  "x": 20,
+                  "y": 41,
+                  "name": "Added Lines",
+                  "fill": "$brand-sage",
+                  "width": 36,
+                  "height": 6
+                },
+                {
+                  "type": "rectangle",
+                  "cornerRadius": 3,
+                  "id": "xzpev",
+                  "x": 20,
+                  "y": 58,
+                  "name": "Context Lines",
+                  "fill": "$brand-muted",
+                  "width": 52,
+                  "height": 6
+                }
+              ]
+            },
+            {
+              "type": "ellipse",
+              "id": "Gs69O",
+              "x": 229,
+              "y": 176,
+              "name": "Halo",
+              "fill": "#7587FF14",
+              "width": 144,
+              "height": 144,
+              "stroke": "#7587FF55",
+              "strokeWidth": 1
+            },
+            {
+              "type": "frame",
+              "id": "FjuL7",
+              "x": 245,
+              "y": 192,
+              "name": "Revia Node",
+              "width": 112,
+              "height": 112,
+              "fill": "$brand-raised",
+              "cornerRadius": 56,
+              "stroke": "$brand-violet",
+              "strokeWidth": 2,
+              "layout": "vertical",
+              "justifyContent": "center",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "bfeVJ",
+                  "name": "Revia Wordmark",
+                  "fill": "$brand-bone",
+                  "content": "revia",
+                  "fontFamily": "Geist Mono",
+                  "fontSize": 26,
+                  "fontWeight": "500"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "H8Y9sF",
+              "x": 425,
+              "y": 204,
+              "name": "Human Decision Node",
+              "width": 88,
+              "height": 88,
+              "fill": "$brand-raised",
+              "cornerRadius": 44,
+              "stroke": "$brand-line",
+              "strokeWidth": 1.5,
+              "layout": "vertical",
+              "padding": [
+                0,
+                0,
+                0,
+                6
+              ],
+              "justifyContent": "center",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "dmRw8",
+                  "name": "Decision Icon",
+                  "width": 36,
+                  "height": 36,
+                  "icon": "user-check",
+                  "library": "lucide",
+                  "fill": "$brand-bone"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "bvZ6C",
+              "x": 0,
+              "y": 228,
+              "name": "Change Label Group",
+              "width": 82,
+              "height": 40,
+              "layout": "vertical",
+              "justifyContent": "center",
+              "alignItems": "end",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "FwmAv",
+                  "name": "Change Label",
+                  "fill": "$brand-bone",
+                  "content": "AI-MADE\nCHANGE",
+                  "lineHeight": 1.25,
+                  "textAlign": "right",
+                  "fontFamily": "Geist Mono",
+                  "fontSize": 14,
+                  "fontWeight": "650"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "X8TAE",
+              "x": 520,
+              "y": 228,
+              "name": "Decision Label Group",
+              "width": 82,
+              "height": 40,
+              "layout": "vertical",
+              "justifyContent": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "aCMPk",
+                  "name": "Decision Label",
+                  "fill": "$brand-bone",
+                  "content": "HUMAN\nDECISION",
+                  "lineHeight": 1.25,
+                  "fontFamily": "Geist Mono",
+                  "fontSize": 14,
+                  "fontWeight": "650"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "id": "SZNfx",
+              "x": 161,
+              "y": 84,
+              "name": "Forward Path Label",
+              "fill": "$brand-violet",
+              "textGrowth": "fixed-width",
+              "width": 280,
+              "content": "EXPLAIN · INSPECT",
+              "textAlign": "center",
+              "fontFamily": "Geist Mono",
+              "fontSize": 14,
+              "fontWeight": "650",
+              "letterSpacing": 1
+            },
+            {
+              "type": "text",
+              "id": "TcjLq",
+              "x": 161,
+              "y": 394,
+              "name": "Return Path Label",
+              "fill": "$brand-coral",
+              "textGrowth": "fixed-width",
+              "width": 280,
+              "content": "QUESTION · REVISE",
+              "textAlign": "center",
+              "fontFamily": "Geist Mono",
+              "fontSize": 14,
+              "fontWeight": "650",
+              "letterSpacing": 1
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "g87lNP",
+          "x": 64,
+          "y": 52,
+          "name": "Brand Lockup",
+          "enabled": false,
+          "gap": 14,
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "frame",
+              "id": "bxRH5",
+              "name": "Revia Mark Small (Diff)",
+              "width": 44,
+              "height": 44,
+              "fill": "$brand-raised",
+              "cornerRadius": 11,
+              "stroke": "$brand-line",
+              "strokeWidth": 1,
+              "layout": "none",
+              "children": [
+                {
+                  "type": "path",
+                  "id": "S88ij",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Forward Arc",
+                  "geometry": "M51.1 105.95a80 80 0 0 1 148.8-13.02",
+                  "viewBox": [
+                    0,
+                    0,
+                    256,
+                    256
+                  ],
+                  "width": 44,
+                  "height": 44,
+                  "stroke": "$brand-violet",
+                  "strokeWidth": 3.09375,
+                  "strokeLinecap": "round"
+                },
+                {
+                  "type": "path",
+                  "id": "Hfewo",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Forward Head",
+                  "geometry": "M184.62 100.38l22.94 19.26 7.62-34.16z",
+                  "viewBox": [
+                    0,
+                    0,
+                    256,
+                    256
+                  ],
+                  "fill": "$brand-violet",
+                  "width": 44,
+                  "height": 44,
+                  "stroke": "$brand-violet",
+                  "strokeWidth": 0.6875,
+                  "strokeLinejoin": "round"
+                },
+                {
+                  "type": "path",
+                  "id": "rzArr",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Return Arc",
+                  "geometry": "M204.9 150.05a80 80 0 0 1-148.8 13.02",
+                  "viewBox": [
+                    0,
+                    0,
+                    256,
+                    256
+                  ],
+                  "width": 44,
+                  "height": 44,
+                  "stroke": "$brand-coral",
+                  "strokeWidth": 3.09375,
+                  "strokeLinecap": "round"
+                },
+                {
+                  "type": "path",
+                  "id": "Mu6Ff",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Return Head",
+                  "geometry": "M71.38 155.62l-22.94-19.26-7.62 34.16z",
+                  "viewBox": [
+                    0,
+                    0,
+                    256,
+                    256
+                  ],
+                  "fill": "$brand-coral",
+                  "width": 44,
+                  "height": 44,
+                  "stroke": "$brand-coral",
+                  "strokeWidth": 0.6875,
+                  "strokeLinejoin": "round"
+                },
+                {
+                  "type": "frame",
+                  "id": "zI216",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Diff Lines",
+                  "width": 44,
+                  "height": 44,
+                  "layout": "vertical",
+                  "gap": 2,
+                  "justifyContent": "center",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "Ucn9N",
+                      "name": "Removed Row",
+                      "width": 12,
+                      "height": 2,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1,
+                          "id": "rMuGA",
+                          "name": "Removed",
+                          "fill": "$brand-coral",
+                          "width": 9,
+                          "height": 2
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "ajeAg",
+                      "name": "Added Row",
+                      "width": 12,
+                      "height": 2,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1,
+                          "id": "o1ZcAG",
+                          "name": "Added",
+                          "fill": "$brand-sage",
+                          "width": 7,
+                          "height": 2
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "l8SEE",
+                      "name": "Context Row",
+                      "width": 12,
+                      "height": 2,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1,
+                          "id": "e3F1Pz",
+                          "name": "Context",
+                          "fill": "$brand-muted",
+                          "width": 11,
+                          "height": 2
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "id": "ALGjD",
+              "name": "Wordmark",
+              "fill": "$brand-bone",
+              "content": "revia",
+              "fontFamily": "Geist Mono",
+              "fontSize": 24,
+              "fontWeight": "500"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "p32blD",
+          "x": 64,
+          "y": 59,
+          "name": "Hero Copy",
+          "width": 560,
+          "layout": "vertical",
+          "gap": 28,
+          "children": [
+            {
+              "type": "text",
+              "id": "fbKPV",
+              "name": "Eyebrow",
+              "fill": "$brand-violet",
+              "content": "TERMINAL-FIRST REVIEW FOR AI-MADE CHANGES",
+              "fontFamily": "Geist Mono",
+              "fontSize": 15,
+              "fontWeight": "650",
+              "letterSpacing": 1.1
+            },
+            {
+              "type": "text",
+              "id": "PgPVe",
+              "name": "Headline",
+              "fill": "$brand-bone",
+              "content": "Understand\nwhat you ship.",
+              "lineHeight": 1.05,
+              "fontFamily": "Geist Mono",
+              "fontSize": 68,
+              "fontWeight": "500",
+              "letterSpacing": -2
+            },
+            {
+              "type": "text",
+              "id": "HvXjx",
+              "name": "Body",
+              "fill": "$brand-muted",
+              "textGrowth": "fixed-width",
+              "width": "fill_container",
+              "content": "Question AI-made changes, inspect the evidence, and make a decision you can own.",
+              "lineHeight": 1.45,
+              "fontFamily": "Geist",
+              "fontSize": 22,
+              "fontWeight": "normal"
+            },
+            {
+              "type": "frame",
+              "id": "UP0oF",
+              "name": "Command Spacer",
+              "padding": [
+                8,
+                0,
+                0,
+                0
+              ],
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "ep5tN",
+                  "name": "Command Chip",
+                  "fill": "$brand-raised",
+                  "cornerRadius": 10,
+                  "stroke": "$brand-line",
+                  "strokeWidth": 1,
+                  "gap": 12,
+                  "padding": [
+                    12,
+                    18
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "u9OYI",
+                      "name": "Prompt",
+                      "fill": "$brand-violet",
+                      "content": "$",
+                      "fontFamily": "Geist Mono",
+                      "fontSize": 17,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "text",
+                      "id": "w0Ow4",
+                      "name": "Command",
+                      "fill": "$brand-bone",
+                      "content": "revia git changes",
+                      "fontFamily": "Geist Mono",
+                      "fontSize": 17,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "rectangle",
+                      "id": "R9Rk9J",
+                      "name": "Cursor",
+                      "fill": "$brand-bone",
+                      "width": 9,
+                      "height": 20
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "dSByw",
+      "x": 1380,
+      "y": 5856,
+      "name": "repository-context/readme/revia-hero-readme/candidate-2",
+      "clip": true,
+      "width": 1280,
+      "height": 560,
+      "fill": "$brand-ink",
+      "layout": "none",
+      "children": [
+        {
+          "type": "frame",
+          "id": "pJALm",
+          "x": 642,
+          "y": 25,
+          "name": "Review Loop",
+          "width": 604,
+          "height": 496,
+          "layout": "none",
+          "children": [
+            {
+              "type": "path",
+              "id": "qlq9w",
+              "x": 0,
+              "y": 0,
+              "name": "Forward Arc",
+              "geometry": "M181.23 215.91a124 124 0 0 1 233.91-16.36",
+              "viewBox": [
+                0,
+                0,
+                604,
+                496
+              ],
+              "width": 604,
+              "height": 496,
+              "stroke": "$brand-violet",
+              "strokeWidth": 10,
+              "strokeLinecap": "round"
+            },
+            {
+              "type": "path",
+              "id": "yLg8s",
+              "x": 0,
+              "y": 0,
+              "name": "Forward Arrowhead",
+              "geometry": "M403.32 202.45l18.97 19.77 2.95-29.54z",
+              "viewBox": [
+                0,
+                0,
+                604,
+                496
+              ],
+              "fill": "$brand-violet",
+              "width": 604,
+              "height": 496,
+              "stroke": "$brand-violet",
+              "strokeWidth": 2,
+              "strokeLinejoin": "round"
+            },
+            {
+              "type": "path",
+              "id": "et5Ft",
+              "x": 0,
+              "y": 0,
+              "name": "Return Arc",
+              "geometry": "M420.77 280.09a124 124 0 0 1-233.91 16.36",
+              "viewBox": [
+                0,
+                0,
+                604,
+                496
+              ],
+              "width": 604,
+              "height": 496,
+              "stroke": "$brand-coral",
+              "strokeWidth": 10,
+              "strokeLinecap": "round"
+            },
+            {
+              "type": "path",
+              "id": "WqE6L",
+              "x": 0,
+              "y": 0,
+              "name": "Return Arrowhead",
+              "geometry": "M198.68 293.55l-18.97-19.77-2.95 29.54z",
+              "viewBox": [
+                0,
+                0,
+                604,
+                496
+              ],
+              "fill": "$brand-coral",
+              "width": 604,
+              "height": 496,
+              "stroke": "$brand-coral",
+              "strokeWidth": 2,
+              "strokeLinejoin": "round"
+            },
+            {
+              "type": "frame",
+              "id": "FcbvK",
+              "x": 89,
+              "y": 204,
+              "name": "AI-made Change Node",
+              "width": 88,
+              "height": 88,
+              "fill": "$brand-raised",
+              "cornerRadius": 44,
+              "stroke": "$brand-line",
+              "strokeWidth": 1.5,
+              "layout": "none",
+              "children": [
+                {
+                  "type": "rectangle",
+                  "cornerRadius": 3,
+                  "id": "l25kv7",
+                  "x": 20,
+                  "y": 24,
+                  "name": "Removed Lines",
+                  "fill": "$brand-coral",
+                  "width": 48,
+                  "height": 6
+                },
+                {
+                  "type": "rectangle",
+                  "cornerRadius": 3,
+                  "id": "t9RkG",
+                  "x": 20,
+                  "y": 41,
+                  "name": "Added Lines",
+                  "fill": "$brand-sage",
+                  "width": 36,
+                  "height": 6
+                },
+                {
+                  "type": "rectangle",
+                  "cornerRadius": 3,
+                  "id": "MwzCd",
+                  "x": 20,
+                  "y": 58,
+                  "name": "Context Lines",
+                  "fill": "$brand-muted",
+                  "width": 52,
+                  "height": 6
+                }
+              ]
+            },
+            {
+              "type": "ellipse",
+              "id": "OBBRF",
+              "x": 229,
+              "y": 176,
+              "name": "Halo",
+              "fill": "#7587FF14",
+              "width": 144,
+              "height": 144,
+              "stroke": "#7587FF55",
+              "strokeWidth": 1
+            },
+            {
+              "type": "frame",
+              "id": "GmpI3",
+              "x": 245,
+              "y": 192,
+              "name": "Revia Node",
+              "width": 112,
+              "height": 112,
+              "fill": "$brand-raised",
+              "cornerRadius": 56,
+              "stroke": "$brand-violet",
+              "strokeWidth": 2,
+              "layout": "vertical",
+              "justifyContent": "center",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "qAAuk",
+                  "name": "Revia Wordmark",
+                  "fill": "$brand-bone",
+                  "content": "revia",
+                  "fontFamily": "Geist Mono",
+                  "fontSize": 26,
+                  "fontWeight": "500"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "K5zCM",
+              "x": 425,
+              "y": 204,
+              "name": "Human Decision Node",
+              "width": 88,
+              "height": 88,
+              "fill": "$brand-raised",
+              "cornerRadius": 44,
+              "stroke": "$brand-line",
+              "strokeWidth": 1.5,
+              "layout": "vertical",
+              "padding": [
+                0,
+                0,
+                0,
+                6
+              ],
+              "justifyContent": "center",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "mAZBI",
+                  "name": "Decision Icon",
+                  "width": 36,
+                  "height": 36,
+                  "icon": "user-check",
+                  "library": "lucide",
+                  "fill": "$brand-bone"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "jOeRv",
+              "x": 0,
+              "y": 228,
+              "name": "Change Label Group",
+              "width": 82,
+              "height": 40,
+              "layout": "vertical",
+              "justifyContent": "center",
+              "alignItems": "end",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "ndZwG",
+                  "name": "Change Label",
+                  "fill": "$brand-bone",
+                  "content": "AI-MADE\nCHANGE",
+                  "lineHeight": 1.25,
+                  "textAlign": "right",
+                  "fontFamily": "Geist Mono",
+                  "fontSize": 14,
+                  "fontWeight": "650"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "CpOOv",
+              "x": 520,
+              "y": 228,
+              "name": "Decision Label Group",
+              "width": 82,
+              "height": 40,
+              "layout": "vertical",
+              "justifyContent": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "NwVRf",
+                  "name": "Decision Label",
+                  "fill": "$brand-bone",
+                  "content": "HUMAN\nDECISION",
+                  "lineHeight": 1.25,
+                  "fontFamily": "Geist Mono",
+                  "fontSize": 14,
+                  "fontWeight": "650"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "id": "v9im5t",
+              "x": 161,
+              "y": 84,
+              "name": "Forward Path Label",
+              "fill": "$brand-violet",
+              "textGrowth": "fixed-width",
+              "width": 280,
+              "content": "EXPLAIN · INSPECT",
+              "textAlign": "center",
+              "fontFamily": "Geist Mono",
+              "fontSize": 14,
+              "fontWeight": "650",
+              "letterSpacing": 1
+            },
+            {
+              "type": "text",
+              "id": "AeLNd",
+              "x": 161,
+              "y": 394,
+              "name": "Return Path Label",
+              "fill": "$brand-coral",
+              "textGrowth": "fixed-width",
+              "width": 280,
+              "content": "QUESTION · REVISE",
+              "textAlign": "center",
+              "fontFamily": "Geist Mono",
+              "fontSize": 14,
+              "fontWeight": "650",
+              "letterSpacing": 1
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "F1eZhq",
+          "x": 64,
+          "y": 52,
+          "name": "Brand Lockup",
+          "enabled": false,
+          "gap": 14,
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "frame",
+              "id": "hphh5",
+              "name": "Revia Mark Small (Diff)",
+              "width": 44,
+              "height": 44,
+              "fill": "$brand-raised",
+              "cornerRadius": 11,
+              "stroke": "$brand-line",
+              "strokeWidth": 1,
+              "layout": "none",
+              "children": [
+                {
+                  "type": "path",
+                  "id": "teRwF",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Forward Arc",
+                  "geometry": "M51.1 105.95a80 80 0 0 1 148.8-13.02",
+                  "viewBox": [
+                    0,
+                    0,
+                    256,
+                    256
+                  ],
+                  "width": 44,
+                  "height": 44,
+                  "stroke": "$brand-violet",
+                  "strokeWidth": 3.09375,
+                  "strokeLinecap": "round"
+                },
+                {
+                  "type": "path",
+                  "id": "B3gBwr",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Forward Head",
+                  "geometry": "M184.62 100.38l22.94 19.26 7.62-34.16z",
+                  "viewBox": [
+                    0,
+                    0,
+                    256,
+                    256
+                  ],
+                  "fill": "$brand-violet",
+                  "width": 44,
+                  "height": 44,
+                  "stroke": "$brand-violet",
+                  "strokeWidth": 0.6875,
+                  "strokeLinejoin": "round"
+                },
+                {
+                  "type": "path",
+                  "id": "C1miTv",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Return Arc",
+                  "geometry": "M204.9 150.05a80 80 0 0 1-148.8 13.02",
+                  "viewBox": [
+                    0,
+                    0,
+                    256,
+                    256
+                  ],
+                  "width": 44,
+                  "height": 44,
+                  "stroke": "$brand-coral",
+                  "strokeWidth": 3.09375,
+                  "strokeLinecap": "round"
+                },
+                {
+                  "type": "path",
+                  "id": "d57nzN",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Return Head",
+                  "geometry": "M71.38 155.62l-22.94-19.26-7.62 34.16z",
+                  "viewBox": [
+                    0,
+                    0,
+                    256,
+                    256
+                  ],
+                  "fill": "$brand-coral",
+                  "width": 44,
+                  "height": 44,
+                  "stroke": "$brand-coral",
+                  "strokeWidth": 0.6875,
+                  "strokeLinejoin": "round"
+                },
+                {
+                  "type": "frame",
+                  "id": "C5b2p",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Diff Lines",
+                  "width": 44,
+                  "height": 44,
+                  "layout": "vertical",
+                  "gap": 2,
+                  "justifyContent": "center",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "SuHZL",
+                      "name": "Removed Row",
+                      "width": 12,
+                      "height": 2,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1,
+                          "id": "vQHkK",
+                          "name": "Removed",
+                          "fill": "$brand-coral",
+                          "width": 9,
+                          "height": 2
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "tus6j",
+                      "name": "Added Row",
+                      "width": 12,
+                      "height": 2,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1,
+                          "id": "q7Z3m",
+                          "name": "Added",
+                          "fill": "$brand-sage",
+                          "width": 7,
+                          "height": 2
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "D87tq",
+                      "name": "Context Row",
+                      "width": 12,
+                      "height": 2,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1,
+                          "id": "lZZJH",
+                          "name": "Context",
+                          "fill": "$brand-muted",
+                          "width": 11,
+                          "height": 2
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "id": "GfmsT",
+              "name": "Wordmark",
+              "fill": "$brand-bone",
+              "content": "revia",
+              "fontFamily": "Geist Mono",
+              "fontSize": 24,
+              "fontWeight": "500"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "R7otD",
+          "x": 64,
+          "y": 99,
+          "name": "Hero Copy",
+          "width": 560,
+          "layout": "vertical",
+          "gap": 28,
+          "children": [
+            {
+              "type": "text",
+              "id": "suHWm",
+              "name": "Eyebrow",
+              "fill": "$brand-violet",
+              "content": "TERMINAL-FIRST REVIEW FOR AI-MADE CHANGES",
+              "fontFamily": "Geist Mono",
+              "fontSize": 15,
+              "fontWeight": "650",
+              "letterSpacing": 1.1
+            },
+            {
+              "type": "text",
+              "id": "zUB8N",
+              "name": "Headline",
+              "fill": "$brand-bone",
+              "content": "Understand\nwhat you ship.",
+              "lineHeight": 1.05,
+              "fontFamily": "Geist Mono",
+              "fontSize": 68,
+              "fontWeight": "500",
+              "letterSpacing": -2
+            },
+            {
+              "type": "text",
+              "id": "a2GFW",
+              "name": "Body",
+              "fill": "$brand-muted",
+              "textGrowth": "fixed-width",
+              "width": "fill_container",
+              "content": "Question AI-made changes, inspect the evidence, and make a decision you can own.",
+              "lineHeight": 1.45,
+              "fontFamily": "Geist",
+              "fontSize": 22,
+              "fontWeight": "normal"
+            },
+            {
+              "type": "frame",
+              "id": "f8f6d",
+              "name": "Command Spacer",
+              "padding": [
+                8,
+                0,
+                0,
+                0
+              ],
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "KkZI3",
+                  "name": "Command Chip",
+                  "fill": "$brand-raised",
+                  "cornerRadius": 10,
+                  "stroke": "$brand-line",
+                  "strokeWidth": 1,
+                  "gap": 12,
+                  "padding": [
+                    12,
+                    18
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "Tpe4Q",
+                      "name": "Prompt",
+                      "fill": "$brand-violet",
+                      "content": "$",
+                      "fontFamily": "Geist Mono",
+                      "fontSize": 17,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "text",
+                      "id": "tlJjc",
+                      "name": "Command",
+                      "fill": "$brand-bone",
+                      "content": "revia git changes",
+                      "fontFamily": "Geist Mono",
+                      "fontSize": 17,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "rectangle",
+                      "id": "J85Xd",
+                      "name": "Cursor",
+                      "fill": "$brand-bone",
+                      "width": 9,
+                      "height": 20
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "JhFT1",
+      "x": 1380,
+      "y": 6496,
+      "name": "repository-context/readme/revia-hero-readme/final",
+      "clip": true,
+      "width": 1280,
+      "height": 480,
+      "fill": "$brand-ink",
+      "layout": "none",
+      "children": [
+        {
+          "type": "frame",
+          "id": "NxN5t",
+          "x": 642,
+          "y": -15,
+          "name": "Review Loop",
+          "width": 604,
+          "height": 496,
+          "layout": "none",
+          "children": [
+            {
+              "type": "path",
+              "id": "qctob",
+              "x": 0,
+              "y": 0,
+              "name": "Forward Arc",
+              "geometry": "M181.23 215.91a124 124 0 0 1 233.91-16.36",
+              "viewBox": [
+                0,
+                0,
+                604,
+                496
+              ],
+              "width": 604,
+              "height": 496,
+              "stroke": "$brand-violet",
+              "strokeWidth": 10,
+              "strokeLinecap": "round"
+            },
+            {
+              "type": "path",
+              "id": "GRAby",
+              "x": 0,
+              "y": 0,
+              "name": "Forward Arrowhead",
+              "geometry": "M403.32 202.45l18.97 19.77 2.95-29.54z",
+              "viewBox": [
+                0,
+                0,
+                604,
+                496
+              ],
+              "fill": "$brand-violet",
+              "width": 604,
+              "height": 496,
+              "stroke": "$brand-violet",
+              "strokeWidth": 2,
+              "strokeLinejoin": "round"
+            },
+            {
+              "type": "path",
+              "id": "DAzys",
+              "x": 0,
+              "y": 0,
+              "name": "Return Arc",
+              "geometry": "M420.77 280.09a124 124 0 0 1-233.91 16.36",
+              "viewBox": [
+                0,
+                0,
+                604,
+                496
+              ],
+              "width": 604,
+              "height": 496,
+              "stroke": "$brand-coral",
+              "strokeWidth": 10,
+              "strokeLinecap": "round"
+            },
+            {
+              "type": "path",
+              "id": "O17cr",
+              "x": 0,
+              "y": 0,
+              "name": "Return Arrowhead",
+              "geometry": "M198.68 293.55l-18.97-19.77-2.95 29.54z",
+              "viewBox": [
+                0,
+                0,
+                604,
+                496
+              ],
+              "fill": "$brand-coral",
+              "width": 604,
+              "height": 496,
+              "stroke": "$brand-coral",
+              "strokeWidth": 2,
+              "strokeLinejoin": "round"
+            },
+            {
+              "type": "frame",
+              "id": "NMb6B",
+              "x": 89,
+              "y": 204,
+              "name": "AI-made Change Node",
+              "width": 88,
+              "height": 88,
+              "fill": "$brand-raised",
+              "cornerRadius": 44,
+              "stroke": "$brand-line",
+              "strokeWidth": 1.5,
+              "layout": "none",
+              "children": [
+                {
+                  "type": "rectangle",
+                  "cornerRadius": 3,
+                  "id": "AhiYT",
+                  "x": 20,
+                  "y": 24,
+                  "name": "Removed Lines",
+                  "fill": "$brand-coral",
+                  "width": 48,
+                  "height": 6
+                },
+                {
+                  "type": "rectangle",
+                  "cornerRadius": 3,
+                  "id": "H3JkqU",
+                  "x": 20,
+                  "y": 41,
+                  "name": "Added Lines",
+                  "fill": "$brand-sage",
+                  "width": 36,
+                  "height": 6
+                },
+                {
+                  "type": "rectangle",
+                  "cornerRadius": 3,
+                  "id": "c04GX",
+                  "x": 20,
+                  "y": 58,
+                  "name": "Context Lines",
+                  "fill": "$brand-muted",
+                  "width": 52,
+                  "height": 6
+                }
+              ]
+            },
+            {
+              "type": "ellipse",
+              "id": "vInoO",
+              "x": 229,
+              "y": 176,
+              "name": "Halo",
+              "fill": "#7587FF14",
+              "width": 144,
+              "height": 144,
+              "stroke": "#7587FF55",
+              "strokeWidth": 1
+            },
+            {
+              "type": "frame",
+              "id": "l2gZ6H",
+              "x": 245,
+              "y": 192,
+              "name": "Revia Node",
+              "width": 112,
+              "height": 112,
+              "fill": "$brand-raised",
+              "cornerRadius": 56,
+              "stroke": "$brand-violet",
+              "strokeWidth": 2,
+              "layout": "vertical",
+              "justifyContent": "center",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "HDB1Z",
+                  "name": "Revia Wordmark",
+                  "fill": "$brand-bone",
+                  "content": "revia",
+                  "fontFamily": "Geist Mono",
+                  "fontSize": 26,
+                  "fontWeight": "500"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "o1duK",
+              "x": 425,
+              "y": 204,
+              "name": "Human Decision Node",
+              "width": 88,
+              "height": 88,
+              "fill": "$brand-raised",
+              "cornerRadius": 44,
+              "stroke": "$brand-line",
+              "strokeWidth": 1.5,
+              "layout": "vertical",
+              "padding": [
+                0,
+                0,
+                0,
+                6
+              ],
+              "justifyContent": "center",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "iBuvK",
+                  "name": "Decision Icon",
+                  "width": 36,
+                  "height": 36,
+                  "icon": "user-check",
+                  "library": "lucide",
+                  "fill": "$brand-bone"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "uHIPs",
+              "x": 0,
+              "y": 228,
+              "name": "Change Label Group",
+              "width": 82,
+              "height": 40,
+              "layout": "vertical",
+              "justifyContent": "center",
+              "alignItems": "end",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "SftgR",
+                  "name": "Change Label",
+                  "fill": "$brand-bone",
+                  "content": "AI-MADE\nCHANGE",
+                  "lineHeight": 1.25,
+                  "textAlign": "right",
+                  "fontFamily": "Geist Mono",
+                  "fontSize": 14,
+                  "fontWeight": "650"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "H3wtWH",
+              "x": 520,
+              "y": 228,
+              "name": "Decision Label Group",
+              "width": 82,
+              "height": 40,
+              "layout": "vertical",
+              "justifyContent": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "YYbLR",
+                  "name": "Decision Label",
+                  "fill": "$brand-bone",
+                  "content": "HUMAN\nDECISION",
+                  "lineHeight": 1.25,
+                  "fontFamily": "Geist Mono",
+                  "fontSize": 14,
+                  "fontWeight": "650"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "id": "Vtv4h",
+              "x": 161,
+              "y": 84,
+              "name": "Forward Path Label",
+              "fill": "$brand-violet",
+              "textGrowth": "fixed-width",
+              "width": 280,
+              "content": "EXPLAIN · INSPECT",
+              "textAlign": "center",
+              "fontFamily": "Geist Mono",
+              "fontSize": 14,
+              "fontWeight": "650",
+              "letterSpacing": 1
+            },
+            {
+              "type": "text",
+              "id": "G8ruG",
+              "x": 161,
+              "y": 394,
+              "name": "Return Path Label",
+              "fill": "$brand-coral",
+              "textGrowth": "fixed-width",
+              "width": 280,
+              "content": "QUESTION · REVISE",
+              "textAlign": "center",
+              "fontFamily": "Geist Mono",
+              "fontSize": 14,
+              "fontWeight": "650",
+              "letterSpacing": 1
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "h5HVpE",
+          "x": 64,
+          "y": 52,
+          "name": "Brand Lockup",
+          "enabled": false,
+          "gap": 14,
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "frame",
+              "id": "oJ5Cl",
+              "name": "Revia Mark Small (Diff)",
+              "width": 44,
+              "height": 44,
+              "fill": "$brand-raised",
+              "cornerRadius": 11,
+              "stroke": "$brand-line",
+              "strokeWidth": 1,
+              "layout": "none",
+              "children": [
+                {
+                  "type": "path",
+                  "id": "xcsxd",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Forward Arc",
+                  "geometry": "M51.1 105.95a80 80 0 0 1 148.8-13.02",
+                  "viewBox": [
+                    0,
+                    0,
+                    256,
+                    256
+                  ],
+                  "width": 44,
+                  "height": 44,
+                  "stroke": "$brand-violet",
+                  "strokeWidth": 3.09375,
+                  "strokeLinecap": "round"
+                },
+                {
+                  "type": "path",
+                  "id": "S8zMd",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Forward Head",
+                  "geometry": "M184.62 100.38l22.94 19.26 7.62-34.16z",
+                  "viewBox": [
+                    0,
+                    0,
+                    256,
+                    256
+                  ],
+                  "fill": "$brand-violet",
+                  "width": 44,
+                  "height": 44,
+                  "stroke": "$brand-violet",
+                  "strokeWidth": 0.6875,
+                  "strokeLinejoin": "round"
+                },
+                {
+                  "type": "path",
+                  "id": "QGAtL",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Return Arc",
+                  "geometry": "M204.9 150.05a80 80 0 0 1-148.8 13.02",
+                  "viewBox": [
+                    0,
+                    0,
+                    256,
+                    256
+                  ],
+                  "width": 44,
+                  "height": 44,
+                  "stroke": "$brand-coral",
+                  "strokeWidth": 3.09375,
+                  "strokeLinecap": "round"
+                },
+                {
+                  "type": "path",
+                  "id": "E3Vf41",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Return Head",
+                  "geometry": "M71.38 155.62l-22.94-19.26-7.62 34.16z",
+                  "viewBox": [
+                    0,
+                    0,
+                    256,
+                    256
+                  ],
+                  "fill": "$brand-coral",
+                  "width": 44,
+                  "height": 44,
+                  "stroke": "$brand-coral",
+                  "strokeWidth": 0.6875,
+                  "strokeLinejoin": "round"
+                },
+                {
+                  "type": "frame",
+                  "id": "Sh8Ql",
+                  "x": 0,
+                  "y": 0,
+                  "name": "Diff Lines",
+                  "width": 44,
+                  "height": 44,
+                  "layout": "vertical",
+                  "gap": 2,
+                  "justifyContent": "center",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "PopqE",
+                      "name": "Removed Row",
+                      "width": 12,
+                      "height": 2,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1,
+                          "id": "oEkxP",
+                          "name": "Removed",
+                          "fill": "$brand-coral",
+                          "width": 9,
+                          "height": 2
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Vt0WT",
+                      "name": "Added Row",
+                      "width": 12,
+                      "height": 2,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1,
+                          "id": "c2Zfi",
+                          "name": "Added",
+                          "fill": "$brand-sage",
+                          "width": 7,
+                          "height": 2
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "LLjtF",
+                      "name": "Context Row",
+                      "width": 12,
+                      "height": 2,
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 1,
+                          "id": "JrHFT",
+                          "name": "Context",
+                          "fill": "$brand-muted",
+                          "width": 11,
+                          "height": 2
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "id": "P39ml",
+              "name": "Wordmark",
+              "fill": "$brand-bone",
+              "content": "revia",
+              "fontFamily": "Geist Mono",
+              "fontSize": 24,
+              "fontWeight": "500"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "s6M7u",
+          "x": 64,
+          "y": 59,
+          "name": "Hero Copy",
+          "width": 560,
+          "layout": "vertical",
+          "gap": 28,
+          "children": [
+            {
+              "type": "text",
+              "id": "TaDi1",
+              "name": "Eyebrow",
+              "fill": "$brand-violet",
+              "content": "TERMINAL-FIRST REVIEW FOR AI-MADE CHANGES",
+              "fontFamily": "Geist Mono",
+              "fontSize": 15,
+              "fontWeight": "650",
+              "letterSpacing": 1.1
+            },
+            {
+              "type": "text",
+              "id": "CeGH8",
+              "name": "Headline",
+              "fill": "$brand-bone",
+              "content": "Understand\nwhat you ship.",
+              "lineHeight": 1.05,
+              "fontFamily": "Geist Mono",
+              "fontSize": 68,
+              "fontWeight": "500",
+              "letterSpacing": -2
+            },
+            {
+              "type": "text",
+              "id": "FTQOw",
+              "name": "Body",
+              "fill": "$brand-muted",
+              "textGrowth": "fixed-width",
+              "width": "fill_container",
+              "content": "Question AI-made changes, inspect the evidence, and make a decision you can own.",
+              "lineHeight": 1.45,
+              "fontFamily": "Geist",
+              "fontSize": 22,
+              "fontWeight": "normal"
+            },
+            {
+              "type": "frame",
+              "id": "y5VJX",
+              "name": "Command Spacer",
+              "padding": [
+                8,
+                0,
+                0,
+                0
+              ],
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "aXPxS",
+                  "name": "Command Chip",
+                  "fill": "$brand-raised",
+                  "cornerRadius": 10,
+                  "stroke": "$brand-line",
+                  "strokeWidth": 1,
+                  "gap": 12,
+                  "padding": [
+                    12,
+                    18
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "OfyWF",
+                      "name": "Prompt",
+                      "fill": "$brand-violet",
+                      "content": "$",
+                      "fontFamily": "Geist Mono",
+                      "fontSize": 17,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "text",
+                      "id": "B2Ik67",
+                      "name": "Command",
+                      "fill": "$brand-bone",
+                      "content": "revia git changes",
+                      "fontFamily": "Geist Mono",
+                      "fontSize": 17,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "rectangle",
+                      "id": "H2xWU",
+                      "name": "Cursor",
+                      "fill": "$brand-bone",
+                      "width": 9,
+                      "height": 20
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variables": {
+    "brand-ink": {
+      "type": "color",
+      "value": "#090B0E"
+    },
+    "brand-raised": {
+      "type": "color",
+      "value": "#151B22"
+    },
+    "brand-bone": {
+      "type": "color",
+      "value": "#F1F3F2"
+    },
+    "brand-muted": {
+      "type": "color",
+      "value": "#8E99A5"
+    },
+    "brand-violet": {
+      "type": "color",
+      "value": "#7587FF"
+    },
+    "brand-coral": {
+      "type": "color",
+      "value": "#F06D5E"
+    },
+    "brand-sage": {
+      "type": "color",
+      "value": "#65B889"
+    },
+    "brand-line": {
+      "type": "color",
+      "value": "#29313A"
+    }
+  },
+  "fileToken": "a3ffc079-254c-4747-bcb0-bf9e12fbc837"
+}
