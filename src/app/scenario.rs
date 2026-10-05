@@ -871,7 +871,7 @@ fn help_marks_invocation_commands_and_returns_to_search_location() {
     };
     let text = help.lines.join("\n");
     assert!(text.contains("Commands from: search results"));
-    assert!(text.contains("◆ n / N — Previous / next match (wraps)"));
+    assert!(text.contains("◆ n / N — Next / previous match (wraps)"));
     assert!(text.contains("Navigation"));
     assert!(text.contains("View"));
     assert!(!text.to_ascii_lowercase().contains("comment"));
