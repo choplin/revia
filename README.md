@@ -33,14 +33,19 @@ repository.
 
 ### Requirements
 
-- macOS or Linux. The terminal UI requires a Unix terminal.
+- macOS or Linux. Windows is not supported.
 - Git, for Git-based inputs.
-- A Rust toolchain with Cargo that supports the 2024 edition (Rust 1.85 or
-  later).
+- Rust 1.90 or later with Cargo.
 
 ### Install
 
-Install the latest source from GitHub:
+Install from crates.io:
+
+```sh
+cargo install revia --locked
+```
+
+To install the latest unreleased source instead:
 
 ```sh
 cargo install --git https://github.com/choplin/revia --locked
@@ -116,6 +121,9 @@ Useful options:
   hunk (default: 3).
 - `--print` writes the captured patch to stdout instead of opening the UI. Revia
   also prints instead of opening the UI when stdout is not a terminal.
+
+Set `NO_COLOR` to any non-empty value to turn off colors. Markers, line
+numbers, and text styles still distinguish added, removed, and selected lines.
 
 Git inputs require a repository with at least one commit.
 
