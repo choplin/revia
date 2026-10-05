@@ -45,6 +45,23 @@ Install from crates.io:
 cargo install revia --locked
 ```
 
+Published releases can also be installed through Homebrew and cargo-binstall:
+
+```sh
+brew install choplin/tap/revia
+cargo binstall revia
+```
+
+Both prebuilt installation paths use the checksummed archives attached to the
+corresponding GitHub Release.
+
+Nix users can build and install Revia directly from the selected repository
+revision:
+
+```sh
+nix profile install github:choplin/revia#revia
+```
+
 To install the latest unreleased source instead:
 
 ```sh

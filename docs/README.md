@@ -16,9 +16,11 @@ concepts, ownership boundaries, dependencies, and governing invariants. Every
 top-level document must be reachable from `architecture.md`.
 
 Top-level documents are compressed mental models, not file catalogs or complete
-specifications. A rule belongs here when a developer needs it to predict where
-behavior and state belong. Exact procedures, edge cases, canonical forms, and
-the defense of one choice over alternatives belong under `design/`.
+specifications. A document belongs here when it explains an architectural unit,
+subsystem, or cross-cutting workflow. Include the ownership, relationships,
+constraints, and operator flow needed to change that unit safely. A broad
+workflow does not move under `design/` merely because it contains procedures or
+design detail.
 
 These documents describe established behavior and accepted architectural
 direction. Temporary gaps, planned migrations, and unresolved proposals belong
@@ -26,11 +28,17 @@ in the work tracker rather than in the architectural model.
 
 ## `design/`: one design question per file
 
-Each file under `design/` owns one question that could reasonably have been
-answered another way. It records the current rule, the reason for that rule,
-rejected alternatives, and only the history needed to understand the current
-choice. Worked examples and edge cases belong here when they are needed to
-implement or verify the rule.
+Each file under `design/` owns one explicit question that could reasonably have
+been answered another way. The question must be stateable in one sentence. The
+file records the current answer, its rationale, and only the alternatives or
+consequences needed to understand that judgment.
+
+A document that explains an area, feature, subsystem, workflow, or collection
+of decisions belongs at the top level and must be linked from
+`architecture.md`. Procedures, edge cases, canonical forms, and worked examples
+do not qualify a file for `design/` by themselves; include them with the
+top-level unit only when they materially help a developer understand or change
+it safely.
 
 These are not ADRs. When a decision changes, rewrite its document in place so
 it continues to describe the current rule and rationale rather than becoming a

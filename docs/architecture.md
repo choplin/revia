@@ -11,7 +11,7 @@ composition creates empty collaboration state, has no bindings into comment or
 thread flows, and never opens the thread repository. Thread, anchor, composer,
 and rollup code remains as implementation material for later releases.
 
-Five documents expand the main architectural units:
+Six documents expand the main architectural units:
 
 - [`diff-model.md`](diff-model.md) explains captured input, parsed patch syntax,
   semantic file diffs, and review presentation.
@@ -21,6 +21,8 @@ Five documents expand the main architectural units:
   semantic navigation, filtering, searching, and responsive presentation.
 - [`tui-architecture.md`](tui-architecture.md) explains the Multilayer Elm
   application, effect boundary, semantic view, and Urushi runtime adapter.
+- [`release-automation.md`](release-automation.md) explains release ownership,
+  trust boundaries, generated artifacts, and the operator flow.
 - [`design/review-inputs.md`](design/review-inputs.md) defines source-specific
   commands, shortcut normalization, and capture boundaries.
 
@@ -138,6 +140,12 @@ and persist thread state when exercised directly by their internal tests. They
 are not reachable from the 0.1.0 application composition. Their intended
 contract remains documented in
 [`design/anchors-and-threads.md`](design/anchors-and-threads.md).
+
+Release automation is split at the version tag: `cargo-release` owns the crate
+publication and creates the tag, while `dist` reacts to that tag and owns
+prebuilt artifacts, checksums, the GitHub Release, and the Homebrew formula.
+The ownership and operator procedure are defined in
+[`release-automation.md`](release-automation.md).
 
 ## Architectural invariants
 
