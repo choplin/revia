@@ -3,7 +3,7 @@ name = "revia"
 version = "0.1.0"
 edition = "2024"
 description = "An interactive terminal UI for reviewing Git diffs"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0"
